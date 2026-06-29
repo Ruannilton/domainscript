@@ -70,9 +70,14 @@ func (l *lexer) skipTrivia() {
 	}
 }
 
-// lexIdentOrKeyword consome um identificador e o classifica como keyword ou IDENT.
+// lexIdentOrKeyword consome um identificador e o classifica como version_id
+// (ex.: v1, v12), keyword ou IDENT.
 func (l *lexer) lexIdentOrKeyword(start token.Pos) {
 	text := l.takeWhile(isIdentPart)
+	if isVersionID(text) {
+		l.emit(token.VERSIONID, text, start)
+		return
+	}
 	if kind := token.Lookup(text); kind != token.IDENT {
 		l.emit(kind, "", start) // keyword: o Kind já carrega o texto
 		return
@@ -91,7 +96,61 @@ func (l *lexer) lexNumber(start token.Pos) {
 		lit = lit + "." + l.takeWhile(isDigit)
 		kind = token.FLOAT
 	}
+	if k, suffix, ok := l.scanNumberSuffix(); ok {
+		l.emit(k, lit+suffix, start)
+		return
+	}
 	l.emit(kind, lit, start)
+}
+
+// scanNumberSuffix detecta um sufixo de domínio colado a um número e o consome:
+// uma unidade de tempo (5s, 48h → DURATION) ou de tamanho (100MB → SIZE) logo
+// após o número, ou "/" seguido de unidade de tempo (300/min → RATE). Devolve
+// ok=false sem consumir nada quando não há sufixo reconhecido — o caso comum,
+// que preserva "3 * 4" e a divisão "a / b" (REQ-1.2, §design 3.2).
+func (l *lexer) scanNumberSuffix() (kind token.Kind, suffix string, ok bool) {
+	if isIdentStart(l.peek()) {
+		unit := l.peekIdentRun(0)
+		switch {
+		case durationUnits[unit]:
+			l.advanceN(len([]rune(unit)))
+			return token.DURATION, unit, true
+		case sizeUnits[unit]:
+			l.advanceN(len([]rune(unit)))
+			return token.SIZE, unit, true
+		}
+		return 0, "", false // sufixo desconhecido: não pertence ao número
+	}
+	if l.peek() == '/' {
+		unit := l.peekIdentRun(1) // unidade após a '/'
+		if durationUnits[unit] {
+			l.advance() // '/'
+			l.advanceN(len([]rune(unit)))
+			return token.RATE, "/" + unit, true
+		}
+	}
+	return 0, "", false
+}
+
+// peekIdentRun devolve, sem consumir, a sequência de runes de identificador que
+// começa em offset runes à frente do cursor.
+func (l *lexer) peekIdentRun(offset int) string {
+	from := l.pos + offset
+	i := from
+	for i < len(l.src) && isIdentPart(l.src[i]) {
+		i++
+	}
+	if from >= len(l.src) {
+		return ""
+	}
+	return string(l.src[from:i])
+}
+
+// advanceN consome n runes.
+func (l *lexer) advanceN(n int) {
+	for i := 0; i < n; i++ {
+		l.advance()
+	}
 }
 
 // lexString consome um literal de string entre aspas, resolvendo as sequências
@@ -282,3 +341,24 @@ func (l *lexer) errorf(pos token.Pos, format string, args ...any) {
 func isIdentStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func isIdentPart(r rune) bool  { return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) }
 func isDigit(r rune) bool      { return r >= '0' && r <= '9' }
+
+// Unidades de domínio reconhecidas como sufixos de literais numéricos.
+// As de tempo servem tanto para DURATION (5s) quanto para RATE (300/min).
+var (
+	durationUnits = map[string]bool{"ms": true, "s": true, "min": true, "h": true, "d": true}
+	sizeUnits     = map[string]bool{"B": true, "KB": true, "MB": true, "GB": true, "TB": true}
+)
+
+// isVersionID reconhece um version_id: 'v' minúsculo seguido só de dígitos
+// (v1, v12). Distingue-se de identificadores comuns (value) e da keyword Version.
+func isVersionID(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !isDigit(r) {
+			return false
+		}
+	}
+	return true
+}
