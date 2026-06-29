@@ -1,12 +1,14 @@
 package sema
 
 import (
+	"path/filepath"
 	"testing"
 
 	"domainscript/ast"
 	"domainscript/diag"
 	"domainscript/lexer"
 	"domainscript/parser"
+	"domainscript/program"
 	"domainscript/resolver"
 )
 
@@ -64,6 +66,39 @@ func checkFiles(t *testing.T, srcs ...string) *diag.DiagnosticBag {
 		c.AddFile("", file)
 	}
 	c.Check()
+	return sbag
+}
+
+// projFile é um arquivo de um projeto de teste: o caminho (que define o módulo
+// dono pelo mod.ds mais próximo) e a fonte.
+type projFile struct {
+	path string
+	src  string
+}
+
+// pf monta um projFile com o caminho independente do separador do SO.
+func pf(src string, parts ...string) projFile {
+	return projFile{path: filepath.Join(parts...), src: src}
+}
+
+// checkProject agrega os arquivos num Program e roda o checker com as regras
+// cross-file habilitadas (REQ-7, Fase 9). A resolução usa um bag separado: as
+// regras cross-file deliberadamente exercitam referências que o resolver
+// module-scoped não liga (corpos de execute cruzando módulos), então só os
+// diagnósticos do checker são devolvidos. A tabela de símbolos global do programa
+// continua enxergando todas as declarações (coletadas independentemente da
+// resolução), que é o que as regras consultam.
+func checkProject(t *testing.T, files ...projFile) *diag.DiagnosticBag {
+	t.Helper()
+	rbag := diag.New()
+	srcs := make([]program.Source, 0, len(files))
+	for _, f := range files {
+		srcs = append(srcs, program.Source{Path: f.path, File: parseSrc(t, f.src)})
+	}
+	prog := program.New(srcs, rbag)
+
+	sbag := diag.New()
+	CheckProgram(prog, sbag)
 	return sbag
 }
 

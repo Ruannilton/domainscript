@@ -1,8 +1,11 @@
 package sema
 
 import (
+	"sort"
+
 	"domainscript/ast"
 	"domainscript/diag"
+	"domainscript/program"
 	"domainscript/symbols"
 )
 
@@ -21,6 +24,11 @@ type Checker struct {
 	tab   *symbols.SymbolTable
 	bag   *diag.DiagnosticBag
 	units []Unit
+	// prog é o programa agregado (REQ-7). Não-nil só na checagem de projeto
+	// (CheckProgram): habilita as regras cross-file da Fase 9, que precisam do
+	// grafo módulo→service→canal e do mapeamento aggregate→banco. Na checagem de
+	// arquivo único é nil e essas regras não rodam.
+	prog *program.Program
 }
 
 // New cria um checker que consulta tab e acumula diagnósticos em bag.
@@ -45,6 +53,33 @@ func (c *Checker) Check() {
 	c.checkNotificationAdapters() // 8.7
 	c.checkForeignSignatures()    // 8.10
 	c.checkHandleErrorCoverage()  // 8.14
+
+	// Regras cross-file (Fase 9): exigem o programa inteiro agregado (REQ-7) e só
+	// rodam na checagem de projeto. Cada uma percorre as unidades consultando o
+	// grafo de topologia do programa.
+	if c.prog != nil {
+		c.checkTransactions() // 9.1
+	}
+}
+
+// CheckProgram roda o checker sobre um Program agregado, habilitando as regras
+// cross-file da Fase 9 (REQ-5.8–12/16–17/23) além das locais da Fase 8. Usa a
+// tabela de símbolos global do programa e atribui cada arquivo ao seu módulo
+// (REQ-7.3). É o ponto de entrada da API CheckProject (REQ-8.1).
+func CheckProgram(prog *program.Program, bag *diag.DiagnosticBag) {
+	c := New(prog.Symbols, bag)
+	c.prog = prog
+	// Ordena os caminhos para que a ordem de checagem seja determinística (NFR-3),
+	// independentemente da iteração do mapa.
+	paths := make([]string, 0, len(prog.Files))
+	for path := range prog.Files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		c.AddFile(prog.ModuleOf(path), prog.Files[path])
+	}
+	c.Check()
 }
 
 // Check é o atalho de arquivo único: roda o checker sobre um único arquivo num
