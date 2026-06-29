@@ -73,19 +73,19 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 > Estruturas compartilhadas por todas as fases. Sem lógica de linguagem ainda.
 
-- [ ] **1.1** Pacote `token`: `TokenKind` (enum), `Token`, `Pos`, mapa de keywords,
+- [x] **1.1** Pacote `token`: `TokenKind` (enum), `Token`, `Pos`, mapa de keywords,
   `String()` para mensagens. _(REQ-1.1/1.4, §design 3.1)_
   **Conclusão:** testes de `String()` e de lookup de keyword passam.
   **Commit:** `feat(token): TokenKind, Token, Pos e keywords`
 
-- [ ] **1.2** Pacote `diag`: `Severity`, `Diagnostic`, `DiagnosticBag` (dedup, teto
+- [x] **1.2** Pacote `diag`: `Severity`, `Diagnostic`, `DiagnosticBag` (dedup, teto
   configurável, ordenação estável por posição, `Render`). Reservar campo de
   **código de diagnóstico** (`E001`/`W014`) sem preencher. _(REQ-6.1/6.3/6.4/6.5/6.6,
   §design 3.4)_
   **Conclusão:** testes de dedup, teto e ordenação passam.
   **Commit:** `feat(diag): DiagnosticBag com dedup, teto e ordenação`
 
-- [ ] **1.3** Pacote `ast`: interfaces `Node`/`Decl`/`Stmt`/`Expr`, tipo `Span`
+- [x] **1.3** Pacote `ast`: interfaces `Node`/`Decl`/`Stmt`/`Expr`, tipo `Span`
   (início+fim) e os nós de erro `ErrorDecl`/`ErrorStmt`/`ErrorExpr`. _(REQ-2.6/2.7,
   §design 3.3)_
   **Conclusão:** interfaces compilam; nós de erro satisfazem as interfaces; teste de
