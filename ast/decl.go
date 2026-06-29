@@ -302,3 +302,64 @@ func NewWorkerDecl(name, schedule string, scheduleArg Expr, scope string, settin
 	return &WorkerDecl{baseNode{span}, name, schedule, scheduleArg, scope, settings, source, executeParam, execute}
 }
 func (*WorkerDecl) declNode() {}
+
+// NotificationDecl é a declaração de uma Notification (§9.1): contrato de saída.
+type NotificationDecl struct {
+	baseNode
+	Name   string
+	Fields []*Field
+}
+
+func NewNotificationDecl(name string, fields []*Field, span Span) *NotificationDecl {
+	return &NotificationDecl{baseNode{span}, name, fields}
+}
+func (*NotificationDecl) declNode() {}
+
+// AdapterDecl é a declaração de um Adapter (§9.3): HTTP declarativo (mode, http,
+// headers, body) ou FFI vinculado a Notification (mode, foreign/from, function,
+// map).
+type AdapterDecl struct {
+	baseNode
+	Name       string
+	Mode       string
+	HTTPMethod string
+	HTTPUrl    Expr
+	Headers    []MapEntry
+	Body       []MapEntry
+	Lang       Expr
+	From       Expr
+	Function   Expr
+	Map        []MapEntry
+}
+
+func NewAdapterDecl(d *AdapterDecl, span Span) *AdapterDecl {
+	d.baseNode = baseNode{span}
+	return d
+}
+func (*AdapterDecl) declNode() {}
+
+// ForeignFunc é uma assinatura de função de um bloco Foreign.
+type ForeignFunc struct {
+	baseNode
+	Name   string
+	Params []*Field
+	Return *TypeRef
+}
+
+func NewForeignFunc(name string, params []*Field, ret *TypeRef, span Span) *ForeignFunc {
+	return &ForeignFunc{baseNode{span}, name, params, ret}
+}
+
+// ForeignDecl é a declaração de FFI geral (§9.4): Foreign "lang" from "path" {
+// function ... }.
+type ForeignDecl struct {
+	baseNode
+	Lang      Expr
+	From      Expr
+	Functions []*ForeignFunc
+}
+
+func NewForeignDecl(lang, from Expr, fns []*ForeignFunc, span Span) *ForeignDecl {
+	return &ForeignDecl{baseNode{span}, lang, from, fns}
+}
+func (*ForeignDecl) declNode() {}

@@ -232,11 +232,68 @@ func sdecl(d ast.Decl) string {
 			s += " exec(" + n.ExecuteParam + ")" + sstmt(n.Execute)
 		}
 		return s + ")"
+	case *ast.NotificationDecl:
+		s := "(Notification " + n.Name
+		for _, f := range n.Fields {
+			s += " " + sfield(f)
+		}
+		return s + ")"
+	case *ast.AdapterDecl:
+		s := "(Adapter " + n.Name
+		if n.Mode != "" {
+			s += " mode=" + n.Mode
+		}
+		if n.HTTPMethod != "" {
+			s += " http=" + n.HTTPMethod + " " + sexpr(n.HTTPUrl)
+		}
+		if len(n.Headers) > 0 {
+			s += " headers" + smap(n.Headers)
+		}
+		if len(n.Body) > 0 {
+			s += " body" + smap(n.Body)
+		}
+		if n.Lang != nil {
+			s += " foreign=" + sexpr(n.Lang)
+			if n.From != nil {
+				s += " from=" + sexpr(n.From)
+			}
+		}
+		if n.Function != nil {
+			s += " fn=" + sexpr(n.Function)
+		}
+		if len(n.Map) > 0 {
+			s += " map" + smap(n.Map)
+		}
+		return s + ")"
+	case *ast.ForeignDecl:
+		s := "(Foreign " + sexpr(n.Lang)
+		if n.From != nil {
+			s += " from=" + sexpr(n.From)
+		}
+		for _, fn := range n.Functions {
+			s += " (fn " + fn.Name + sparams(fn.Params)
+			if fn.Return != nil {
+				s += " -> " + stype(fn.Return)
+			}
+			s += ")"
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:
 		return "?decl"
 	}
+}
+
+func smap(es []ast.MapEntry) string {
+	s := "{"
+	for i, e := range es {
+		if i > 0 {
+			s += " "
+		}
+		s += e.Name + "=" + sexpr(e.Value)
+	}
+	return s + "}"
 }
 
 func parseDeclOK(t *testing.T, src string) ast.Decl {

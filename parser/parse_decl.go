@@ -34,6 +34,12 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parsePolicy()
 	case p.at(token.WORKER):
 		return p.parseWorker()
+	case p.at(token.NOTIFICATION):
+		return p.parseNotification()
+	case p.at(token.ADAPTER):
+		return p.parseAdapter()
+	case p.at(token.FOREIGN):
+		return p.parseForeign()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -357,6 +363,99 @@ func (p *parser) parseWorker() ast.Decl {
 	return ast.NewWorkerDecl(name, schedule, scheduleArg, scope, settings, source, execParam, execute, p.spanFrom(start))
 }
 
+// parseNotification parseia "Notification Name { Fields }" (§9.1).
+func (p *parser) parseNotification() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.NOTIFICATION)
+	name := p.parseIdentName()
+	fields := p.parseFieldBlock()
+	return ast.NewNotificationDecl(name, fields, p.spanFrom(start))
+}
+
+// parseAdapter parseia "Adapter Name { mode/http/headers/body | foreign/from/
+// function/map }" (§9.3).
+func (p *parser) parseAdapter() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.ADAPTER)
+	d := &ast.AdapterDecl{Name: p.parseIdentName()}
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("mode"):
+			p.advance()
+			d.Mode = p.parseIdentName()
+		case p.atIdentLit("http"):
+			p.advance()
+			d.HTTPMethod = p.parseIdentName()
+			d.HTTPUrl = p.parseExpr()
+		case p.atIdentLit("headers"):
+			p.advance()
+			d.Headers = p.parseMapBlock()
+		case p.atIdentLit("body"):
+			p.advance()
+			d.Body = p.parseMapBlock()
+		case p.atIdentLit("foreign"):
+			p.advance()
+			d.Lang = p.parseExpr()
+			if p.atIdentLit("from") {
+				p.advance()
+				d.From = p.parseExpr()
+			}
+		case p.atIdentLit("function"):
+			p.advance()
+			d.Function = p.parseExpr()
+		case p.atIdentLit("map"):
+			p.advance()
+			d.Map = p.parseMapBlock()
+		default:
+			p.errorf(p.cur().Pos, "membro de Adapter inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewAdapterDecl(d, p.spanFrom(start))
+}
+
+// parseForeign parseia "Foreign \"lang\" from \"path\" { function ... }" (§9.4).
+func (p *parser) parseForeign() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.FOREIGN)
+	lang := p.parseExpr()
+	var from ast.Expr
+	if p.atIdentLit("from") {
+		p.advance()
+		from = p.parseExpr()
+	}
+	var fns []*ast.ForeignFunc
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atIdentLit("function") {
+			fns = append(fns, p.parseForeignFunc())
+		} else {
+			p.errorf(p.cur().Pos, "esperava 'function' em Foreign, encontrei %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewForeignDecl(lang, from, fns, p.spanFrom(start))
+}
+
+func (p *parser) parseForeignFunc() *ast.ForeignFunc {
+	start := p.cur().Pos
+	p.advance() // "function"
+	name := p.parseName()
+	params := p.parseParamList()
+	var ret *ast.TypeRef
+	if p.accept(token.ARROW) {
+		ret = p.parseTypeRef()
+	}
+	return ast.NewForeignFunc(name, params, ret, p.spanFrom(start))
+}
+
 // parsePolicy parseia "Policy Name on Event { delivery ...; execute {...} }" (§7).
 func (p *parser) parsePolicy() ast.Decl {
 	start := p.cur().Pos
@@ -414,7 +513,7 @@ func (p *parser) parseMapBlock() []ast.MapEntry {
 	var entries []ast.MapEntry
 	for !p.at(token.RBRACE) && !p.atEnd() {
 		before := p.pos
-		name := p.parseIdentName()
+		name := p.parseMapKey()
 		p.expect(token.ASSIGN)
 		val := p.parseExpr()
 		entries = append(entries, ast.MapEntry{Name: name, Value: val})
@@ -423,6 +522,15 @@ func (p *parser) parseMapBlock() []ast.MapEntry {
 	}
 	p.expect(token.RBRACE)
 	return entries
+}
+
+// parseMapKey aceita uma chave de map: um nome (ident/soft keyword) ou uma string
+// literal (ex.: headers de Adapter "Authorization" = ...).
+func (p *parser) parseMapKey() string {
+	if p.at(token.STRING) {
+		return p.advance().Lit
+	}
+	return p.parseName()
 }
 
 // parseView parseia "View Name [From Source] [{ campos | visibility }]" (§6.1/6.2).
