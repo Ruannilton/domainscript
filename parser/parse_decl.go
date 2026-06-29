@@ -69,6 +69,10 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseUpcast()
 	case p.at(token.MODULE):
 		return p.parseModule()
+	case p.at(token.INTERFACE):
+		return p.parseInterface()
+	case p.atIdentLit("RateLimitTier"):
+		return p.parseRateLimitTier()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)

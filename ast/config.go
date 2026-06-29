@@ -43,3 +43,62 @@ func NewModuleDecl(name string, settings []ConfigEntry, blocks []*ConfigBlock, s
 	return &ModuleDecl{baseNode{span}, name, settings, blocks}
 }
 func (*ModuleDecl) declNode() {}
+
+// Route é uma rota HTTP de interface.ds: METHOD "path" -> Target { opções }.
+type Route struct {
+	baseNode
+	Method  string
+	Path    string
+	Target  string
+	Options []ConfigEntry
+}
+
+func NewRoute(method, path, target string, options []ConfigEntry, span Span) *Route {
+	return &Route{baseNode{span}, method, path, target, options}
+}
+
+// GrpcRPC é um método de um service gRPC: rpc Name -> Target.
+type GrpcRPC struct {
+	Name   string
+	Target string
+}
+
+// GrpcService é um bloco "service Name { rpc ... }" de uma Interface GRPC.
+type GrpcService struct {
+	baseNode
+	Name string
+	RPCs []GrpcRPC
+}
+
+func NewGrpcService(name string, rpcs []GrpcRPC, span Span) *GrpcService {
+	return &GrpcService{baseNode{span}, name, rpcs}
+}
+
+// InterfaceDecl é a declaração de uma interface de exposição (interface.ds,
+// §10): protocolo (Kind: HTTP/GRPC/...), configurações e sub-blocos (port,
+// basePath, versioning, tenant, rateLimit), rotas HTTP e services gRPC.
+type InterfaceDecl struct {
+	baseNode
+	Kind     string
+	Settings []ConfigEntry
+	Routes   []*Route
+	Services []*GrpcService
+}
+
+func NewInterfaceDecl(kind string, settings []ConfigEntry, routes []*Route, services []*GrpcService, span Span) *InterfaceDecl {
+	return &InterfaceDecl{baseNode{span}, kind, settings, routes, services}
+}
+func (*InterfaceDecl) declNode() {}
+
+// RateLimitTierDecl é um tier de rate limit por plano (§17): RateLimitTier Name
+// { perUser: ..., perTenant: ... }.
+type RateLimitTierDecl struct {
+	baseNode
+	Name    string
+	Entries []ConfigEntry
+}
+
+func NewRateLimitTierDecl(name string, entries []ConfigEntry, span Span) *RateLimitTierDecl {
+	return &RateLimitTierDecl{baseNode{span}, name, entries}
+}
+func (*RateLimitTierDecl) declNode() {}

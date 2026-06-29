@@ -116,6 +116,96 @@ func (p *parser) parseModule() ast.Decl {
 	return ast.NewModuleDecl(name, settings, blocks, p.spanFrom(start))
 }
 
+// parseInterface parseia "Interface Kind { settings | routes | services }"
+// (interface.ds, §10). Kind é o protocolo (HTTP, GRPC, ...).
+func (p *parser) parseInterface() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.INTERFACE)
+	kind := p.parseIdentName()
+	var (
+		settings []ast.ConfigEntry
+		routes   []*ast.Route
+		services []*ast.GrpcService
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.at(token.IDENT) && p.peek().Kind == token.STRING:
+			routes = append(routes, p.parseRoute())
+		case p.atIdentLit("service"):
+			services = append(services, p.parseGrpcService())
+		case p.atConfigKey():
+			settings = append(settings, p.parseConfigEntry())
+			p.accept(token.COMMA)
+		default:
+			p.errorf(p.cur().Pos, "membro de Interface inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewInterfaceDecl(kind, settings, routes, services, p.spanFrom(start))
+}
+
+// parseRoute parseia "METHOD \"path\" -> Target [{ opções }]".
+func (p *parser) parseRoute() *ast.Route {
+	start := p.cur().Pos
+	method := p.parseIdentName()
+	path := p.parseStringLit()
+	p.expect(token.ARROW)
+	target := p.parseName()
+	var opts []ast.ConfigEntry
+	if p.at(token.LBRACE) {
+		opts = p.parseConfigEntries()
+	}
+	return ast.NewRoute(method, path, target, opts, p.spanFrom(start))
+}
+
+// parseGrpcService parseia "service Name { rpc Name -> Target ... }".
+func (p *parser) parseGrpcService() *ast.GrpcService {
+	start := p.cur().Pos
+	p.advance() // "service"
+	name := p.parseIdentName()
+	var rpcs []ast.GrpcRPC
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atIdentLit("rpc") {
+			p.advance()
+			rpcName := p.parseName()
+			p.expect(token.ARROW)
+			rpcs = append(rpcs, ast.GrpcRPC{Name: rpcName, Target: p.parseName()})
+		} else {
+			p.errorf(p.cur().Pos, "esperava 'rpc' em service, encontrei %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewGrpcService(name, rpcs, p.spanFrom(start))
+}
+
+// parseRateLimitTier parseia "RateLimitTier Name { entries }" (§17). É uma
+// keyword contextual (IDENT), não reservada globalmente.
+func (p *parser) parseRateLimitTier() ast.Decl {
+	start := p.cur().Pos
+	p.advance() // "RateLimitTier"
+	name := p.parseIdentName()
+	entries := p.parseConfigEntries()
+	return ast.NewRateLimitTierDecl(name, entries, p.spanFrom(start))
+}
+
+// parseStringLit consome um literal de string e devolve seu lexema, ou "" com
+// diagnóstico.
+func (p *parser) parseStringLit() string {
+	if p.at(token.STRING) {
+		return p.advance().Lit
+	}
+	p.errorf(p.cur().Pos, "esperava uma string, encontrei %s", p.cur().Kind)
+	return ""
+}
+
 // parseConfigBlockKind parseia "Kind [Name] { entries }". named indica se o
 // bloco leva um nome antes das chaves (ex.: Database WalletDb).
 func (p *parser) parseConfigBlockKind(named bool) *ast.ConfigBlock {
