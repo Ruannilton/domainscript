@@ -157,59 +157,59 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 > parser + teste happy-path + ≥1 teste de recovery, e fecha em commit.
 
 ### 4A. Expressões e controle de fluxo (base para os construtos)
-- [ ] **4A.1** Cadeia de precedência `or`→`and`→igualdade→relacional→aditivo→
+- [x] **4A.1** Cadeia de precedência `or`→`and`→igualdade→relacional→aditivo→
   multiplicativo→unário→pós-fixo; membro/método/chamada/construção; named args.
   _(REQ-2.5, §design 3.3)_
   **Conclusão:** teste de precedência (`a + b * c >= d`) monta a árvore certa.
   **Commit:** `feat(parser): expressões com precedência e pós-fixo`
-- [ ] **4A.2** `match` como **statement** e como **expressão**: braços de valor,
+- [x] **4A.2** `match` como **statement** e como **expressão**: braços de valor,
   guards (`when`), wildcard `_`. _(REQ-2.4)_
   **Commit:** `feat(parser): match statement e expressão`
-- [ ] **4A.3** Range (`1..n`) e lambdas (`t => t.x`). _(REQ-2.5)_
+- [x] **4A.3** Range (`1..n`) e lambdas (`t => t.x`). _(REQ-2.5)_
   **Commit:** `feat(parser): range e lambdas`
-- [ ] **4A.4** Operações embutidas em expressão: `load`, `list`, `count`, `store`,
+- [x] **4A.4** Operações embutidas em expressão: `load`, `list`, `count`, `store`,
   `call`, `signed_url`, `exists` com cláusulas estilo SQL (`where`/`join`/`orderBy`/
   `skip`/`take`). _(REQ-2.4/2.5)_
   **Commit:** `feat(parser): operações de domínio em expressão`
-- [ ] **4A.5** `ensure … else …` (ações por contexto: Error/Nop/break/break all/
+- [x] **4A.5** `ensure … else …` (ações por contexto: Error/Nop/break/break all/
   continue), `return`, `for … in …`, `log`, `emit`, controles de laço. _(REQ-2.4)_
   **Commit:** `feat(parser): controle de fluxo (ensure, for, log, emit)`
 
 ### 4B. Declarações de domínio (uma fatia vertical cada)
-- [ ] **4B.1** `ValueObject` (wrapper `Email(string)` e composto `Money`), bloco
+- [x] **4B.1** `ValueObject` (wrapper `Email(string)` e composto `Money`), bloco
   `Valid`, `Operator` com parâmetro/retorno/corpo. _(REQ-2.1)_
   **Commit:** `feat(parser): declaração ValueObject`
-- [ ] **4B.2** `Enum` (base string/integer/VO, membros, bloco `coerce` com `match`).
+- [x] **4B.2** `Enum` (base string/integer/VO, membros, bloco `coerce` com `match`).
   _(REQ-2.1)_
   **Commit:** `feat(parser): declaração Enum com coerce`
-- [ ] **4B.3** `Error`, `Event`/`PublicEvent` (campos, `redactable`, defaults).
+- [x] **4B.3** `Error`, `Event`/`PublicEvent` (campos, `redactable`, defaults).
   _(REQ-2.1)_
   **Commit:** `feat(parser): Error e Event/PublicEvent`
-- [ ] **4B.4** `Aggregate` (`strategy`, `snapshot`, `storage`, `state`, `access`,
+- [x] **4B.4** `Aggregate` (`strategy`, `snapshot`, `storage`, `state`, `access`,
   `Handle`, `Apply`). _(REQ-2.1)_
   **Commit:** `feat(parser): declaração Aggregate`
-- [ ] **4B.5** `Command` (campos com `ref`). _(REQ-2.1)_
+- [x] **4B.5** `Command` (campos com `ref`). _(REQ-2.1)_
   **Commit:** `feat(parser): declaração Command`
-- [ ] **4B.6** `UseCase` (`handles`, `timeout`, `idempotency`, `tenancy`,
+- [x] **4B.6** `UseCase` (`handles`, `timeout`, `idempotency`, `tenancy`,
   `execute`). _(REQ-2.1)_
   **Commit:** `feat(parser): declaração UseCase`
-- [ ] **4B.7** `View` (incl. `From` e `visibility`), `Projection`, `Query` (com
+- [x] **4B.7** `View` (incl. `From` e `visibility`), `Projection`, `Query` (com
   `cache`). _(REQ-2.1)_
   **Commit:** `feat(parser): View, Projection e Query`
-- [ ] **4B.8** `Policy` (`on`, `delivery`, `execute`). _(REQ-2.1)_
+- [x] **4B.8** `Policy` (`on`, `delivery`, `execute`). _(REQ-2.1)_
   **Commit:** `feat(parser): declaração Policy`
-- [ ] **4B.9** `Worker` (`every`/`cron`/`continuous`, `scope`, `onError`,
+- [x] **4B.9** `Worker` (`every`/`cron`/`continuous`, `scope`, `onError`,
   `source`). _(REQ-2.1)_
   **Commit:** `feat(parser): declaração Worker`
-- [ ] **4B.10** `Notification`, `Adapter` (HTTP e FFI), `Foreign` (FFI geral).
+- [x] **4B.10** `Notification`, `Adapter` (HTTP e FFI), `Foreign` (FFI geral).
   _(REQ-2.1)_
   **Commit:** `feat(parser): Notification, Adapter e Foreign`
-- [ ] **4B.11** `Saga` (`mode async/await`, `state`, `step` com `up`/`down`/
+- [x] **4B.11** `Saga` (`mode async/await`, `state`, `step` com `up`/`down`/
   `onInfraError`, `unrecoverable`). _(REQ-2.1)_
   **Commit:** `feat(parser): declaração Saga`
-- [ ] **4B.12** `Metric` e `Upcast`. _(REQ-2.1)_
+- [x] **4B.12** `Metric` e `Upcast`. _(REQ-2.1)_
   **Commit:** `feat(parser): Metric e Upcast`
-- [ ] **4B.13** `parseFile`: `switch` na keyword de topo reunindo todos os
+- [x] **4B.13** `parseFile`: `switch` na keyword de topo reunindo todos os
   construtos; recovery reancora na próxima declaração. _(REQ-2.1/3.7)_
   **Conclusão:** arquivo `.ds` multi-declaração com erros reporta cada um.
   **Commit:** `feat(parser): roteamento de declarações de topo`
