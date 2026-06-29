@@ -118,6 +118,46 @@ func (c *Checker) checkNop(b *ast.Block, ctx string) {
 	})
 }
 
+// checkLoopControlDecl implementa REQ-5.7 (§3.3): break, break all e continue só
+// valem dentro de um for. Percorre cada corpo da declaração rastreando a
+// profundidade de laço.
+func (c *Checker) checkLoopControlDecl(d ast.Decl) {
+	for _, b := range declBlocks(d) {
+		c.checkLoopControl(b, false)
+	}
+}
+
+// checkLoopControl percorre s propagando se o cursor está dentro de um for. Um
+// controle de laço encontrado com inFor falso é reportado.
+func (c *Checker) checkLoopControl(s ast.Stmt, inFor bool) {
+	switch n := s.(type) {
+	case *ast.Block:
+		for _, st := range n.Stmts {
+			c.checkLoopControl(st, inFor)
+		}
+	case *ast.ForStmt:
+		c.checkLoopControl(n.Body, true)
+	case *ast.EnsureStmt:
+		c.checkLoopControl(n.Else, inFor)
+	case *ast.MatchStmt:
+		for _, arm := range n.Arms {
+			c.checkLoopControl(arm.Body, inFor)
+		}
+	case *ast.BreakStmt:
+		if !inFor {
+			what := "break"
+			if n.All {
+				what = "break all"
+			}
+			c.bag.Errorf(n.Pos(), "`%s` fora de um for não é permitido (§3.3)", what)
+		}
+	case *ast.ContinueStmt:
+		if !inFor {
+			c.bag.Errorf(n.Pos(), "`continue` fora de um for não é permitido (§3.3)")
+		}
+	}
+}
+
 // enumMemberRef reconhece um padrão "Enum.Membro" e devolve (Enum, Membro, true).
 func enumMemberRef(p ast.Expr) (enum, member string, ok bool) {
 	m, isMember := p.(*ast.MemberExpr)

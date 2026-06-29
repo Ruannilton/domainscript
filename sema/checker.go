@@ -69,4 +69,5 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 		c.checkNop(n.Execute, "UseCase") // 8.4
 	}
 	c.checkMatchExhaustiveness(module, d) // 8.3
+	c.checkLoopControlDecl(d)             // 8.5
 }
