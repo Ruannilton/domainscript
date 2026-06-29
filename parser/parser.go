@@ -88,6 +88,20 @@ func (p *parser) expect(k token.Kind) bool {
 	return false
 }
 
+// synchronize descarta tokens em modo de pânico até encontrar um token de
+// sincronização de stop, um '}' de fechamento, ou o EOF — nenhum dos quais é
+// consumido, para que o nível de cima feche o próprio bloco e o pânico nunca
+// fure para fora da estrutura corrente (REQ-3.4, §design 3.5).
+func (p *parser) synchronize(stop stopSet) {
+	for !p.atEnd() {
+		k := p.cur().Kind
+		if k == token.RBRACE || stop.contains(k) {
+			return
+		}
+		p.advance()
+	}
+}
+
 // errorf registra um erro de sintaxe localizado no DiagnosticBag. A supressão
 // anti-cascata (janela de silêncio) é adicionada na tarefa 3.3.
 func (p *parser) errorf(pos token.Pos, format string, args ...any) {
