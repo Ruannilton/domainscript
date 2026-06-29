@@ -60,6 +60,7 @@ func (c *Checker) Check() {
 	if c.prog != nil {
 		c.checkTransactions()      // 9.1
 		c.checkCrossDatabaseJoin() // 9.2
+		c.checkServiceChannels()   // 9.3
 	}
 }
 

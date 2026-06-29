@@ -1,6 +1,9 @@
 package sema
 
-import "domainscript/ast"
+import (
+	"domainscript/ast"
+	"domainscript/symbols"
+)
 
 // rules_crossfile.go reúne as regras semânticas que dependem do programa inteiro
 // agregado (REQ-7): transações cross-database/service, JOIN cross-database,
@@ -50,6 +53,47 @@ func distinct(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// channelExists reporta se a topologia declara um canal entre os módulos a e b,
+// em qualquer direção — a comunicação entre módulos é a aresta, não o sentido.
+func (c *Checker) channelExists(a, b string) bool {
+	return c.prog.ChannelBetween(a, b) != nil || c.prog.ChannelBetween(b, a) != nil
+}
+
+// checkServiceChannels implementa REQ-5.11 (§11): módulos em services distintos
+// só podem se comunicar por um canal declarado na topologia (a fronteira de rede
+// precisa de transporte explícito). A comunicação assíncrona entre módulos é uma
+// Policy que reage a um evento de outro módulo; se o produtor e o consumidor estão
+// em services diferentes e não há canal entre eles, é erro.
+func (c *Checker) checkServiceChannels() {
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			pol, ok := d.(*ast.PolicyDecl)
+			if !ok || pol.On == "" {
+				continue
+			}
+			sym, ok := c.tab.Lookup(u.Module, pol.On)
+			if !ok || sym.Kind != symbols.KindEvent {
+				continue
+			}
+			producer := sym.Module
+			if producer == "" || producer == u.Module {
+				continue // evento do próprio módulo: não cruza fronteira de service
+			}
+			svcConsumer := c.prog.ServiceOfModule(u.Module)
+			svcProducer := c.prog.ServiceOfModule(producer)
+			if svcConsumer == "" || svcProducer == "" || svcConsumer == svcProducer {
+				continue // mesmo service (ou sem service): in-process, sem canal exigido
+			}
+			if c.channelExists(u.Module, producer) {
+				continue
+			}
+			c.bag.Errorf(pol.Pos(),
+				"Policy %q (módulo %s, service %s) reage a evento do módulo %s (service %s) sem canal declarado entre os services (§11)",
+				pol.Name, u.Module, svcConsumer, producer, svcProducer)
+		}
+	}
 }
 
 // checkCrossDatabaseJoin implementa REQ-5.10 (§6.3, §23): um JOIN só é válido
