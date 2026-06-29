@@ -46,6 +46,10 @@ func sexpr(e ast.Expr) string {
 			s += " (arm " + matchArmHead(a.Patterns, a.Guard) + " " + sexpr(a.Body) + ")"
 		}
 		return s + ")"
+	case *ast.RangeExpr:
+		return "(.. " + sexpr(n.Low) + " " + sexpr(n.High) + ")"
+	case *ast.LambdaExpr:
+		return "(lambda " + n.Param + " " + sexpr(n.Body) + ")"
 	case *ast.ErrorExpr:
 		return "<err>"
 	default:

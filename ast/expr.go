@@ -97,6 +97,31 @@ func NewIndexExpr(x, index Expr, span Span) *IndexExpr {
 }
 func (*IndexExpr) exprNode() {}
 
+// RangeExpr é um intervalo Low..High, usado sobretudo em "for i in 1..n".
+type RangeExpr struct {
+	baseNode
+	Low  Expr
+	High Expr
+}
+
+func NewRangeExpr(low, high Expr, span Span) *RangeExpr {
+	return &RangeExpr{baseNode{span}, low, high}
+}
+func (*RangeExpr) exprNode() {}
+
+// LambdaExpr é uma função anônima de um parâmetro: Param => Body, usada em
+// operações de coleção (ex.: t => t.orderId).
+type LambdaExpr struct {
+	baseNode
+	Param string
+	Body  Expr
+}
+
+func NewLambdaExpr(param string, body Expr, span Span) *LambdaExpr {
+	return &LambdaExpr{baseNode{span}, param, body}
+}
+func (*LambdaExpr) exprNode() {}
+
 // MatchExprArm é um braço de um match-expressão: um ou mais padrões, um guard
 // opcional (when) e o corpo (uma expressão-valor).
 type MatchExprArm struct {

@@ -6,11 +6,45 @@ import (
 )
 
 // parseExpr é o ponto de entrada da gramática de expressões. A cadeia de
-// precedência (do menor para o maior) é: or < and < igualdade < relacional <
-// aditivo < multiplicativo < unário < pós-fixo (REQ-2.5). Range e lambdas
-// envolvem este ponto a partir da tarefa 4A.3.
+// precedência (do menor para o maior) é: range < or < and < igualdade <
+// relacional < aditivo < multiplicativo < unário < pós-fixo (REQ-2.5). Uma
+// lambda ("param => corpo") captura toda a expressão quando reconhecida no topo.
 func (p *parser) parseExpr() ast.Expr {
-	return p.parseOr()
+	if p.atLambda() {
+		return p.parseLambda()
+	}
+	return p.parseRange()
+}
+
+// parseRange parseia "LOW..HIGH" (intervalo) ou apenas a expressão quando não há
+// "..". O ".." são dois tokens DOT adjacentes (o lexer não tem token dedicado).
+func (p *parser) parseRange() ast.Expr {
+	low := p.parseOr()
+	if p.atDotDot() {
+		p.advance() // '.'
+		p.advance() // '.'
+		high := p.parseOr()
+		return ast.NewRangeExpr(low, high, p.spanFrom(low.Pos()))
+	}
+	return low
+}
+
+// atLambda reconhece o início de uma lambda: IDENT seguido de "=>".
+func (p *parser) atLambda() bool {
+	return p.at(token.IDENT) && p.peek().Kind == token.ASSIGN && p.peekAt(2).Kind == token.GT
+}
+
+func (p *parser) parseLambda() ast.Expr {
+	start := p.cur().Pos
+	param := p.advance().Lit // IDENT do parâmetro
+	p.expectFatArrow()
+	body := p.parseExpr()
+	return ast.NewLambdaExpr(param, body, p.spanFrom(start))
+}
+
+// atDotDot reconhece "..", dois tokens DOT adjacentes (range).
+func (p *parser) atDotDot() bool {
+	return p.at(token.DOT) && p.peek().Kind == token.DOT
 }
 
 func (p *parser) parseOr() ast.Expr {
@@ -66,7 +100,7 @@ func (p *parser) parsePostfix() ast.Expr {
 	for {
 		start := x.Pos()
 		switch {
-		case p.at(token.DOT):
+		case p.at(token.DOT) && !p.atDotDot():
 			p.advance()
 			name := p.parseIdentName()
 			x = ast.NewMemberExpr(x, name, p.spanFrom(start))
