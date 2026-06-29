@@ -30,6 +30,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseProjection()
 	case p.at(token.QUERY):
 		return p.parseQuery()
+	case p.at(token.POLICY):
+		return p.parsePolicy()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -243,6 +245,39 @@ func (p *parser) parseCommand() ast.Decl {
 	name := p.parseIdentName()
 	fields := p.parseFieldBlock()
 	return ast.NewCommandDecl(name, fields, p.spanFrom(start))
+}
+
+// parsePolicy parseia "Policy Name on Event { delivery ...; execute {...} }" (§7).
+func (p *parser) parsePolicy() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.POLICY)
+	name := p.parseIdentName()
+	on := ""
+	if p.accept(token.ON) {
+		on = p.parseIdentName()
+	}
+	var (
+		delivery string
+		execute  *ast.Block
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("delivery"):
+			p.advance()
+			delivery = p.parseIdentName()
+		case p.atIdentLit("execute"):
+			p.advance()
+			execute = p.parseBlock()
+		default:
+			p.errorf(p.cur().Pos, "membro de Policy inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewPolicyDecl(name, on, delivery, execute, p.spanFrom(start))
 }
 
 // parseConfigBlock parseia "{ Key: Value (,)? ... }" — usado por cache, e

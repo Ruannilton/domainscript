@@ -199,6 +199,18 @@ func sdecl(d ast.Decl) string {
 			s += " " + sstmt(n.Body)
 		}
 		return s + ")"
+	case *ast.PolicyDecl:
+		s := "(Policy " + n.Name
+		if n.On != "" {
+			s += " on=" + n.On
+		}
+		if n.Delivery != "" {
+			s += " delivery=" + n.Delivery
+		}
+		if n.Execute != nil {
+			s += " execute" + sstmt(n.Execute)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:

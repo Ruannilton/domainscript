@@ -268,3 +268,18 @@ func NewQueryDecl(name string, params []*Field, ret *TypeRef, cache []ConfigEntr
 	return &QueryDecl{baseNode{span}, name, params, ret, cache, body}
 }
 func (*QueryDecl) declNode() {}
+
+// PolicyDecl é a declaração de uma Policy (§7): reage a um Event (On) com uma
+// garantia de entrega (Delivery) e um bloco execute.
+type PolicyDecl struct {
+	baseNode
+	Name     string
+	On       string
+	Delivery string
+	Execute  *Block
+}
+
+func NewPolicyDecl(name, on, delivery string, execute *Block, span Span) *PolicyDecl {
+	return &PolicyDecl{baseNode{span}, name, on, delivery, execute}
+}
+func (*PolicyDecl) declNode() {}
