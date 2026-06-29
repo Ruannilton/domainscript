@@ -45,6 +45,8 @@ func (l *lexer) run() {
 			l.lexNumber(pos)
 		case r == '"':
 			l.lexString(pos)
+		case l.lexOperator(pos):
+			// pontuação/operador reconhecido em lexOperator
 		default:
 			bad := l.advance() // progresso garantido (REQ-1.6, NFR-2)
 			l.errorf(pos, "caractere inválido %q", bad)
@@ -105,6 +107,94 @@ func (l *lexer) lexString(start token.Pos) {
 		l.advance()
 	}
 	l.emit(token.STRING, sb.String(), start)
+}
+
+// lexOperator reconhece toda a pontuação e os operadores do spec (REQ-1.3),
+// incluindo os de dois caracteres (->, ==, !=, <=, >=). Devolve false sem
+// consumir nada quando o rune atual não inicia um operador. A barra simples vira
+// SLASH; "//" já foi tratado como comentário em skipTrivia.
+func (l *lexer) lexOperator(start token.Pos) bool {
+	switch l.peek() {
+	case '{':
+		l.advance()
+		l.emit(token.LBRACE, "", start)
+	case '}':
+		l.advance()
+		l.emit(token.RBRACE, "", start)
+	case '(':
+		l.advance()
+		l.emit(token.LPAREN, "", start)
+	case ')':
+		l.advance()
+		l.emit(token.RPAREN, "", start)
+	case '[':
+		l.advance()
+		l.emit(token.LBRACK, "", start)
+	case ']':
+		l.advance()
+		l.emit(token.RBRACK, "", start)
+	case ',':
+		l.advance()
+		l.emit(token.COMMA, "", start)
+	case '.':
+		l.advance()
+		l.emit(token.DOT, "", start)
+	case ':':
+		l.advance()
+		l.emit(token.COLON, "", start)
+	case '+':
+		l.advance()
+		l.emit(token.PLUS, "", start)
+	case '*':
+		l.advance()
+		l.emit(token.STAR, "", start)
+	case '/':
+		l.advance()
+		l.emit(token.SLASH, "", start)
+	case '-':
+		l.advance()
+		if l.peek() == '>' {
+			l.advance()
+			l.emit(token.ARROW, "", start)
+		} else {
+			l.emit(token.MINUS, "", start)
+		}
+	case '=':
+		l.advance()
+		if l.peek() == '=' {
+			l.advance()
+			l.emit(token.EQ, "", start)
+		} else {
+			l.emit(token.ASSIGN, "", start)
+		}
+	case '!':
+		if l.peek2() == '=' {
+			l.advance()
+			l.advance()
+			l.emit(token.NEQ, "", start)
+		} else {
+			return false // '!' sozinho não é operador válido
+		}
+	case '<':
+		l.advance()
+		if l.peek() == '=' {
+			l.advance()
+			l.emit(token.LE, "", start)
+		} else {
+			l.emit(token.LT, "", start)
+		}
+	case '>':
+		l.advance()
+		if l.peek() == '=' {
+			l.advance()
+			l.emit(token.GE, "", start)
+		} else {
+			l.emit(token.GT, "", start)
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 // --- cursor de runes ---
