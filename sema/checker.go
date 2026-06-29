@@ -42,6 +42,7 @@ func (c *Checker) Check() {
 			c.checkDecl(u.Module, d)
 		}
 	}
+	c.checkNotificationAdapters() // 8.7
 }
 
 // Check é o atalho de arquivo único: roda o checker sobre um único arquivo num

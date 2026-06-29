@@ -130,9 +130,22 @@ func (r *Resolver) collect(module string, d ast.Decl) {
 	if existing, ok := r.tab.Define(&symbols.Symbol{
 		Name: name, Kind: kind, Module: module, Decl: d, Public: public,
 	}); !ok {
+		if isNotificationAdapterPair(kind, existing.Kind) {
+			// Uma Notification e seu Adapter compartilham o nome por design
+			// (§9.1/9.3): o Adapter é a fronteira de infra ligada à Notification de
+			// mesmo nome. Não é declaração duplicada (REQ-5.3).
+			return
+		}
 		r.bag.Errorf(d.Pos(), "nome duplicado: %s %q já declarado como %s neste módulo",
 			kind, name, existing.Kind)
 	}
+}
+
+// isNotificationAdapterPair reporta se os dois kinds formam o par
+// Notification↔Adapter, que por design partilha o mesmo nome no módulo.
+func isNotificationAdapterPair(a, b symbols.Kind) bool {
+	return (a == symbols.KindNotification && b == symbols.KindAdapter) ||
+		(a == symbols.KindAdapter && b == symbols.KindNotification)
 }
 
 // --- passagem de resolução (REQ-4.2/4.4/4.5) ---
