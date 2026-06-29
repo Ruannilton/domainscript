@@ -60,7 +60,7 @@ func (p *parser) parseEquality() ast.Expr {
 }
 
 func (p *parser) parseRelational() ast.Expr {
-	return p.parseBinaryLevel(p.parseAdditive, token.LT, token.GT, token.LE, token.GE)
+	return p.parseBinaryLevel(p.parseAdditive, token.LT, token.GT, token.LE, token.GE, token.IN)
 }
 
 func (p *parser) parseAdditive() ast.Expr {
@@ -112,6 +112,9 @@ func (p *parser) parsePostfix() ast.Expr {
 			idx := p.parseExpr()
 			p.expect(token.RBRACK)
 			x = ast.NewIndexExpr(x, idx, p.spanFrom(start))
+		case p.at(token.IDENT) && p.cur().Lit == "exists":
+			p.advance()
+			x = ast.NewQueryExpr("exists", x, "", nil, p.spanFrom(start))
 		default:
 			return x
 		}
@@ -121,9 +124,13 @@ func (p *parser) parsePostfix() ast.Expr {
 func (p *parser) parsePrimary() ast.Expr {
 	t := p.cur()
 	switch {
+	case t.Kind == token.IDENT && isQueryOp(t.Lit):
+		return p.parseQueryOp()
 	case t.Kind == token.IDENT:
 		p.advance()
 		return ast.NewIdent(t.Lit, p.spanFrom(t.Pos))
+	case t.Kind == token.LBRACK:
+		return p.parseListLiteral()
 	case isLiteralKind(t.Kind):
 		p.advance()
 		return ast.NewLiteral(t.Kind, t.Lit, p.spanFrom(t.Pos))

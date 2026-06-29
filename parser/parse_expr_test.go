@@ -46,6 +46,31 @@ func sexpr(e ast.Expr) string {
 			s += " (arm " + matchArmHead(a.Patterns, a.Guard) + " " + sexpr(a.Body) + ")"
 		}
 		return s + ")"
+	case *ast.ListExpr:
+		s := "["
+		for i, e := range n.Elems {
+			if i > 0 {
+				s += " "
+			}
+			s += sexpr(e)
+		}
+		return s + "]"
+	case *ast.QueryExpr:
+		s := "(" + n.Op + " " + sexpr(n.Target)
+		if n.Binding != "" {
+			s += " :" + n.Binding
+		}
+		for _, c := range n.Clauses {
+			s += " {" + c.Kw
+			if c.Expr != nil {
+				s += " " + sexpr(c.Expr)
+			}
+			if c.Extra != "" {
+				s += " " + c.Extra
+			}
+			s += "}"
+		}
+		return s + ")"
 	case *ast.RangeExpr:
 		return "(.. " + sexpr(n.Low) + " " + sexpr(n.High) + ")"
 	case *ast.LambdaExpr:

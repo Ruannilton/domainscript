@@ -122,6 +122,42 @@ func NewLambdaExpr(param string, body Expr, span Span) *LambdaExpr {
 }
 func (*LambdaExpr) exprNode() {}
 
+// ListExpr é um literal de lista: [a, b, c].
+type ListExpr struct {
+	baseNode
+	Elems []Expr
+}
+
+func NewListExpr(elems []Expr, span Span) *ListExpr { return &ListExpr{baseNode{span}, elems} }
+func (*ListExpr) exprNode()                         {}
+
+// QueryClause é uma cláusula estilo SQL de uma operação de domínio: where, join,
+// on, orderBy, skip, take, as. Expr guarda a expressão principal (condição,
+// valor, fonte do join, chave de ordenação); Extra guarda um modificador textual
+// (direção do orderBy, alias do join, nome do tipo no as).
+type QueryClause struct {
+	Kw    string
+	Expr  Expr
+	Extra string
+}
+
+// QueryExpr representa uma operação embutida de domínio: load, list, count,
+// store, call, delete (prefixas, sobre Target) ou exists (pós-fixa). Binding é o
+// alias opcional (list Ticket t); Clauses são as cláusulas SQL-like (REQ-2.4).
+// A semântica das cláusulas (ex.: JOIN cross-database) é verificada depois.
+type QueryExpr struct {
+	baseNode
+	Op      string
+	Target  Expr
+	Binding string
+	Clauses []QueryClause
+}
+
+func NewQueryExpr(op string, target Expr, binding string, clauses []QueryClause, span Span) *QueryExpr {
+	return &QueryExpr{baseNode{span}, op, target, binding, clauses}
+}
+func (*QueryExpr) exprNode() {}
+
 // MatchExprArm é um braço de um match-expressão: um ou mais padrões, um guard
 // opcional (when) e o corpo (uma expressão-valor).
 type MatchExprArm struct {
