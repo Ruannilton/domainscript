@@ -2,6 +2,7 @@ package sema
 
 import (
 	"domainscript/ast"
+	"domainscript/symbols"
 	"domainscript/token"
 )
 
@@ -111,4 +112,88 @@ func (c *Checker) checkCacheHighCardinality(q *ast.QueryDecl) {
 	c.bag.Warningf(q.Pos(),
 		"Query %q tem cache sobre uma listagem (List): alta cardinalidade pode tornar o cache ineficaz (§15)",
 		q.Name)
+}
+
+// checkHandleErrorCoverage implementa REQ-5.22 (⚠️, §22.7): para um Aggregate sob
+// teste, cada Handle com caminho de erro de negócio (um `ensure ... else <Error>`)
+// deveria ter um cenário que exercita esse erro (`then error ...`). Avisa por
+// Handle cujo erro não é testado. Aggregates sem nenhum Test não são considerados
+// aqui — isso é ausência total de teste, não falta de cobertura de ramo.
+func (c *Checker) checkHandleErrorCoverage() {
+	tested := c.testedErrorHandles()
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			agg, ok := d.(*ast.AggregateDecl)
+			if !ok {
+				continue
+			}
+			key := u.Module + "\x00" + agg.Name
+			covered, underTest := tested[key]
+			if !underTest {
+				continue
+			}
+			for _, h := range agg.Handlers {
+				if h == nil || h.Name == "" {
+					continue
+				}
+				if c.handleRaisesError(u.Module, h) && !covered[h.Name] {
+					c.bag.Warningf(h.Pos(),
+						"Handle %q do Aggregate %q tem caminho de erro de negócio sem cenário de teste de erro (cobertura, §22.7)",
+						h.Name, agg.Name)
+				}
+			}
+		}
+	}
+}
+
+// testedErrorHandles mapeia, por Aggregate (module\x00nome), o conjunto de Handles
+// com um cenário `then error`. A presença da chave indica que o Aggregate tem ao
+// menos um Test; o Handle vem da cabeça do `when` do cenário.
+func (c *Checker) testedErrorHandles() map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			t, ok := d.(*ast.TestDecl)
+			if !ok {
+				continue
+			}
+			key := u.Module + "\x00" + t.Name
+			if out[key] == nil {
+				out[key] = map[string]bool{}
+			}
+			for _, sc := range t.Scenarios {
+				if sc == nil || sc.When == nil || sc.Then == nil || sc.Then.Error == "" {
+					continue
+				}
+				if h := headName(sc.When.Action); h != "" {
+					out[key][h] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// handleRaisesError reporta se o corpo de um Handle pode levantar um Error de
+// negócio, i.e. tem um `ensure ... else <Error>` cuja ação é um Error declarado.
+func (c *Checker) handleRaisesError(module string, h *ast.HandleDecl) bool {
+	raises := false
+	forEachStmt(h.Body, func(s ast.Stmt) {
+		ens, ok := s.(*ast.EnsureStmt)
+		if !ok {
+			return
+		}
+		es, ok := ens.Else.(*ast.ExprStmt)
+		if !ok {
+			return
+		}
+		id, ok := es.X.(*ast.Ident)
+		if !ok {
+			return
+		}
+		if sym, ok := c.tab.Lookup(module, id.Name); ok && sym.Kind == symbols.KindError {
+			raises = true
+		}
+	})
+	return raises
 }
