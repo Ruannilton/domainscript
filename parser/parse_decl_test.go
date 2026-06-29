@@ -69,6 +69,18 @@ func sdecl(d ast.Decl) string {
 			s += " " + soperator(o)
 		}
 		return s + ")"
+	case *ast.EnumDecl:
+		s := "(Enum " + n.Name
+		if n.Base != nil {
+			s += ":" + stype(n.Base)
+		}
+		for _, m := range n.Members {
+			s += " " + m.Name + "=" + sexpr(m.Value)
+		}
+		if n.Coerce != nil {
+			s += " (coerce " + stype(n.Coerce.From) + " " + sstmt(n.Coerce.Body) + ")"
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:

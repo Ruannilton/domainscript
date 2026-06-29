@@ -12,6 +12,8 @@ func (p *parser) parseDecl() ast.Decl {
 	switch {
 	case p.at(token.VALUEOBJECT):
 		return p.parseValueObject()
+	case p.at(token.ENUM):
+		return p.parseEnum()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -121,6 +123,55 @@ func (p *parser) parseValueObject() ast.Decl {
 	}
 	p.expect(token.RBRACE)
 	return ast.NewValueObjectDecl(name, base, fields, valid, ops, p.spanFrom(start))
+}
+
+// parseEnum parseia "Enum Name [: Base] { membros [coerce] }" (§2.3).
+func (p *parser) parseEnum() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.ENUM)
+	name := p.parseIdentName()
+	var base *ast.TypeRef
+	if p.accept(token.COLON) {
+		base = p.parseTypeRef()
+	}
+	var (
+		members []*ast.EnumMember
+		coerce  *ast.CoerceBlock
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atIdentLit("coerce") {
+			coerce = p.parseCoerce()
+		} else {
+			members = append(members, p.parseEnumMember())
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewEnumDecl(name, base, members, coerce, p.spanFrom(start))
+}
+
+func (p *parser) parseEnumMember() *ast.EnumMember {
+	start := p.cur().Pos
+	name := p.parseIdentName()
+	var value ast.Expr
+	if p.expect(token.ASSIGN) {
+		value = p.parseExpr()
+	}
+	return ast.NewEnumMember(name, value, p.spanFrom(start))
+}
+
+// parseCoerce parseia "coerce from Type { Body }".
+func (p *parser) parseCoerce() *ast.CoerceBlock {
+	start := p.cur().Pos
+	p.advance() // "coerce"
+	if p.atIdentLit("from") {
+		p.advance()
+	}
+	from := p.parseTypeRef()
+	body := p.parseBlock()
+	return ast.NewCoerceBlock(from, body, p.spanFrom(start))
 }
 
 // parseOperator parseia "Operator Op(Params) -> Return { Body }".

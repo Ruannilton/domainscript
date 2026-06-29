@@ -57,3 +57,40 @@ func NewValueObjectDecl(name string, base *TypeRef, fields []*Field, valid *Bloc
 	return &ValueObjectDecl{baseNode{span}, name, base, fields, valid, ops}
 }
 func (*ValueObjectDecl) declNode() {}
+
+// EnumMember é um valor nomeado de um Enum: Name = Value.
+type EnumMember struct {
+	baseNode
+	Name  string
+	Value Expr
+}
+
+func NewEnumMember(name string, value Expr, span Span) *EnumMember {
+	return &EnumMember{baseNode{span}, name, value}
+}
+
+// CoerceBlock é a coerção explícita de um Enum: coerce from Type { Body }.
+type CoerceBlock struct {
+	baseNode
+	From *TypeRef
+	Body *Block
+}
+
+func NewCoerceBlock(from *TypeRef, body *Block, span Span) *CoerceBlock {
+	return &CoerceBlock{baseNode{span}, from, body}
+}
+
+// EnumDecl é a declaração de um Enum (§2.3): conjunto fechado de membros sob um
+// tipo base (após ':'), com bloco coerce opcional.
+type EnumDecl struct {
+	baseNode
+	Name    string
+	Base    *TypeRef
+	Members []*EnumMember
+	Coerce  *CoerceBlock
+}
+
+func NewEnumDecl(name string, base *TypeRef, members []*EnumMember, coerce *CoerceBlock, span Span) *EnumDecl {
+	return &EnumDecl{baseNode{span}, name, base, members, coerce}
+}
+func (*EnumDecl) declNode() {}
