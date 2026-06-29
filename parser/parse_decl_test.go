@@ -211,6 +211,27 @@ func sdecl(d ast.Decl) string {
 			s += " execute" + sstmt(n.Execute)
 		}
 		return s + ")"
+	case *ast.WorkerDecl:
+		s := "(Worker " + n.Name
+		if n.Schedule != "" {
+			s += " sched=" + n.Schedule
+			if n.ScheduleArg != nil {
+				s += "/" + sexpr(n.ScheduleArg)
+			}
+		}
+		if n.Scope != "" {
+			s += " scope=" + n.Scope
+		}
+		for _, c := range n.Settings {
+			s += " set[" + c.Key + "=" + sexpr(c.Value) + "]"
+		}
+		if n.Source != nil {
+			s += " source" + sstmt(n.Source)
+		}
+		if n.Execute != nil {
+			s += " exec(" + n.ExecuteParam + ")" + sstmt(n.Execute)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:

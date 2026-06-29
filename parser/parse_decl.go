@@ -32,6 +32,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseQuery()
 	case p.at(token.POLICY):
 		return p.parsePolicy()
+	case p.at(token.WORKER):
+		return p.parseWorker()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -46,11 +48,38 @@ func (p *parser) atIdentLit(lit string) bool {
 	return p.at(token.IDENT) && p.cur().Lit == lit
 }
 
+// nameableKeywords são as keywords de declaração que, fora da posição de
+// declaração, podem ser usadas como nomes de tipo/entidade (soft keywords) — por
+// exemplo "list Notification n" ou um campo "out Notification". O roteamento de
+// topo (parseDecl) reconhece a keyword antes de qualquer expressão, então não há
+// ambiguidade.
+var nameableKeywords = func() map[token.Kind]bool {
+	m := make(map[token.Kind]bool, len(topLevelKeywords))
+	for _, k := range topLevelKeywords {
+		m[k] = true
+	}
+	return m
+}()
+
+func isNameableKeyword(k token.Kind) bool { return nameableKeywords[k] }
+
+// parseName consome um nome de tipo/entidade: um IDENT ou uma soft keyword.
+func (p *parser) parseName() string {
+	if p.at(token.IDENT) {
+		return p.advance().Lit
+	}
+	if isNameableKeyword(p.cur().Kind) {
+		return p.advance().Kind.String()
+	}
+	p.errorf(p.cur().Pos, "esperava um nome, encontrei %s", p.cur().Kind)
+	return ""
+}
+
 // parseTypeRef parseia uma referência de tipo, com argumentos genéricos opcionais
 // em "<...>" (os tokens LT/GT; ">>" aninhado são dois GT consecutivos).
 func (p *parser) parseTypeRef() *ast.TypeRef {
 	start := p.cur().Pos
-	name := p.parseIdentName()
+	name := p.parseName()
 	var args []*ast.TypeRef
 	if p.accept(token.LT) {
 		for !p.at(token.GT) && !p.atEnd() {
@@ -245,6 +274,87 @@ func (p *parser) parseCommand() ast.Decl {
 	name := p.parseIdentName()
 	fields := p.parseFieldBlock()
 	return ast.NewCommandDecl(name, fields, p.spanFrom(start))
+}
+
+// skipBraceBlock consome um bloco "{ ... }" balanceado sem interpretá-lo, usado
+// para blocos de configuração aninhados ainda não modelados (ex.: onError). A
+// modelagem completa de objetos aninhados chega na Fase 5.
+func (p *parser) skipBraceBlock() {
+	if !p.at(token.LBRACE) {
+		return
+	}
+	depth := 0
+	for !p.atEnd() {
+		switch p.cur().Kind {
+		case token.LBRACE:
+			depth++
+		case token.RBRACE:
+			depth--
+			if depth == 0 {
+				p.advance()
+				return
+			}
+		}
+		p.advance()
+	}
+}
+
+// parseWorker parseia "Worker Name { schedule/settings/scope/source/execute }" (§8).
+func (p *parser) parseWorker() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.WORKER)
+	name := p.parseIdentName()
+	var (
+		schedule    string
+		scheduleArg ast.Expr
+		scope       string
+		settings    []ast.ConfigEntry
+		source      *ast.Block
+		execParam   string
+		execute     *ast.Block
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("schedule"):
+			p.advance()
+			schedule = p.parseIdentName()
+			if schedule != "continuous" {
+				scheduleArg = p.parseExpr()
+			}
+		case p.atIdentLit("scope"):
+			p.advance()
+			p.accept(token.COLON)
+			scope = p.parseIdentName()
+		case p.atIdentLit("timeout"):
+			p.advance()
+			settings = append(settings, ast.ConfigEntry{Key: "timeout", Value: p.parseExpr()})
+		case p.atIdentLit("onError"):
+			p.advance()
+			p.skipBraceBlock()
+		case p.atIdentLit("source"):
+			p.advance()
+			source = p.parseBlock()
+		case p.atIdentLit("execute"):
+			p.advance()
+			if p.accept(token.LPAREN) {
+				execParam = p.parseIdentName()
+				p.expect(token.RPAREN)
+			}
+			execute = p.parseBlock()
+		case p.at(token.IDENT) && p.peek().Kind == token.COLON:
+			key := p.advance().Lit
+			p.advance() // ':'
+			settings = append(settings, ast.ConfigEntry{Key: key, Value: p.parseExpr()})
+		default:
+			p.errorf(p.cur().Pos, "membro de Worker inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewWorkerDecl(name, schedule, scheduleArg, scope, settings, source, execParam, execute, p.spanFrom(start))
 }
 
 // parsePolicy parseia "Policy Name on Event { delivery ...; execute {...} }" (§7).

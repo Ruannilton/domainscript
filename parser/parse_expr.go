@@ -141,6 +141,10 @@ func (p *parser) parsePrimary() ast.Expr {
 		return x
 	case t.Kind == token.MATCH:
 		return p.parseMatchExpr()
+	case isNameableKeyword(t.Kind):
+		// Soft keyword usada como nome de tipo/entidade (ex.: load Notification).
+		p.advance()
+		return ast.NewIdent(t.Kind.String(), p.spanFrom(t.Pos))
 	default:
 		// Não consome: deixa o token para o recovery do nível de cima (a
 		// terminação dos laços é garantida por ensureProgress).

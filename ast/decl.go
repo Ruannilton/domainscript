@@ -283,3 +283,22 @@ func NewPolicyDecl(name, on, delivery string, execute *Block, span Span) *Policy
 	return &PolicyDecl{baseNode{span}, name, on, delivery, execute}
 }
 func (*PolicyDecl) declNode() {}
+
+// WorkerDecl é a declaração de um Worker (§8): schedule (every/cron/continuous),
+// settings (concurrency, batchSize, maxRate, timeout), scope, source e execute.
+type WorkerDecl struct {
+	baseNode
+	Name         string
+	Schedule     string
+	ScheduleArg  Expr
+	Scope        string
+	Settings     []ConfigEntry
+	Source       *Block
+	ExecuteParam string
+	Execute      *Block
+}
+
+func NewWorkerDecl(name, schedule string, scheduleArg Expr, scope string, settings []ConfigEntry, source *Block, executeParam string, execute *Block, span Span) *WorkerDecl {
+	return &WorkerDecl{baseNode{span}, name, schedule, scheduleArg, scope, settings, source, executeParam, execute}
+}
+func (*WorkerDecl) declNode() {}
