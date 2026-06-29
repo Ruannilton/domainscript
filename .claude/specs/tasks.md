@@ -259,10 +259,10 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 > Necessária antes das regras semânticas cross-file.
 
-- [ ] **7.1** `Program`: agrega ASTs de um diretório num modelo unificado. _(REQ-7.1,
+- [x] **7.1** `Program`: agrega ASTs de um diretório num modelo unificado. _(REQ-7.1,
   §design 3.8)_
   **Commit:** `feat(program): agregação de arquivos do projeto`
-- [ ] **7.2** Grafo módulo→service→canal de `topology.ds`+`mod.ds`; mapear
+- [x] **7.2** Grafo módulo→service→canal de `topology.ds`+`mod.ds`; mapear
   aggregates→Database→módulo→service. _(REQ-7.2/7.3)_
   **Conclusão:** dado um diretório, `Program` expõe símbolos globais e o grafo.
   **Commit:** `feat(program): grafo de topologia e mapeamento de aggregates`
