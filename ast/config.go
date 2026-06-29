@@ -90,6 +90,42 @@ func NewInterfaceDecl(kind string, settings []ConfigEntry, routes []*Route, serv
 }
 func (*InterfaceDecl) declNode() {}
 
+// ServiceDef é um service de topology.ds: Name { modules: [...] }.
+type ServiceDef struct {
+	baseNode
+	Name    string
+	Entries []ConfigEntry
+}
+
+func NewServiceDef(name string, entries []ConfigEntry, span Span) *ServiceDef {
+	return &ServiceDef{baseNode{span}, name, entries}
+}
+
+// ChannelDef é um canal de topology.ds: From -> To { via: ..., ... }.
+type ChannelDef struct {
+	baseNode
+	From    string
+	To      string
+	Entries []ConfigEntry
+}
+
+func NewChannelDef(from, to string, entries []ConfigEntry, span Span) *ChannelDef {
+	return &ChannelDef{baseNode{span}, from, to, entries}
+}
+
+// TopologyDecl é a declaração de topologia (topology.ds, §11): agrupa módulos em
+// services e declara os canais de comunicação entre eles.
+type TopologyDecl struct {
+	baseNode
+	Services []*ServiceDef
+	Channels []*ChannelDef
+}
+
+func NewTopologyDecl(services []*ServiceDef, channels []*ChannelDef, span Span) *TopologyDecl {
+	return &TopologyDecl{baseNode{span}, services, channels}
+}
+func (*TopologyDecl) declNode() {}
+
 // RateLimitTierDecl é um tier de rate limit por plano (§17): RateLimitTier Name
 // { perUser: ..., perTenant: ... }.
 type RateLimitTierDecl struct {

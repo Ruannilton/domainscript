@@ -186,6 +186,79 @@ func (p *parser) parseGrpcService() *ast.GrpcService {
 	return ast.NewGrpcService(name, rpcs, p.spanFrom(start))
 }
 
+// parseTopology parseia "Topology { services { ... } channels { ... } }"
+// (topology.ds, §11).
+func (p *parser) parseTopology() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.TOPOLOGY)
+	var (
+		services []*ast.ServiceDef
+		channels []*ast.ChannelDef
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("services"):
+			p.advance()
+			services = p.parseServices()
+		case p.atIdentLit("channels"):
+			p.advance()
+			channels = p.parseChannels()
+		default:
+			p.errorf(p.cur().Pos, "membro de Topology inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewTopologyDecl(services, channels, p.spanFrom(start))
+}
+
+// parseServices parseia "{ Name { entries } ... }".
+func (p *parser) parseServices() []*ast.ServiceDef {
+	p.expect(token.LBRACE)
+	var services []*ast.ServiceDef
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atConfigKey() {
+			start := p.cur().Pos
+			name := p.parseName()
+			entries := p.parseConfigEntries()
+			services = append(services, ast.NewServiceDef(name, entries, p.spanFrom(start)))
+		} else {
+			p.errorf(p.cur().Pos, "esperava um nome de service, encontrei %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return services
+}
+
+// parseChannels parseia "{ From -> To { entries } ... }".
+func (p *parser) parseChannels() []*ast.ChannelDef {
+	p.expect(token.LBRACE)
+	var channels []*ast.ChannelDef
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atConfigKey() {
+			start := p.cur().Pos
+			from := p.parseName()
+			p.expect(token.ARROW)
+			to := p.parseName()
+			entries := p.parseConfigEntries()
+			channels = append(channels, ast.NewChannelDef(from, to, entries, p.spanFrom(start)))
+		} else {
+			p.errorf(p.cur().Pos, "esperava um canal (From -> To), encontrei %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return channels
+}
+
 // parseRateLimitTier parseia "RateLimitTier Name { entries }" (§17). É uma
 // keyword contextual (IDENT), não reservada globalmente.
 func (p *parser) parseRateLimitTier() ast.Decl {
