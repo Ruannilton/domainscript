@@ -58,7 +58,8 @@ func (c *Checker) Check() {
 	// rodam na checagem de projeto. Cada uma percorre as unidades consultando o
 	// grafo de topologia do programa.
 	if c.prog != nil {
-		c.checkTransactions() // 9.1
+		c.checkTransactions()      // 9.1
+		c.checkCrossDatabaseJoin() // 9.2
 	}
 }
 

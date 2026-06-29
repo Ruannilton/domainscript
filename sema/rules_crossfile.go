@@ -52,6 +52,41 @@ func distinct(in []string) []string {
 	return out
 }
 
+// checkCrossDatabaseJoin implementa REQ-5.10 (§6.3, §23): um JOIN só é válido
+// dentro do mesmo banco. Quando a fonte base e a fonte juntada de uma operação
+// (`list X join Y on ...`) são Aggregates geridos por bancos distintos, não há
+// JOIN físico possível — o caminho correto é uma Projection. Percorre os corpos de
+// todas as declarações procurando QueryExpr com cláusula `join` cross-database.
+func (c *Checker) checkCrossDatabaseJoin() {
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			for _, b := range declBlocks(d) {
+				forEachExprInBlock(b, func(e ast.Expr) {
+					qe, ok := e.(*ast.QueryExpr)
+					if !ok {
+						return
+					}
+					baseDB := c.prog.DatabaseOfAggregate(headName(qe.Target))
+					if baseDB == nil {
+						return
+					}
+					for _, cl := range qe.Clauses {
+						if cl.Kw != "join" {
+							continue
+						}
+						joinDB := c.prog.DatabaseOfAggregate(headName(cl.Expr))
+						if joinDB != nil && joinDB.Name != baseDB.Name {
+							c.bag.Errorf(qe.Pos(),
+								"JOIN cross-database entre %q (%s) e %q (%s) não é possível: use uma Projection (§6.4)",
+								headName(qe.Target), baseDB.Name, headName(cl.Expr), joinDB.Name)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 // checkTransactions implementa REQ-5.9 (§23, §design 4.3): um UseCase é a
 // fronteira transacional do Write Side. Se ele toca Aggregates de bancos
 // distintos, a transação só é segura com suporte XA em todos eles — sem isso,
