@@ -1,0 +1,3 @@
+# Normaliza quebras de linha para LF no repositório, evitando ruído de CRLF no Windows.
+* text=auto eol=lf
+*.go text eol=lf
