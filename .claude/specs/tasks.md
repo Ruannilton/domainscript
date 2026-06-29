@@ -39,7 +39,7 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 > Cria o repositório, o módulo Go e a estrutura de diretórios antes de qualquer
 > código de produção. Sem dependências.
 
-- [ ] **0.1** Inicializar o repositório git e o módulo Go.
+- [x] **0.1** Inicializar o repositório git e o módulo Go.
   - `git init`
   - `go mod init domainscript`
   - Criar `.gitignore` (binários, `*.out`, `/dist`, caches de IDE, `*.test`).
@@ -50,7 +50,7 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
   commit inicial.
   **Commit:** `chore(repo): init go module, git e .gitignore`
 
-- [ ] **0.2** Criar a árvore de diretórios de pacotes (vazia, com placeholders).
+- [x] **0.2** Criar a árvore de diretórios de pacotes (vazia, com placeholders).
   - `cmd/dsc/`, `token/`, `diag/`, `lexer/`, `ast/`, `parser/`, `symbols/`,
     `resolver/`, `sema/`, `program/`, `driver/`.
   - Em cada pacote, um arquivo `doc.go` com o comentário de pacote (`// Package x …`)
@@ -59,7 +59,7 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
   **Conclusão:** `go build ./...` compila todos os pacotes vazios sem erro.
   **Commit:** `chore(repo): scaffold da árvore de pacotes`
 
-- [ ] **0.3** Configurar tooling de qualidade e CI mínimo.
+- [x] **0.3** Configurar tooling de qualidade e CI mínimo.
   - `Makefile` (ou `Taskfile`) com alvos `build`, `test`, `lint`, `fmt`.
   - Hook/etapa de `gofmt`/`go vet`.
   - (Opcional) workflow de CI que roda `go test ./...` em cada push.
