@@ -25,6 +25,33 @@ func sstmt(s ast.Stmt) string {
 			out += " (arm " + matchArmHead(a.Patterns, a.Guard) + " " + sstmt(a.Body) + ")"
 		}
 		return out + ")"
+	case *ast.EnsureStmt:
+		return "(ensure " + sexpr(n.Cond) + " else " + sstmt(n.Else) + ")"
+	case *ast.ReturnStmt:
+		if n.Value == nil {
+			return "(return)"
+		}
+		return "(return " + sexpr(n.Value) + ")"
+	case *ast.ForStmt:
+		return "(for " + n.Var + " " + sexpr(n.Iter) + " " + sstmt(n.Body) + ")"
+	case *ast.LogStmt:
+		out := "(log " + n.Level
+		if n.Message != nil {
+			out += " " + sexpr(n.Message)
+		}
+		for _, f := range n.Fields {
+			out += " " + f.Name + "=" + sexpr(f.Value)
+		}
+		return out + ")"
+	case *ast.EmitStmt:
+		return "(emit " + sexpr(n.Call) + ")"
+	case *ast.BreakStmt:
+		if n.All {
+			return "(break-all)"
+		}
+		return "(break)"
+	case *ast.ContinueStmt:
+		return "(continue)"
 	default:
 		return "?stmt"
 	}
