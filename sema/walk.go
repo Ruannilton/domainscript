@@ -130,6 +130,52 @@ func forEachExprInBlock(b *ast.Block, fn func(ast.Expr)) {
 	})
 }
 
+// declBlocks devolve todos os blocos de execução de uma declaração (corpos de
+// Handle/Apply, execute, Valid, coerce, steps de Saga, ...). É a base das regras
+// de fluxo, que percorrem o corpo de cada construto.
+func declBlocks(d ast.Decl) []*ast.Block {
+	var out []*ast.Block
+	add := func(b *ast.Block) {
+		if b != nil {
+			out = append(out, b)
+		}
+	}
+	switch n := d.(type) {
+	case *ast.ValueObjectDecl:
+		add(n.Valid)
+		for _, op := range n.Operators {
+			add(op.Body)
+		}
+	case *ast.EnumDecl:
+		if n.Coerce != nil {
+			add(n.Coerce.Body)
+		}
+	case *ast.AggregateDecl:
+		for _, h := range n.Handlers {
+			add(h.Body)
+		}
+		for _, a := range n.Appliers {
+			add(a.Body)
+		}
+	case *ast.UseCaseDecl:
+		add(n.Execute)
+	case *ast.QueryDecl:
+		add(n.Body)
+	case *ast.PolicyDecl:
+		add(n.Execute)
+	case *ast.WorkerDecl:
+		add(n.Source)
+		add(n.Execute)
+	case *ast.SagaDecl:
+		for _, s := range n.Steps {
+			add(s.Up)
+			add(s.Down)
+			add(s.OnInfraError)
+		}
+	}
+	return out
+}
+
 // isIdent reporta se e é um identificador de nome name.
 func isIdent(e ast.Expr, name string) bool {
 	id, ok := e.(*ast.Ident)

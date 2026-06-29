@@ -63,4 +63,5 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 	case *ast.EventDecl:
 		c.checkWriteSidePrimitives("Event", n.Name, n.Fields) // 8.1
 	}
+	c.checkMatchExhaustiveness(module, d) // 8.3
 }
