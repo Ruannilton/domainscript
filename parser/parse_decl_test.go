@@ -278,6 +278,41 @@ func sdecl(d ast.Decl) string {
 			s += ")"
 		}
 		return s + ")"
+	case *ast.SagaDecl:
+		s := "(Saga " + n.Name
+		if n.Handles != "" {
+			s += " handles=" + n.Handles
+		}
+		if n.Mode != "" {
+			s += " mode=" + n.Mode
+		}
+		if n.Timeout != nil {
+			s += " timeout=" + sexpr(n.Timeout)
+		}
+		if len(n.State) > 0 {
+			s += " state{"
+			for i, f := range n.State {
+				if i > 0 {
+					s += " "
+				}
+				s += sfield(f)
+			}
+			s += "}"
+		}
+		for _, st := range n.Steps {
+			s += " (step " + st.Name
+			if st.Up != nil {
+				s += " up" + sstmt(st.Up)
+			}
+			if st.Down != nil {
+				s += " down" + sstmt(st.Down)
+			}
+			if st.OnInfraError != nil {
+				s += " onInfra" + sstmt(st.OnInfraError)
+			}
+			s += ")"
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:

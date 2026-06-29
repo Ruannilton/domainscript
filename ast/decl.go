@@ -363,3 +363,33 @@ func NewForeignDecl(lang, from Expr, fns []*ForeignFunc, span Span) *ForeignDecl
 	return &ForeignDecl{baseNode{span}, lang, from, fns}
 }
 func (*ForeignDecl) declNode() {}
+
+// SagaStep é um passo de Saga com ação (Up), compensação (Down) e tratamento de
+// erro de infraestrutura (OnInfraError). Cada um é um bloco opcional.
+type SagaStep struct {
+	baseNode
+	Name         string
+	Up           *Block
+	Down         *Block
+	OnInfraError *Block
+}
+
+func NewSagaStep(name string, up, down, onInfraError *Block, span Span) *SagaStep {
+	return &SagaStep{baseNode{span}, name, up, down, onInfraError}
+}
+
+// SagaDecl é a declaração de uma Saga (§18.2): mode async/await, state e steps.
+type SagaDecl struct {
+	baseNode
+	Name    string
+	Handles string
+	Mode    string
+	Timeout Expr
+	State   []*Field
+	Steps   []*SagaStep
+}
+
+func NewSagaDecl(name, handles, mode string, timeout Expr, state []*Field, steps []*SagaStep, span Span) *SagaDecl {
+	return &SagaDecl{baseNode{span}, name, handles, mode, timeout, state, steps}
+}
+func (*SagaDecl) declNode() {}

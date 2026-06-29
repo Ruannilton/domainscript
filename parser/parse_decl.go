@@ -40,6 +40,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseAdapter()
 	case p.at(token.FOREIGN):
 		return p.parseForeign()
+	case p.at(token.SAGA):
+		return p.parseSaga()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -361,6 +363,75 @@ func (p *parser) parseWorker() ast.Decl {
 	}
 	p.expect(token.RBRACE)
 	return ast.NewWorkerDecl(name, schedule, scheduleArg, scope, settings, source, execParam, execute, p.spanFrom(start))
+}
+
+// parseSaga parseia "Saga Name handles Cmd { mode ...; state {...}; step ... }" (§18.2).
+func (p *parser) parseSaga() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.SAGA)
+	name := p.parseIdentName()
+	handles := ""
+	if p.accept(token.HANDLES) {
+		handles = p.parseName()
+	}
+	var (
+		mode    string
+		timeout ast.Expr
+		state   []*ast.Field
+		steps   []*ast.SagaStep
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("mode"):
+			p.advance()
+			mode = p.parseIdentName()
+			if p.atIdentLit("timeout") {
+				p.advance()
+				timeout = p.parseExpr()
+			}
+		case p.atIdentLit("state"):
+			p.advance()
+			state = p.parseFieldBlock()
+		case p.atIdentLit("step"):
+			steps = append(steps, p.parseSagaStep())
+		default:
+			p.errorf(p.cur().Pos, "membro de Saga inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewSagaDecl(name, handles, mode, timeout, state, steps, p.spanFrom(start))
+}
+
+func (p *parser) parseSagaStep() *ast.SagaStep {
+	start := p.cur().Pos
+	p.advance() // "step"
+	name := p.parseName()
+	var up, down, onInfraError *ast.Block
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("up"):
+			p.advance()
+			up = p.parseBlock()
+		case p.atIdentLit("down"):
+			p.advance()
+			down = p.parseBlock()
+		case p.atIdentLit("onInfraError"):
+			p.advance()
+			onInfraError = p.parseBlock()
+		default:
+			p.errorf(p.cur().Pos, "membro de step inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewSagaStep(name, up, down, onInfraError, p.spanFrom(start))
 }
 
 // parseNotification parseia "Notification Name { Fields }" (§9.1).
