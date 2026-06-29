@@ -98,30 +98,30 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 > Implementa toda a tokenização do spec. Fatiar por categoria de token.
 
-- [ ] **2.1** Lexer single-pass: identificadores, keywords, inteiros, decimais,
+- [x] **2.1** Lexer single-pass: identificadores, keywords, inteiros, decimais,
   strings, booleanos; trivia (espaços) e comentários `//` descartados. _(REQ-1.2/1.5,
   §design 3.2)_
   **Conclusão:** tabela de testes (fonte→tokens) cobre cada caso.
   **Commit:** `feat(lexer): identificadores, literais e trivia`
 
-- [ ] **2.2** Pontuação e operadores: `{ } ( ) [ ] , . :` e `-> + - * / == != > < >= <= =`.
+- [x] **2.2** Pontuação e operadores: `{ } ( ) [ ] , . :` e `-> + - * / == != > < >= <= =`.
   _(REQ-1.3)_
   **Conclusão:** testes de cada operador, incl. os de 2 chars, passam.
   **Commit:** `feat(lexer): pontuação e operadores`
 
-- [ ] **2.3** Strings com escapes (`\n \t \" \\`) e detecção de não-terminada
+- [x] **2.3** Strings com escapes (`\n \t \" \\`) e detecção de não-terminada
   (linha/EOF) com diagnóstico localizado. _(REQ-1.7/1.8)_
   **Conclusão:** testes de escape e de string aberta passam.
   **Commit:** `feat(lexer): escapes e detecção de string não terminada`
 
-- [ ] **2.4** Literais compostos do domínio como kinds dedicados: duração
+- [x] **2.4** Literais compostos do domínio como kinds dedicados: duração
   (`5s`,`48h`), taxa (`300/min`), tamanho (`100MB`), `version_id` (`v1`). _(REQ-1.2,
   §design 3.1/3.2)_
   **Conclusão:** lexer emite `DURATION`/`RATE`/`SIZE`/`VERSION`; testes por unidade
   passam.
   **Commit:** `feat(lexer): durações, taxas, tamanhos e version_id`
 
-- [ ] **2.5** Caractere inválido emite diagnóstico e garante progresso (consome ≥1
+- [x] **2.5** Caractere inválido emite diagnóstico e garante progresso (consome ≥1
   rune). _(REQ-1.6, NFR-2)_
   **Conclusão:** teste de char inválido + ausência de laço infinito.
   **Commit:** `feat(lexer): recovery de caractere inválido`
