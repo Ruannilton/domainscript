@@ -95,3 +95,52 @@ func (c *Checker) sagaSteps(module, name string) map[string]bool {
 	}
 	return steps
 }
+
+// checkForeignSignatures implementa REQ-5.15 (§9.4): uma chamada a uma função
+// foreign com número de argumentos diferente do declarado na assinatura é
+// incompatível. Coleta as assinaturas Foreign de todo o programa e percorre os
+// sítios de chamada nos corpos de execução de todas as declarações.
+func (c *Checker) checkForeignSignatures() {
+	arity := map[string]int{}
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			f, ok := d.(*ast.ForeignDecl)
+			if !ok {
+				continue
+			}
+			for _, fn := range f.Functions {
+				if fn != nil && fn.Name != "" {
+					arity[fn.Name] = len(fn.Params)
+				}
+			}
+		}
+	}
+	if len(arity) == 0 {
+		return
+	}
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			for _, b := range declBlocks(d) {
+				forEachExprInBlock(b, func(e ast.Expr) {
+					call, ok := e.(*ast.CallExpr)
+					if !ok {
+						return
+					}
+					id, ok := call.Fn.(*ast.Ident)
+					if !ok {
+						return
+					}
+					want, ok := arity[id.Name]
+					if !ok {
+						return
+					}
+					if len(call.Args) != want {
+						c.bag.Errorf(call.Pos(),
+							"chamada a função foreign %q com %d argumento(s); a assinatura declara %d (§9.4)",
+							id.Name, len(call.Args), want)
+					}
+				})
+			}
+		}
+	}
+}

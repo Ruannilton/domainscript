@@ -43,6 +43,7 @@ func (c *Checker) Check() {
 		}
 	}
 	c.checkNotificationAdapters() // 8.7
+	c.checkForeignSignatures()    // 8.10
 }
 
 // Check é o atalho de arquivo único: roda o checker sobre um único arquivo num
