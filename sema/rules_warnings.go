@@ -100,3 +100,15 @@ func hasConfigKey(entries []ast.ConfigEntry, key string) bool {
 	}
 	return false
 }
+
+// checkCacheHighCardinality implementa REQ-5.20 (⚠️, §15): cache sobre uma Query
+// que retorna uma listagem (List) é cache de alta cardinalidade, frequentemente
+// ineficaz. Avisa quando há bloco cache e o retorno é List.
+func (c *Checker) checkCacheHighCardinality(q *ast.QueryDecl) {
+	if len(q.Cache) == 0 || q.Return == nil || q.Return.Name != "List" {
+		return
+	}
+	c.bag.Warningf(q.Pos(),
+		"Query %q tem cache sobre uma listagem (List): alta cardinalidade pode tornar o cache ineficaz (§15)",
+		q.Name)
+}
