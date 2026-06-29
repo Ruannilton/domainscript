@@ -22,6 +22,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseAggregate()
 	case p.at(token.COMMAND):
 		return p.parseCommand()
+	case p.at(token.USECASE):
+		return p.parseUseCase()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -235,6 +237,49 @@ func (p *parser) parseCommand() ast.Decl {
 	name := p.parseIdentName()
 	fields := p.parseFieldBlock()
 	return ast.NewCommandDecl(name, fields, p.spanFrom(start))
+}
+
+// parseUseCase parseia "UseCase Name handles Cmd { timeout/idempotency/tenancy/
+// execute }" (§5.2).
+func (p *parser) parseUseCase() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.USECASE)
+	name := p.parseIdentName()
+	handles := ""
+	if p.accept(token.HANDLES) {
+		handles = p.parseIdentName()
+	}
+	var (
+		timeout     ast.Expr
+		idempotency ast.Expr
+		tenancy     string
+		execute     *ast.Block
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("timeout"):
+			p.advance()
+			timeout = p.parseExpr()
+		case p.atIdentLit("idempotency"):
+			p.advance()
+			idempotency = p.parseExpr()
+		case p.atIdentLit("tenancy"):
+			p.advance()
+			p.accept(token.COLON)
+			tenancy = p.parseIdentName()
+		case p.atIdentLit("execute"):
+			p.advance()
+			execute = p.parseBlock()
+		default:
+			p.errorf(p.cur().Pos, "membro de UseCase inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewUseCaseDecl(name, handles, timeout, idempotency, tenancy, execute, p.spanFrom(start))
 }
 
 // parseAggregate parseia "Aggregate Name { membros }" (§4.5).

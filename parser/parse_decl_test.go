@@ -138,6 +138,24 @@ func sdecl(d ast.Decl) string {
 			s += " " + sfield(f)
 		}
 		return s + ")"
+	case *ast.UseCaseDecl:
+		s := "(UseCase " + n.Name
+		if n.Handles != "" {
+			s += " handles=" + n.Handles
+		}
+		if n.Timeout != nil {
+			s += " timeout=" + sexpr(n.Timeout)
+		}
+		if n.Idempotency != nil {
+			s += " idem=" + sexpr(n.Idempotency)
+		}
+		if n.Tenancy != "" {
+			s += " tenancy=" + n.Tenancy
+		}
+		if n.Execute != nil {
+			s += " execute" + sstmt(n.Execute)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:

@@ -193,3 +193,20 @@ func NewCommandDecl(name string, fields []*Field, span Span) *CommandDecl {
 	return &CommandDecl{baseNode{span}, name, fields}
 }
 func (*CommandDecl) declNode() {}
+
+// UseCaseDecl é a declaração de um UseCase (§5.2): trata um Command (Handles),
+// com timeout/idempotency/tenancy opcionais e um bloco execute (Unit of Work).
+type UseCaseDecl struct {
+	baseNode
+	Name        string
+	Handles     string
+	Timeout     Expr
+	Idempotency Expr
+	Tenancy     string
+	Execute     *Block
+}
+
+func NewUseCaseDecl(name, handles string, timeout, idempotency Expr, tenancy string, execute *Block, span Span) *UseCaseDecl {
+	return &UseCaseDecl{baseNode{span}, name, handles, timeout, idempotency, tenancy, execute}
+}
+func (*UseCaseDecl) declNode() {}
