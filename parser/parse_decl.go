@@ -67,6 +67,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseMetric()
 	case p.at(token.UPCAST):
 		return p.parseUpcast()
+	case p.at(token.MODULE):
+		return p.parseModule()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
