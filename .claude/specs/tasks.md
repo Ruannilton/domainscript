@@ -133,18 +133,18 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 > O mecanismo de recovery, antes de qualquer construto. É a base reutilizada por
 > toda a Fase 4.
 
-- [ ] **3.1** Cursor do parser e `expect` com inserção virtual + deleção de token
+- [x] **3.1** Cursor do parser e `expect` com inserção virtual + deleção de token
   único. _(REQ-3.2/3.3, §design 3.5)_
   **Conclusão:** testes unitários de `expect` nos três caminhos.
   **Commit:** `feat(parser): cursor e expect com recovery`
 
-- [ ] **3.2** `synchronize` que nunca consome o token de parada nem `}`/EOF;
+- [x] **3.2** `synchronize` que nunca consome o token de parada nem `}`/EOF;
   arquivo `sync_sets.go` com `topLevelStop` (todas as keywords de topo) e sets por
   nível. _(REQ-3.4/3.7, §design 3.5)_
   **Conclusão:** teste de sincronização que não come o `}` de fechamento.
   **Commit:** `feat(parser): synchronize e sync sets por nível`
 
-- [ ] **3.3** Janela de silêncio anti-cascata + garantia de progresso em loops.
+- [x] **3.3** Janela de silêncio anti-cascata + garantia de progresso em loops.
   _(REQ-3.5/3.6, NFR-1/2)_
   **Conclusão:** teste em que dois erros adjacentes não viram 5+; teste de não-laço.
   **Commit:** `feat(parser): janela de silêncio e garantia de progresso`
