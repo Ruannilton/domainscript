@@ -29,3 +29,39 @@ func (c *Checker) checkWriteSidePrimitives(kind, owner string, fields []*ast.Fie
 		}
 	}
 }
+
+// checkAppendListMutation implementa REQ-5.4: AppendList<T> é append-only (só
+// add()); invocar remove() ou clear() sobre um campo de state desse tipo é erro.
+// Reconhece a forma canônica do spec (state.<campo>.remove(...)/.clear(...)).
+func (c *Checker) checkAppendListMutation(agg *ast.AggregateDecl) {
+	appendLists := map[string]bool{}
+	for _, f := range agg.State {
+		if f != nil && f.Type != nil && f.Type.Name == "AppendList" {
+			appendLists[f.Name] = true
+		}
+	}
+	if len(appendLists) == 0 {
+		return
+	}
+	flag := func(e ast.Expr) {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return
+		}
+		method, ok := call.Fn.(*ast.MemberExpr)
+		if !ok || (method.Name != "remove" && method.Name != "clear") {
+			return
+		}
+		if field := stateField(method.X); field != "" && appendLists[field] {
+			c.bag.Errorf(call.Pos(),
+				"%s() é proibido em AppendList: o campo de state %q é append-only (use apenas add())",
+				method.Name, field)
+		}
+	}
+	for _, h := range agg.Handlers {
+		forEachExprInBlock(h.Body, flag)
+	}
+	for _, a := range agg.Appliers {
+		forEachExprInBlock(a.Body, flag)
+	}
+}

@@ -57,6 +57,7 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 	switch n := d.(type) {
 	case *ast.AggregateDecl:
 		c.checkWriteSidePrimitives("Aggregate", n.Name, n.State) // 8.1
+		c.checkAppendListMutation(n)                             // 8.2
 	case *ast.CommandDecl:
 		c.checkWriteSidePrimitives("Command", n.Name, n.Fields) // 8.1
 	case *ast.EventDecl:
