@@ -393,3 +393,36 @@ func NewSagaDecl(name, handles, mode string, timeout Expr, state []*Field, steps
 	return &SagaDecl{baseNode{span}, name, handles, mode, timeout, state, steps}
 }
 func (*SagaDecl) declNode() {}
+
+// MetricDecl é a declaração de uma Metric de negócio (§21): tipo (counter/
+// histogram/...), valor, gatilho (On), buckets e labels.
+type MetricDecl struct {
+	baseNode
+	Name    string
+	Type    string
+	Value   Expr
+	On      Expr
+	Buckets Expr
+	Labels  []MapEntry
+}
+
+func NewMetricDecl(d *MetricDecl, span Span) *MetricDecl {
+	d.baseNode = baseNode{span}
+	return d
+}
+func (*MetricDecl) declNode() {}
+
+// UpcastDecl é a declaração de um Upcast de versão de evento (§4.3): transforma
+// um Event de FromVer para ToVer com um corpo de mapeamento.
+type UpcastDecl struct {
+	baseNode
+	Event   string
+	FromVer string
+	ToVer   string
+	Body    *Block
+}
+
+func NewUpcastDecl(event, fromVer, toVer string, body *Block, span Span) *UpcastDecl {
+	return &UpcastDecl{baseNode{span}, event, fromVer, toVer, body}
+}
+func (*UpcastDecl) declNode() {}

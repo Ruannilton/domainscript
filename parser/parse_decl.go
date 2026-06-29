@@ -42,6 +42,10 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseForeign()
 	case p.at(token.SAGA):
 		return p.parseSaga()
+	case p.at(token.METRIC):
+		return p.parseMetric()
+	case p.at(token.UPCAST):
+		return p.parseUpcast()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -363,6 +367,61 @@ func (p *parser) parseWorker() ast.Decl {
 	}
 	p.expect(token.RBRACE)
 	return ast.NewWorkerDecl(name, schedule, scheduleArg, scope, settings, source, execParam, execute, p.spanFrom(start))
+}
+
+// parseMetric parseia "Metric Name { type/value/on/buckets/labels }" (§21).
+func (p *parser) parseMetric() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.METRIC)
+	d := &ast.MetricDecl{Name: p.parseIdentName()}
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("type"):
+			p.advance()
+			d.Type = p.parseIdentName()
+		case p.atIdentLit("value"):
+			p.advance()
+			d.Value = p.parseExpr()
+		case p.atIdentLit("buckets"):
+			p.advance()
+			d.Buckets = p.parseExpr()
+		case p.atIdentLit("labels"):
+			p.advance()
+			d.Labels = p.parseMapBlock()
+		case p.at(token.ON):
+			p.advance()
+			d.On = p.parseExpr()
+		default:
+			p.errorf(p.cur().Pos, "membro de Metric inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewMetricDecl(d, p.spanFrom(start))
+}
+
+// parseUpcast parseia "Upcast Event vFrom -> vTo { Body }" (§4.3).
+func (p *parser) parseUpcast() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.UPCAST)
+	event := p.parseName()
+	fromVer := p.parseVersion()
+	p.expect(token.ARROW)
+	toVer := p.parseVersion()
+	body := p.parseBlock()
+	return ast.NewUpcastDecl(event, fromVer, toVer, body, p.spanFrom(start))
+}
+
+// parseVersion consome um version_id (ex.: v1) e devolve seu lexema.
+func (p *parser) parseVersion() string {
+	if p.at(token.VERSIONID) {
+		return p.advance().Lit
+	}
+	p.errorf(p.cur().Pos, "esperava um version_id (ex.: v1), encontrei %s", p.cur().Kind)
+	return ""
 }
 
 // parseSaga parseia "Saga Name handles Cmd { mode ...; state {...}; step ... }" (§18.2).

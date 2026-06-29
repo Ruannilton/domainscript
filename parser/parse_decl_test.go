@@ -313,6 +313,30 @@ func sdecl(d ast.Decl) string {
 			s += ")"
 		}
 		return s + ")"
+	case *ast.MetricDecl:
+		s := "(Metric " + n.Name
+		if n.Type != "" {
+			s += " type=" + n.Type
+		}
+		if n.Value != nil {
+			s += " value=" + sexpr(n.Value)
+		}
+		if n.Buckets != nil {
+			s += " buckets=" + sexpr(n.Buckets)
+		}
+		if n.On != nil {
+			s += " on=" + sexpr(n.On)
+		}
+		if len(n.Labels) > 0 {
+			s += " labels" + smap(n.Labels)
+		}
+		return s + ")"
+	case *ast.UpcastDecl:
+		s := "(Upcast " + n.Event + " " + n.FromVer + "->" + n.ToVer
+		if n.Body != nil {
+			s += " " + sstmt(n.Body)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:
