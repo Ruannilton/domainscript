@@ -1,0 +1,17 @@
+# Binários compilados
+/dist/
+dsc
+dsc.exe
+*.exe
+
+# Artefatos de teste e cobertura
+*.test
+*.out
+coverage.*
+
+# Caches de IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
