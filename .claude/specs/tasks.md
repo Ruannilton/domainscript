@@ -241,13 +241,13 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 ## Fase 6 — Símbolos e Resolução de Nomes (REQ-4)
 
-- [ ] **6.1** `SymbolTable` com escopo por módulo + nível público; flag
+- [x] **6.1** `SymbolTable` com escopo por módulo + nível público; flag
   `Event`/`PublicEvent`. _(REQ-4.1/7.4, §design 3.6)_
   **Commit:** `feat(symbols): SymbolTable com escopo por módulo`
-- [ ] **6.2** Passagem de coleta: registra toda declaração; duplicada → erro.
+- [x] **6.2** Passagem de coleta: registra toda declaração; duplicada → erro.
   _(REQ-4.1/4.3, §design 3.7)_
   **Commit:** `feat(resolver): coleta de símbolos e duplicatas`
-- [ ] **6.3** Passagem de resolução: liga `ref`, `handles`, `on`, tipos de campo e
+- [x] **6.3** Passagem de resolução: liga `ref`, `handles`, `on`, tipos de campo e
   parâmetro; não resolvida → erro; pula subárvores de erro. _(REQ-4.2/4.4/4.5)_
   **Conclusão:** testes de símbolo inexistente (dispara), duplicado (dispara) e
   programa correto (silêncio).
