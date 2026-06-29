@@ -58,10 +58,15 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 	case *ast.AggregateDecl:
 		c.checkWriteSidePrimitives("Aggregate", n.Name, n.State) // 8.1
 		c.checkAppendListMutation(n)                             // 8.2
+		for _, h := range n.Handlers {
+			c.checkNop(h.Body, "Handle") // 8.4
+		}
 	case *ast.CommandDecl:
 		c.checkWriteSidePrimitives("Command", n.Name, n.Fields) // 8.1
 	case *ast.EventDecl:
 		c.checkWriteSidePrimitives("Event", n.Name, n.Fields) // 8.1
+	case *ast.UseCaseDecl:
+		c.checkNop(n.Execute, "UseCase") // 8.4
 	}
 	c.checkMatchExhaustiveness(module, d) // 8.3
 }

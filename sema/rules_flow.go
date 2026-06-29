@@ -107,6 +107,17 @@ func (c *Checker) checkMatch(module string, pos token.Pos, arms []armInfo) {
 	}
 }
 
+// checkNop implementa REQ-5.6 (§3.1): `Nop` (ação sem efeito) é proibido em
+// Handle e UseCase — só é aceito em Policy/Worker e dentro de for. Sinaliza
+// qualquer uso de Nop no corpo, em qualquer posição de ação.
+func (c *Checker) checkNop(b *ast.Block, ctx string) {
+	forEachExprInBlock(b, func(e ast.Expr) {
+		if isIdent(e, "Nop") {
+			c.bag.Errorf(e.Pos(), "`Nop` é proibido em %s: toda ação deve ter efeito (§3.1)", ctx)
+		}
+	})
+}
+
 // enumMemberRef reconhece um padrão "Enum.Membro" e devolve (Enum, Membro, true).
 func enumMemberRef(p ast.Expr) (enum, member string, ok bool) {
 	m, isMember := p.(*ast.MemberExpr)
