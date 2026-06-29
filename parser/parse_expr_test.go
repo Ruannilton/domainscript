@@ -40,11 +40,33 @@ func sexpr(e ast.Expr) string {
 		return s + ")"
 	case *ast.IndexExpr:
 		return "(idx " + sexpr(n.X) + " " + sexpr(n.Index) + ")"
+	case *ast.MatchExpr:
+		s := "(matchE " + sexpr(n.Subject)
+		for _, a := range n.Arms {
+			s += " (arm " + matchArmHead(a.Patterns, a.Guard) + " " + sexpr(a.Body) + ")"
+		}
+		return s + ")"
 	case *ast.ErrorExpr:
 		return "<err>"
 	default:
 		return "?"
 	}
+}
+
+// matchArmHead renderiza os padrões e o guard de um braço de match.
+func matchArmHead(pats []ast.Expr, guard ast.Expr) string {
+	s := "["
+	for i, pt := range pats {
+		if i > 0 {
+			s += ","
+		}
+		s += sexpr(pt)
+	}
+	s += "]"
+	if guard != nil {
+		s += "when" + sexpr(guard)
+	}
+	return s
 }
 
 // parseExprOK lexa src, parseia uma expressão e exige zero diagnósticos e cursor

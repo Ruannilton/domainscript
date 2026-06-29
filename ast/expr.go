@@ -96,3 +96,25 @@ func NewIndexExpr(x, index Expr, span Span) *IndexExpr {
 	return &IndexExpr{baseNode{span}, x, index}
 }
 func (*IndexExpr) exprNode() {}
+
+// MatchExprArm é um braço de um match-expressão: um ou mais padrões, um guard
+// opcional (when) e o corpo (uma expressão-valor).
+type MatchExprArm struct {
+	Patterns []Expr
+	Guard    Expr // nil quando não há 'when'
+	Body     Expr
+}
+
+// MatchExpr é o pattern matching usado como expressão: cada braço produz um
+// valor (§3.2 do spec). A exaustividade e as regras de wildcard/guard são
+// verificadas na fase semântica (REQ-5.5), não aqui.
+type MatchExpr struct {
+	baseNode
+	Subject Expr
+	Arms    []MatchExprArm
+}
+
+func NewMatchExpr(subject Expr, arms []MatchExprArm, span Span) *MatchExpr {
+	return &MatchExpr{baseNode{span}, subject, arms}
+}
+func (*MatchExpr) exprNode() {}

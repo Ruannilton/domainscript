@@ -98,6 +98,8 @@ func (p *parser) parsePrimary() ast.Expr {
 		x := p.parseExpr()
 		p.expect(token.RPAREN)
 		return x
+	case t.Kind == token.MATCH:
+		return p.parseMatchExpr()
 	default:
 		// Não consome: deixa o token para o recovery do nível de cima (a
 		// terminação dos laços é garantida por ensureProgress).
@@ -137,6 +139,57 @@ func (p *parser) parseIdentName() string {
 	}
 	p.errorf(p.cur().Pos, "esperava um identificador, encontrei %s", p.cur().Kind)
 	return ""
+}
+
+// atFatArrow reporta se o cursor está em "=>" (os tokens ASSIGN GT adjacentes;
+// o lexer não tem um token dedicado, REQ-1.3).
+func (p *parser) atFatArrow() bool {
+	return p.at(token.ASSIGN) && p.peek().Kind == token.GT
+}
+
+// expectFatArrow consome "=>" ou reporta erro sem consumir.
+func (p *parser) expectFatArrow() bool {
+	if p.atFatArrow() {
+		p.advance() // '='
+		p.advance() // '>'
+		return true
+	}
+	p.errorf(p.cur().Pos, "esperava '=>', encontrei %s", p.cur().Kind)
+	return false
+}
+
+// parseMatchExpr parseia "match SUBJECT { ARM... }" como expressão; cada braço
+// produz um valor (REQ-2.4).
+func (p *parser) parseMatchExpr() ast.Expr {
+	start := p.cur().Pos
+	p.expect(token.MATCH)
+	subject := p.parseExpr()
+	p.expect(token.LBRACE)
+	var arms []ast.MatchExprArm
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		pats, guard := p.parseMatchArmHead()
+		body := p.parseExpr()
+		arms = append(arms, ast.MatchExprArm{Patterns: pats, Guard: guard, Body: body})
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewMatchExpr(subject, arms, p.spanFrom(start))
+}
+
+// parseMatchArmHead parseia os padrões (separados por vírgula), o guard opcional
+// (when EXPR) e consome o "=>" que precede o corpo. Os padrões usam parseOr (sem
+// range/lambda) para não consumir o "=>" do próprio braço.
+func (p *parser) parseMatchArmHead() (patterns []ast.Expr, guard ast.Expr) {
+	patterns = append(patterns, p.parseOr())
+	for p.accept(token.COMMA) {
+		patterns = append(patterns, p.parseOr())
+	}
+	if p.accept(token.WHEN) {
+		guard = p.parseOr()
+	}
+	p.expectFatArrow()
+	return patterns, guard
 }
 
 func (p *parser) matchAny(ops ...token.Kind) bool {
