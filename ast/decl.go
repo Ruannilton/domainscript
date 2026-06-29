@@ -121,3 +121,62 @@ func NewEventDecl(name string, public bool, fields []*Field, span Span) *EventDe
 	return &EventDecl{baseNode{span}, name, public, fields}
 }
 func (*EventDecl) declNode() {}
+
+// StorageEntry é uma linha do bloco storage de um Aggregate: Key: Value.
+type StorageEntry struct {
+	Key   string
+	Value string
+}
+
+// AccessRule é uma regra do bloco access: Handle requires Condition.
+type AccessRule struct {
+	baseNode
+	Name      string
+	Condition Expr
+}
+
+func NewAccessRule(name string, cond Expr, span Span) *AccessRule {
+	return &AccessRule{baseNode{span}, name, cond}
+}
+
+// HandleDecl é um Handle de Aggregate: Handle Name(Params) { Body }.
+type HandleDecl struct {
+	baseNode
+	Name   string
+	Params []*Field
+	Body   *Block
+}
+
+func NewHandleDecl(name string, params []*Field, body *Block, span Span) *HandleDecl {
+	return &HandleDecl{baseNode{span}, name, params, body}
+}
+
+// ApplyDecl é um Apply de Aggregate: Apply Event { Body }.
+type ApplyDecl struct {
+	baseNode
+	Event string
+	Body  *Block
+}
+
+func NewApplyDecl(event string, body *Block, span Span) *ApplyDecl {
+	return &ApplyDecl{baseNode{span}, event, body}
+}
+
+// AggregateDecl é a declaração de um Aggregate (§4.5): estratégia, snapshot,
+// storage, state, access (closed-by-default), Handles e Applies.
+type AggregateDecl struct {
+	baseNode
+	Name     string
+	Strategy string
+	Snapshot Expr // contagem do "snapshot every N events", ou nil
+	Storage  []StorageEntry
+	State    []*Field
+	Access   []*AccessRule
+	Handlers []*HandleDecl
+	Appliers []*ApplyDecl
+}
+
+func NewAggregateDecl(name string, strategy string, snapshot Expr, storage []StorageEntry, state []*Field, access []*AccessRule, handlers []*HandleDecl, appliers []*ApplyDecl, span Span) *AggregateDecl {
+	return &AggregateDecl{baseNode{span}, name, strategy, snapshot, storage, state, access, handlers, appliers}
+}
+func (*AggregateDecl) declNode() {}

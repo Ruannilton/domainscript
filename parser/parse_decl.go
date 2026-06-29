@@ -18,6 +18,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseErrorType()
 	case p.at(token.EVENT), p.at(token.PUBLICEVENT):
 		return p.parseEvent()
+	case p.at(token.AGGREGATE):
+		return p.parseAggregate()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -222,6 +224,114 @@ func (p *parser) parseCoerce() *ast.CoerceBlock {
 	from := p.parseTypeRef()
 	body := p.parseBlock()
 	return ast.NewCoerceBlock(from, body, p.spanFrom(start))
+}
+
+// parseAggregate parseia "Aggregate Name { membros }" (§4.5).
+func (p *parser) parseAggregate() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.AGGREGATE)
+	name := p.parseIdentName()
+	var (
+		strategy string
+		snapshot ast.Expr
+		storage  []ast.StorageEntry
+		state    []*ast.Field
+		access   []*ast.AccessRule
+		handlers []*ast.HandleDecl
+		appliers []*ast.ApplyDecl
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("strategy"):
+			p.advance()
+			strategy = p.parseIdentName()
+		case p.atIdentLit("snapshot"):
+			p.advance()
+			if p.atIdentLit("every") {
+				p.advance()
+			}
+			snapshot = p.parseExpr()
+			if p.atIdentLit("events") {
+				p.advance()
+			}
+		case p.atIdentLit("storage"):
+			p.advance()
+			storage = p.parseStorageBlock()
+		case p.atIdentLit("state"):
+			p.advance()
+			state = p.parseFieldBlock()
+		case p.atIdentLit("access"):
+			p.advance()
+			access = p.parseAccessBlock()
+		case p.atIdentLit("Handle"):
+			handlers = append(handlers, p.parseHandle())
+		case p.atIdentLit("Apply"):
+			appliers = append(appliers, p.parseApply())
+		default:
+			p.errorf(p.cur().Pos, "membro de Aggregate inesperado: %s", p.cur().Kind)
+			p.advance() // progresso garantido
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewAggregateDecl(name, strategy, snapshot, storage, state, access, handlers, appliers, p.spanFrom(start))
+}
+
+// parseStorageBlock parseia "{ Key: Value (,)? ... }".
+func (p *parser) parseStorageBlock() []ast.StorageEntry {
+	p.expect(token.LBRACE)
+	var entries []ast.StorageEntry
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		key := p.parseIdentName()
+		p.expect(token.COLON)
+		val := p.parseIdentName()
+		entries = append(entries, ast.StorageEntry{Key: key, Value: val})
+		p.accept(token.COMMA)
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return entries
+}
+
+// parseAccessBlock parseia "{ Handle requires Condition ... }".
+func (p *parser) parseAccessBlock() []*ast.AccessRule {
+	p.expect(token.LBRACE)
+	var rules []*ast.AccessRule
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		start := p.cur().Pos
+		name := p.parseIdentName()
+		if p.atIdentLit("requires") {
+			p.advance()
+		}
+		cond := p.parseExpr()
+		rules = append(rules, ast.NewAccessRule(name, cond, p.spanFrom(start)))
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return rules
+}
+
+// parseHandle parseia "Handle Name(Params) { Body }".
+func (p *parser) parseHandle() *ast.HandleDecl {
+	start := p.cur().Pos
+	p.advance() // "Handle"
+	name := p.parseIdentName()
+	params := p.parseParamList()
+	body := p.parseBlock()
+	return ast.NewHandleDecl(name, params, body, p.spanFrom(start))
+}
+
+// parseApply parseia "Apply Event { Body }".
+func (p *parser) parseApply() *ast.ApplyDecl {
+	start := p.cur().Pos
+	p.advance() // "Apply"
+	event := p.parseIdentName()
+	body := p.parseBlock()
+	return ast.NewApplyDecl(event, body, p.spanFrom(start))
 }
 
 // parseOperator parseia "Operator Op(Params) -> Return { Body }".

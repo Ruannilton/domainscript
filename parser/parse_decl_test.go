@@ -41,15 +41,19 @@ func sfield(f *ast.Field) string {
 	return s
 }
 
-func soperator(o *ast.OperatorDecl) string {
-	s := "(op " + o.Op + " ("
-	for i, pm := range o.Params {
+func sparams(ps []*ast.Field) string {
+	s := "("
+	for i, pm := range ps {
 		if i > 0 {
 			s += " "
 		}
 		s += sfield(pm)
 	}
-	return s + ") " + stype(o.Return) + " " + sstmt(o.Body) + ")"
+	return s + ")"
+}
+
+func soperator(o *ast.OperatorDecl) string {
+	return "(op " + o.Op + " " + sparams(o.Params) + " " + stype(o.Return) + " " + sstmt(o.Body) + ")"
 }
 
 func sdecl(d ast.Decl) string {
@@ -95,6 +99,37 @@ func sdecl(d ast.Decl) string {
 		s := "(" + kw + " " + n.Name
 		for _, f := range n.Fields {
 			s += " " + sfield(f)
+		}
+		return s + ")"
+	case *ast.AggregateDecl:
+		s := "(Aggregate " + n.Name
+		if n.Strategy != "" {
+			s += " strat=" + n.Strategy
+		}
+		if n.Snapshot != nil {
+			s += " snap=" + sexpr(n.Snapshot)
+		}
+		for _, st := range n.Storage {
+			s += " store[" + st.Key + ":" + st.Value + "]"
+		}
+		if len(n.State) > 0 {
+			s += " state{"
+			for i, f := range n.State {
+				if i > 0 {
+					s += " "
+				}
+				s += sfield(f)
+			}
+			s += "}"
+		}
+		for _, a := range n.Access {
+			s += " acc[" + a.Name + " " + sexpr(a.Condition) + "]"
+		}
+		for _, h := range n.Handlers {
+			s += " (Handle " + h.Name + sparams(h.Params) + " " + sstmt(h.Body) + ")"
+		}
+		for _, ap := range n.Appliers {
+			s += " (Apply " + ap.Event + " " + sstmt(ap.Body) + ")"
 		}
 		return s + ")"
 	case *ast.ErrorDecl:
