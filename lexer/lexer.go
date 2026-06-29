@@ -94,19 +94,49 @@ func (l *lexer) lexNumber(start token.Pos) {
 	l.emit(kind, lit, start)
 }
 
-// lexString consome um literal de string entre aspas. Nesta fase trata apenas
-// strings terminadas na mesma linha; escapes e detecção de não-terminada chegam
-// na tarefa 2.3.
+// lexString consome um literal de string entre aspas, resolvendo as sequências
+// de escape \n \t \" \\ (REQ-1.8). Uma string não terminada antes do fim da
+// linha ou do arquivo gera um diagnóstico localizado no início da string
+// (REQ-1.7); o token STRING ainda é emitido com o conteúdo lido até ali, para o
+// parser poder prosseguir. O Lit guarda o valor já decodificado, sem aspas.
 func (l *lexer) lexString(start token.Pos) {
 	l.advance() // aspas de abertura
 	var sb strings.Builder
-	for !l.atEnd() && l.peek() != '"' && l.peek() != '\n' {
-		sb.WriteRune(l.advance())
+	for {
+		if l.atEnd() || l.peek() == '\n' {
+			l.errorf(start, "string não terminada")
+			l.emit(token.STRING, sb.String(), start)
+			return
+		}
+		chPos := l.here()
+		r := l.advance()
+		switch r {
+		case '"':
+			l.emit(token.STRING, sb.String(), start)
+			return
+		case '\\':
+			if l.atEnd() || l.peek() == '\n' {
+				l.errorf(start, "string não terminada")
+				l.emit(token.STRING, sb.String(), start)
+				return
+			}
+			switch e := l.advance(); e {
+			case 'n':
+				sb.WriteByte('\n')
+			case 't':
+				sb.WriteByte('\t')
+			case '"':
+				sb.WriteByte('"')
+			case '\\':
+				sb.WriteByte('\\')
+			default:
+				l.errorf(chPos, "sequência de escape inválida %q", "\\"+string(e))
+				sb.WriteRune(e)
+			}
+		default:
+			sb.WriteRune(r)
+		}
 	}
-	if l.peek() == '"' {
-		l.advance()
-	}
-	l.emit(token.STRING, sb.String(), start)
 }
 
 // lexOperator reconhece toda a pontuação e os operadores do spec (REQ-1.3),
