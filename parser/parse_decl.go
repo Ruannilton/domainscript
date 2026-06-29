@@ -14,6 +14,10 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseValueObject()
 	case p.at(token.ENUM):
 		return p.parseEnum()
+	case p.at(token.ERROR):
+		return p.parseErrorType()
+	case p.at(token.EVENT), p.at(token.PUBLICEVENT):
+		return p.parseEvent()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -46,6 +50,52 @@ func (p *parser) parseTypeRef() *ast.TypeRef {
 		p.expect(token.GT)
 	}
 	return ast.NewTypeRef(name, args, p.spanFrom(start))
+}
+
+// parseFieldBlock parseia "{ Field (,)? ... }" — campos separados por vírgula
+// ou apenas por quebra de linha. Reusado por Event, Command, View, etc.
+func (p *parser) parseFieldBlock() []*ast.Field {
+	p.expect(token.LBRACE)
+	var fields []*ast.Field
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		fields = append(fields, p.parseField())
+		p.accept(token.COMMA)
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return fields
+}
+
+// parseErrorType parseia "Error Name { message \"...\" }" (§4.1).
+func (p *parser) parseErrorType() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.ERROR)
+	name := p.parseIdentName()
+	var msg ast.Expr
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atIdentLit("message") {
+			p.advance()
+			msg = p.parseExpr()
+		} else {
+			p.advance() // ignora conteúdo desconhecido; recovery garante progresso
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewErrorTypeDecl(name, msg, p.spanFrom(start))
+}
+
+// parseEvent parseia "Event|PublicEvent Name { Fields }" (§4.2).
+func (p *parser) parseEvent() ast.Decl {
+	start := p.cur().Pos
+	public := p.at(token.PUBLICEVENT)
+	p.advance() // Event ou PublicEvent
+	name := p.parseIdentName()
+	fields := p.parseFieldBlock()
+	return ast.NewEventDecl(name, public, fields, p.spanFrom(start))
 }
 
 // parseField parseia "Name [ref] Type [redactable] [= Default]".

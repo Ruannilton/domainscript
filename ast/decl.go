@@ -94,3 +94,30 @@ func NewEnumDecl(name string, base *TypeRef, members []*EnumMember, coerce *Coer
 	return &EnumDecl{baseNode{span}, name, base, members, coerce}
 }
 func (*EnumDecl) declNode() {}
+
+// ErrorTypeDecl é a declaração de um Error de negócio (§4.1): Error Name {
+// message "..." }. (O nome ErrorDecl é reservado ao nó de erro de sintaxe.)
+type ErrorTypeDecl struct {
+	baseNode
+	Name    string
+	Message Expr
+}
+
+func NewErrorTypeDecl(name string, message Expr, span Span) *ErrorTypeDecl {
+	return &ErrorTypeDecl{baseNode{span}, name, message}
+}
+func (*ErrorTypeDecl) declNode() {}
+
+// EventDecl é a declaração de um Event ou PublicEvent (§4.2). Public distingue o
+// evento compartilhado (contracts/) do privado ao módulo (REQ-7.4).
+type EventDecl struct {
+	baseNode
+	Name   string
+	Public bool
+	Fields []*Field
+}
+
+func NewEventDecl(name string, public bool, fields []*Field, span Span) *EventDecl {
+	return &EventDecl{baseNode{span}, name, public, fields}
+}
+func (*EventDecl) declNode() {}

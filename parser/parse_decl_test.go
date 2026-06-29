@@ -81,6 +81,22 @@ func sdecl(d ast.Decl) string {
 			s += " (coerce " + stype(n.Coerce.From) + " " + sstmt(n.Coerce.Body) + ")"
 		}
 		return s + ")"
+	case *ast.ErrorTypeDecl:
+		s := "(Error " + n.Name
+		if n.Message != nil {
+			s += " " + sexpr(n.Message)
+		}
+		return s + ")"
+	case *ast.EventDecl:
+		kw := "Event"
+		if n.Public {
+			kw = "PublicEvent"
+		}
+		s := "(" + kw + " " + n.Name
+		for _, f := range n.Fields {
+			s += " " + sfield(f)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:
