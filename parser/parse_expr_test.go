@@ -71,6 +71,15 @@ func sexpr(e ast.Expr) string {
 			s += "}"
 		}
 		return s + ")"
+	case *ast.ObjectExpr:
+		s := "{"
+		for i, e := range n.Entries {
+			if i > 0 {
+				s += " "
+			}
+			s += e.Key + ":" + sexpr(e.Value)
+		}
+		return s + "}"
 	case *ast.RangeExpr:
 		return "(.. " + sexpr(n.Low) + " " + sexpr(n.High) + ")"
 	case *ast.LambdaExpr:
