@@ -273,35 +273,35 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 > Cada tarefa = uma regra = **teste positivo + negativo** (NFR-4) + commit.
 
-- [ ] **8.1** Primitivo no Write Side. _(REQ-5.1, §design rules_types)_
+- [x] **8.1** Primitivo no Write Side. _(REQ-5.1, §design rules_types)_
   **Commit:** `feat(sema): proíbe primitivo no Write Side`
-- [ ] **8.2** `remove()`/`clear()` em `AppendList<T>`. _(REQ-5.4)_
+- [x] **8.2** `remove()`/`clear()` em `AppendList<T>`. _(REQ-5.4)_
   **Commit:** `feat(sema): proíbe remove/clear em AppendList`
-- [ ] **8.3** `match` exaustivo; `_` proibido/obrigatório conforme guards. _(REQ-5.5,
+- [x] **8.3** `match` exaustivo; `_` proibido/obrigatório conforme guards. _(REQ-5.5,
   §design 4.2)_
   **Commit:** `feat(sema): exaustividade de match`
-- [ ] **8.4** `Nop` em `Handle`/`UseCase`. _(REQ-5.6)_
+- [x] **8.4** `Nop` em `Handle`/`UseCase`. _(REQ-5.6)_
   **Commit:** `feat(sema): proíbe Nop em Handle/UseCase`
-- [ ] **8.5** `break`/`continue`/`break all` fora de `for`. _(REQ-5.7)_
+- [x] **8.5** `break`/`continue`/`break all` fora de `for`. _(REQ-5.7)_
   **Commit:** `feat(sema): controle de laço fora de for`
-- [ ] **8.6** `Handle` sem entrada no `access`. _(REQ-5.2, §design rules_domain)_
+- [x] **8.6** `Handle` sem entrada no `access`. _(REQ-5.2, §design rules_domain)_
   **Commit:** `feat(sema): Handle exige entrada em access`
-- [ ] **8.7** `Notification` sem `Adapter`. _(REQ-5.3)_
+- [x] **8.7** `Notification` sem `Adapter`. _(REQ-5.3)_
   **Commit:** `feat(sema): Notification exige Adapter`
-- [ ] **8.8** Upcast de versão com campo obrigatório sem default. _(REQ-5.13)_
+- [x] **8.8** Upcast de versão com campo obrigatório sem default. _(REQ-5.13)_
   **Commit:** `feat(sema): upcast exige default em campo obrigatório`
-- [ ] **8.9** Validações de `*.test.ds`: evento/comando inexistente, shape errada,
+- [x] **8.9** Validações de `*.test.ds`: evento/comando inexistente, shape errada,
   `fail step` inexistente, mock com tipo errado. _(REQ-5.14)_
   **Commit:** `feat(sema): validação de arquivos de teste`
-- [ ] **8.10** Assinatura incompatível em `Foreign`/`Adapter`. _(REQ-5.15)_
+- [x] **8.10** Assinatura incompatível em `Foreign`/`Adapter`. _(REQ-5.15)_
   **Commit:** `feat(sema): assinatura FFI/Adapter`
-- [ ] **8.11** ⚠️ ValueObject que poderia ser Enum. _(REQ-5.19)_
+- [x] **8.11** ⚠️ ValueObject que poderia ser Enum. _(REQ-5.19)_
   **Commit:** `feat(sema): aviso VO que poderia ser Enum`
-- [ ] **8.12** ⚠️ Canal `queue`/`stream` sem `orderBy`. _(REQ-5.16)_
+- [x] **8.12** ⚠️ Canal `queue`/`stream` sem `orderBy`. _(REQ-5.16)_
   **Commit:** `feat(sema): aviso canal sem orderBy`
-- [ ] **8.13** ⚠️ Cache em listagem de alta cardinalidade. _(REQ-5.20)_
+- [x] **8.13** ⚠️ Cache em listagem de alta cardinalidade. _(REQ-5.20)_
   **Commit:** `feat(sema): aviso cache de alta cardinalidade`
-- [ ] **8.14** ⚠️ `Handle` sem cenário de erro testado (cobertura). _(REQ-5.22)_
+- [x] **8.14** ⚠️ `Handle` sem cenário de erro testado (cobertura). _(REQ-5.22)_
   **Commit:** `feat(sema): aviso de cobertura de erro por Handle`
 
 ---
