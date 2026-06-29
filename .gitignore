@@ -9,6 +9,9 @@ dsc.exe
 *.out
 coverage.*
 
+# Configuração local do Claude Code (pessoal, não versionada)
+.claude/settings.local.json
+
 # Caches de IDE / editor
 .idea/
 .vscode/
