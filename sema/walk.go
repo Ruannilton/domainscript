@@ -182,6 +182,22 @@ func isIdent(e ast.Expr, name string) bool {
 	return ok && id.Name == name
 }
 
+// headName devolve o nome da "cabeça" de uma referência de domínio: o callee de
+// uma construção (Withdraw(...), DepositPerformed(...)) ou um identificador nu
+// (alvo de mock). Devolve "" para qualquer outra forma (acesso a membro, literal,
+// método). Usado pelas regras que ligam expressões de teste a símbolos.
+func headName(e ast.Expr) string {
+	switch n := e.(type) {
+	case *ast.CallExpr:
+		if id, ok := n.Fn.(*ast.Ident); ok {
+			return id.Name
+		}
+	case *ast.Ident:
+		return n.Name
+	}
+	return ""
+}
+
 // stateField devolve o nome do campo se e é o acesso "state.<campo>", senão "".
 func stateField(e ast.Expr) string {
 	m, ok := e.(*ast.MemberExpr)

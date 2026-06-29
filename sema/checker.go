@@ -71,6 +71,8 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 		c.checkNop(n.Execute, "UseCase") // 8.4
 	case *ast.VersionDecl:
 		c.checkVersionUpcastDefaults(module, n) // 8.8
+	case *ast.TestDecl:
+		c.checkTestFile(module, n) // 8.9
 	}
 	c.checkMatchExhaustiveness(module, d) // 8.3
 	c.checkLoopControlDecl(d)             // 8.5
