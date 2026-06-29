@@ -218,21 +218,21 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 ## Fase 5 — Arquivos de Configuração e Teste (REQ-2.2/2.3)
 
-- [ ] **5.1** `config_entry` genérico (literal/`env`/duração/taxa/lista/objeto),
+- [x] **5.1** `config_entry` genérico (literal/`env`/duração/taxa/lista/objeto),
   reusado pelos arquivos de infra. _(REQ-2.2, §design 3.5)_
   **Commit:** `feat(parser): config_entry genérico de infraestrutura`
-- [ ] **5.2** `mod.ds`: `Module` + `Database`, `FileStorage`, `Idempotency`,
+- [x] **5.2** `mod.ds`: `Module` + `Database`, `FileStorage`, `Idempotency`,
   `Cache`, `RateLimit`, `Outbox`, `Telemetry`. _(REQ-2.2)_
   **Commit:** `feat(parser): mod.ds (Module e blocos de infra)`
-- [ ] **5.3** `interface.ds`: `Interface HTTP` (rotas, `versioning`, `tenant`,
+- [x] **5.3** `interface.ds`: `Interface HTTP` (rotas, `versioning`, `tenant`,
   `rateLimit`), `Interface GRPC`, `RateLimitTier`. _(REQ-2.2)_
   **Commit:** `feat(parser): interface.ds (HTTP, gRPC, tiers)`
-- [ ] **5.4** `topology.ds`: `Topology` com `services` e `channels`. _(REQ-2.2)_
+- [x] **5.4** `topology.ds`: `Topology` com `services` e `channels`. _(REQ-2.2)_
   **Commit:** `feat(parser): topology.ds (services e channels)`
-- [ ] **5.5** `contracts/*.ds` (`PublicEvent`) e `versions/*.ds` (`Version` com
+- [x] **5.5** `contracts/*.ds` (`PublicEvent`) e `versions/*.ds` (`Version` com
   `upcast`/`downcast`/`route`, `deprecated`/`sunset`). _(REQ-2.2)_
   **Commit:** `feat(parser): contracts e versions`
-- [ ] **5.6** `*.test.ds`: `Test`, `scenario`, `given`/`when`/`then`, `mock`,
+- [x] **5.6** `*.test.ds`: `Test`, `scenario`, `given`/`when`/`then`, `mock`,
   `fail step`, `property`, `Fixture`. _(REQ-2.3, §design 3.5)_
   **Conclusão:** o driver roteia o parser pelo nome do arquivo; testes por tipo.
   **Commit:** `feat(parser): arquivos *.test.ds`
