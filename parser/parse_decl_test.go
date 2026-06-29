@@ -156,6 +156,49 @@ func sdecl(d ast.Decl) string {
 			s += " execute" + sstmt(n.Execute)
 		}
 		return s + ")"
+	case *ast.ViewDecl:
+		s := "(View " + n.Name
+		if n.From != "" {
+			s += " from=" + n.From
+		}
+		for _, f := range n.Fields {
+			s += " " + sfield(f)
+		}
+		for _, v := range n.Visibility {
+			s += " vis[" + v.Name + " " + sexpr(v.Condition) + "]"
+		}
+		return s + ")"
+	case *ast.ProjectionDecl:
+		s := "(Projection " + n.Name
+		if len(n.Sources) > 0 {
+			s += " src["
+			for i, src := range n.Sources {
+				if i > 0 {
+					s += " "
+				}
+				s += src
+			}
+			s += "]"
+		}
+		for _, m := range n.Map {
+			s += " " + m.Name + "=" + sexpr(m.Value)
+		}
+		if n.RefreshOn != nil {
+			s += " refreshOn=" + sexpr(n.RefreshOn)
+		}
+		return s + ")"
+	case *ast.QueryDecl:
+		s := "(Query " + n.Name + sparams(n.Params)
+		if n.Return != nil {
+			s += " -> " + stype(n.Return)
+		}
+		for _, c := range n.Cache {
+			s += " cache[" + c.Key + "=" + sexpr(c.Value) + "]"
+		}
+		if n.Body != nil {
+			s += " " + sstmt(n.Body)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:

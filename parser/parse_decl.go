@@ -24,6 +24,12 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseCommand()
 	case p.at(token.USECASE):
 		return p.parseUseCase()
+	case p.at(token.VIEW):
+		return p.parseView()
+	case p.at(token.PROJECTION):
+		return p.parseProjection()
+	case p.at(token.QUERY):
+		return p.parseQuery()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -237,6 +243,140 @@ func (p *parser) parseCommand() ast.Decl {
 	name := p.parseIdentName()
 	fields := p.parseFieldBlock()
 	return ast.NewCommandDecl(name, fields, p.spanFrom(start))
+}
+
+// parseConfigBlock parseia "{ Key: Value (,)? ... }" — usado por cache, e
+// generalizado pelos arquivos de infraestrutura na Fase 5.
+func (p *parser) parseConfigBlock() []ast.ConfigEntry {
+	p.expect(token.LBRACE)
+	var entries []ast.ConfigEntry
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		key := p.parseIdentName()
+		p.expect(token.COLON)
+		val := p.parseExpr()
+		entries = append(entries, ast.ConfigEntry{Key: key, Value: val})
+		p.accept(token.COMMA)
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return entries
+}
+
+// parseMapBlock parseia "{ Name = Value (,)? ... }".
+func (p *parser) parseMapBlock() []ast.MapEntry {
+	p.expect(token.LBRACE)
+	var entries []ast.MapEntry
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		name := p.parseIdentName()
+		p.expect(token.ASSIGN)
+		val := p.parseExpr()
+		entries = append(entries, ast.MapEntry{Name: name, Value: val})
+		p.accept(token.COMMA)
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return entries
+}
+
+// parseView parseia "View Name [From Source] [{ campos | visibility }]" (§6.1/6.2).
+func (p *parser) parseView() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.VIEW)
+	name := p.parseIdentName()
+	from := ""
+	if p.atIdentLit("From") {
+		p.advance()
+		from = p.parseIdentName()
+	}
+	var (
+		fields     []*ast.Field
+		visibility []*ast.AccessRule
+	)
+	if p.at(token.LBRACE) {
+		p.expect(token.LBRACE)
+		for !p.at(token.RBRACE) && !p.atEnd() {
+			before := p.pos
+			if p.atIdentLit("visibility") {
+				p.advance()
+				visibility = p.parseAccessBlock()
+			} else {
+				fields = append(fields, p.parseField())
+				p.accept(token.COMMA)
+			}
+			p.ensureProgress(before)
+		}
+		p.expect(token.RBRACE)
+	}
+	return ast.NewViewDecl(name, from, fields, visibility, p.spanFrom(start))
+}
+
+// parseProjection parseia "Projection Name { source ...; map {...}; refreshOn [...] }" (§6.4).
+func (p *parser) parseProjection() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.PROJECTION)
+	name := p.parseIdentName()
+	var (
+		sources   []string
+		mapping   []ast.MapEntry
+		refreshOn ast.Expr
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("source"):
+			p.advance()
+			sources = append(sources, p.parseIdentName())
+			for p.accept(token.COMMA) {
+				sources = append(sources, p.parseIdentName())
+			}
+		case p.atIdentLit("map"):
+			p.advance()
+			mapping = p.parseMapBlock()
+		case p.atIdentLit("refreshOn"):
+			p.advance()
+			refreshOn = p.parseExpr()
+		default:
+			p.errorf(p.cur().Pos, "membro de Projection inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewProjectionDecl(name, sources, mapping, refreshOn, p.spanFrom(start))
+}
+
+// parseQuery parseia "Query Name(Params) -> Ret { [cache {...}] statements }" (§6.3).
+func (p *parser) parseQuery() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.QUERY)
+	name := p.parseIdentName()
+	params := p.parseParamList()
+	var ret *ast.TypeRef
+	if p.accept(token.ARROW) {
+		ret = p.parseTypeRef()
+	}
+	var (
+		cache []ast.ConfigEntry
+		stmts []ast.Stmt
+	)
+	bodyStart := p.cur().Pos
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atIdentLit("cache") {
+			p.advance()
+			cache = p.parseConfigBlock()
+		} else {
+			stmts = append(stmts, p.parseStmt())
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	body := ast.NewBlock(stmts, p.spanFrom(bodyStart))
+	return ast.NewQueryDecl(name, params, ret, cache, body, p.spanFrom(start))
 }
 
 // parseUseCase parseia "UseCase Name handles Cmd { timeout/idempotency/tenancy/

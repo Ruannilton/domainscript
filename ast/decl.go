@@ -210,3 +210,61 @@ func NewUseCaseDecl(name, handles string, timeout, idempotency Expr, tenancy str
 	return &UseCaseDecl{baseNode{span}, name, handles, timeout, idempotency, tenancy, execute}
 }
 func (*UseCaseDecl) declNode() {}
+
+// ConfigEntry é uma linha "Key: Value" de um bloco de configuração (cache,
+// mod.ds, interface.ds, ...). Value cobre literais, durações, listas e chamadas.
+type ConfigEntry struct {
+	Key   string
+	Value Expr
+}
+
+// MapEntry é uma linha "Name = Value" de um bloco map (Projection) ou similar.
+type MapEntry struct {
+	Name  string
+	Value Expr
+}
+
+// ViewDecl é a declaração de uma View (§6.1): projeção de leitura, derivada de um
+// Aggregate (From) ou com campos próprios, com bloco visibility opcional (§6.2).
+type ViewDecl struct {
+	baseNode
+	Name       string
+	From       string
+	Fields     []*Field
+	Visibility []*AccessRule
+}
+
+func NewViewDecl(name, from string, fields []*Field, visibility []*AccessRule, span Span) *ViewDecl {
+	return &ViewDecl{baseNode{span}, name, from, fields, visibility}
+}
+func (*ViewDecl) declNode() {}
+
+// ProjectionDecl é a declaração de uma Projection cross-aggregate (§6.4).
+type ProjectionDecl struct {
+	baseNode
+	Name      string
+	Sources   []string
+	Map       []MapEntry
+	RefreshOn Expr
+}
+
+func NewProjectionDecl(name string, sources []string, m []MapEntry, refreshOn Expr, span Span) *ProjectionDecl {
+	return &ProjectionDecl{baseNode{span}, name, sources, m, refreshOn}
+}
+func (*ProjectionDecl) declNode() {}
+
+// QueryDecl é a declaração de uma Query (§6.3): parâmetros, tipo de retorno,
+// política de cache opcional (§15) e corpo.
+type QueryDecl struct {
+	baseNode
+	Name   string
+	Params []*Field
+	Return *TypeRef
+	Cache  []ConfigEntry
+	Body   *Block
+}
+
+func NewQueryDecl(name string, params []*Field, ret *TypeRef, cache []ConfigEntry, body *Block, span Span) *QueryDecl {
+	return &QueryDecl{baseNode{span}, name, params, ret, cache, body}
+}
+func (*QueryDecl) declNode() {}
