@@ -13,6 +13,7 @@ func matchSrc(body string) string {
 	return enumPreamble + `
 		Aggregate Task {
 			state { s Status }
+			access { Step requires caller.authenticated }
 			Handle Step(s Status) {
 				` + body + `
 			}

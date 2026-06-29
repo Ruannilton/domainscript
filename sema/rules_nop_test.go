@@ -11,6 +11,7 @@ func TestNopInHandleFires(t *testing.T) {
 		Error Inactive { message "x" }
 		Aggregate Wallet {
 			state { id WalletId }
+			access { Freeze requires caller.authenticated }
 			Handle Freeze() { ensure active else Nop }
 		}
 		ValueObject WalletId(string) { Valid { ok } }
@@ -40,6 +41,7 @@ func TestNopSilentWithRealActions(t *testing.T) {
 		Error Inactive { message "x" }
 		Aggregate Wallet {
 			state { id WalletId }
+			access { Freeze requires caller.authenticated }
 			Handle Freeze() { ensure active else Inactive }
 		}
 		ValueObject WalletId(string) { Valid { ok } }

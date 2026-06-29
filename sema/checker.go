@@ -58,6 +58,7 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 	case *ast.AggregateDecl:
 		c.checkWriteSidePrimitives("Aggregate", n.Name, n.State) // 8.1
 		c.checkAppendListMutation(n)                             // 8.2
+		c.checkAggregateAccess(n)                                // 8.6
 		for _, h := range n.Handlers {
 			c.checkNop(h.Body, "Handle") // 8.4
 		}

@@ -14,6 +14,10 @@ func TestAppendListRemoveFires(t *testing.T) {
 	bag := checkSrc(t, appendListPreamble+`
 		Aggregate Ledger {
 			state { entries AppendList<Entry> }
+			access {
+				Wipe requires caller.authenticated
+				Drop requires caller.authenticated
+			}
 			Handle Wipe() { state.entries.clear() }
 			Handle Drop() { state.entries.remove(0) }
 		}
@@ -33,6 +37,10 @@ func TestAppendListAddIsSilent(t *testing.T) {
 	bag := checkSrc(t, appendListPreamble+`
 		Aggregate Ledger {
 			state { entries AppendList<Entry> history List<Entry> }
+			access {
+				Append requires caller.authenticated
+				Trim   requires caller.authenticated
+			}
 			Handle Append() { state.entries.add(Entry("x")) }
 			Handle Trim() { state.history.remove(0) }
 		}
