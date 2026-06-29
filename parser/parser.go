@@ -10,9 +10,10 @@ import (
 // acumulados. Esta fase implementa só a infraestrutura de leitura e recuperação;
 // os construtos da gramática chegam na Fase 4.
 type parser struct {
-	toks []token.Token
-	pos  int
-	bag  *diag.DiagnosticBag
+	toks    []token.Token
+	pos     int
+	bag     *diag.DiagnosticBag
+	lastPos token.Pos // posição do último token consumido (fim dos spans)
 
 	silenceWindow int // tokens a consumir após um erro antes de reabrir diagnósticos
 	sinceError    int // tokens consumidos desde o último erro emitido
@@ -32,6 +33,7 @@ func newParser(toks []token.Token, bag *diag.DiagnosticBag) *parser {
 	return &parser{
 		toks:          toks,
 		bag:           bag,
+		lastPos:       toks[0].Pos,
 		silenceWindow: defaultSilenceWindow,
 		sinceError:    defaultSilenceWindow, // janela aberta: o primeiro erro sempre passa
 	}
@@ -67,6 +69,7 @@ func (p *parser) advance() token.Token {
 	if t.Kind != token.EOF {
 		p.pos++
 		p.sinceError++
+		p.lastPos = t.Pos
 	}
 	return t
 }
