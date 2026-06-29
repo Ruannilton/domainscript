@@ -73,6 +73,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseInterface()
 	case p.at(token.TOPOLOGY):
 		return p.parseTopology()
+	case p.at(token.VERSION):
+		return p.parseVersionDecl()
 	case p.atIdentLit("RateLimitTier"):
 		return p.parseRateLimitTier()
 	default:

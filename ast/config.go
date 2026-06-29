@@ -138,3 +138,57 @@ func NewRateLimitTierDecl(name string, entries []ConfigEntry, span Span) *RateLi
 	return &RateLimitTierDecl{baseNode{span}, name, entries}
 }
 func (*RateLimitTierDecl) declNode() {}
+
+// VersionUpcast é um upcast de API (§17): traduz a shape antiga de um Command
+// (From, lista de campos) para a atual (To, atribuições Name = Value).
+type VersionUpcast struct {
+	baseNode
+	Target string
+	From   []*Field
+	To     []MapEntry
+}
+
+func NewVersionUpcast(target string, from []*Field, to []MapEntry, span Span) *VersionUpcast {
+	return &VersionUpcast{baseNode{span}, target, from, to}
+}
+
+// VersionDowncast é um downcast de API (§17): traduz a View atual de volta à
+// shape antiga (To, atribuições Name = Value).
+type VersionDowncast struct {
+	baseNode
+	Target string
+	To     []MapEntry
+}
+
+func NewVersionDowncast(target string, to []MapEntry, span Span) *VersionDowncast {
+	return &VersionDowncast{baseNode{span}, target, to}
+}
+
+// VersionRoute é uma mudança de comportamento versionada (§17): route "path" ->
+// UseCase (UseCase distinto, não tradução de shape).
+type VersionRoute struct {
+	baseNode
+	Path   string
+	Target string
+}
+
+func NewVersionRoute(path, target string, span Span) *VersionRoute {
+	return &VersionRoute{baseNode{span}, path, target}
+}
+
+// VersionDecl é a declaração de uma versão de API (versions/*.ds, §17): janela
+// de depreciação (Deprecated/Sunset) e as traduções upcast/downcast/route.
+type VersionDecl struct {
+	baseNode
+	Version    string
+	Deprecated Expr
+	Sunset     Expr
+	Upcasts    []*VersionUpcast
+	Downcasts  []*VersionDowncast
+	Routes     []*VersionRoute
+}
+
+func NewVersionDecl(version string, deprecated, sunset Expr, upcasts []*VersionUpcast, downcasts []*VersionDowncast, routes []*VersionRoute, span Span) *VersionDecl {
+	return &VersionDecl{baseNode{span}, version, deprecated, sunset, upcasts, downcasts, routes}
+}
+func (*VersionDecl) declNode() {}

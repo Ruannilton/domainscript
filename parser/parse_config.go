@@ -269,6 +269,108 @@ func (p *parser) parseRateLimitTier() ast.Decl {
 	return ast.NewRateLimitTierDecl(name, entries, p.spanFrom(start))
 }
 
+// parseVersionDecl parseia "Version vN { deprecated/sunset/upcast/downcast/route
+// }" (versions/*.ds, §17).
+func (p *parser) parseVersionDecl() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.VERSION)
+	version := p.parseVersion()
+	var (
+		deprecated ast.Expr
+		sunset     ast.Expr
+		upcasts    []*ast.VersionUpcast
+		downcasts  []*ast.VersionDowncast
+		routes     []*ast.VersionRoute
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("deprecated"):
+			p.advance()
+			p.accept(token.COLON)
+			deprecated = p.parseExpr()
+		case p.atIdentLit("sunset"):
+			p.advance()
+			p.accept(token.COLON)
+			sunset = p.parseExpr()
+		case p.atIdentLit("upcast"):
+			upcasts = append(upcasts, p.parseVersionUpcast())
+		case p.atIdentLit("downcast"):
+			downcasts = append(downcasts, p.parseVersionDowncast())
+		case p.atIdentLit("route"):
+			routes = append(routes, p.parseVersionRoute())
+		default:
+			p.errorf(p.cur().Pos, "membro de Version inesperado: %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewVersionDecl(version, deprecated, sunset, upcasts, downcasts, routes, p.spanFrom(start))
+}
+
+// parseVersionUpcast parseia "upcast Target { from { campos } to { mapeamentos } }".
+func (p *parser) parseVersionUpcast() *ast.VersionUpcast {
+	start := p.cur().Pos
+	p.advance() // "upcast"
+	target := p.parseName()
+	var (
+		from []*ast.Field
+		to   []ast.MapEntry
+	)
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		switch {
+		case p.atIdentLit("from"):
+			p.advance()
+			from = p.parseFieldBlock()
+		case p.atIdentLit("to"):
+			p.advance()
+			to = p.parseMapBlock()
+		default:
+			p.errorf(p.cur().Pos, "esperava 'from' ou 'to' em upcast, encontrei %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewVersionUpcast(target, from, to, p.spanFrom(start))
+}
+
+// parseVersionDowncast parseia "downcast Target { to { mapeamentos } }".
+func (p *parser) parseVersionDowncast() *ast.VersionDowncast {
+	start := p.cur().Pos
+	p.advance() // "downcast"
+	target := p.parseName()
+	var to []ast.MapEntry
+	p.expect(token.LBRACE)
+	for !p.at(token.RBRACE) && !p.atEnd() {
+		before := p.pos
+		if p.atIdentLit("to") {
+			p.advance()
+			to = p.parseMapBlock()
+		} else {
+			p.errorf(p.cur().Pos, "esperava 'to' em downcast, encontrei %s", p.cur().Kind)
+			p.advance()
+		}
+		p.ensureProgress(before)
+	}
+	p.expect(token.RBRACE)
+	return ast.NewVersionDowncast(target, to, p.spanFrom(start))
+}
+
+// parseVersionRoute parseia "route \"path\" -> Target".
+func (p *parser) parseVersionRoute() *ast.VersionRoute {
+	start := p.cur().Pos
+	p.advance() // "route"
+	path := p.parseStringLit()
+	p.expect(token.ARROW)
+	target := p.parseName()
+	return ast.NewVersionRoute(path, target, p.spanFrom(start))
+}
+
 // parseStringLit consome um literal de string e devolve seu lexema, ou "" com
 // diagnóstico.
 func (p *parser) parseStringLit() string {
