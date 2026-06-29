@@ -32,10 +32,18 @@ type Program struct {
 	// Symbols é a tabela global, com acesso simultâneo a todos os símbolos de
 	// todos os módulos (REQ-7.3).
 	Symbols *symbols.SymbolTable
+	// Modules mapeia nome de módulo → modelo agregado (de mod.ds + arquivos).
+	Modules map[string]*Module
+	// Services mapeia nome de service → modelo (de topology.ds).
+	Services map[string]*Service
+	// Channels são os canais declarados na topologia (de topology.ds).
+	Channels []*Channel
 
 	// fileModule mapeia caminho → módulo dono, derivado da estrutura de diretórios
 	// (o mod.ds mais próximo na árvore). "" para arquivos fora de qualquer módulo.
 	fileModule map[string]string
+	// aggModule mapeia nome de Aggregate → módulo declarante (REQ-7.2).
+	aggModule map[string]string
 }
 
 // New agrega um conjunto de arquivos já parseados num Program: determina o módulo
@@ -51,7 +59,10 @@ func New(sources []Source, bag *diag.DiagnosticBag) *Program {
 
 	p := &Program{
 		Files:      make(map[string]*ast.File, len(srcs)),
+		Modules:    make(map[string]*Module),
+		Services:   make(map[string]*Service),
 		fileModule: make(map[string]string, len(srcs)),
+		aggModule:  make(map[string]string),
 	}
 
 	// 1. Mapeia cada diretório que contém um mod.ds ao nome do módulo declarado.
@@ -79,6 +90,10 @@ func New(sources []Source, bag *diag.DiagnosticBag) *Program {
 	}
 	r.ResolveAll()
 	p.Symbols = r.Table()
+
+	// 4. Constrói o grafo módulo→service→canal e o mapeamento de aggregates
+	//    (REQ-7.2). Depende dos módulos e da topologia já parseados.
+	p.buildGraph()
 
 	return p
 }
