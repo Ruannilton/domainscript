@@ -70,6 +70,8 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 		c.checkWriteSidePrimitives("Event", n.Name, n.Fields) // 8.1
 	case *ast.UseCaseDecl:
 		c.checkNop(n.Execute, "UseCase") // 8.4
+	case *ast.ValueObjectDecl:
+		c.checkValueObjectAsEnum(n) // 8.11
 	case *ast.VersionDecl:
 		c.checkVersionUpcastDefaults(module, n) // 8.8
 	case *ast.TestDecl:
