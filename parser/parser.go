@@ -13,7 +13,15 @@ type parser struct {
 	toks []token.Token
 	pos  int
 	bag  *diag.DiagnosticBag
+
+	silenceWindow int // tokens a consumir após um erro antes de reabrir diagnósticos
+	sinceError    int // tokens consumidos desde o último erro emitido
 }
+
+// defaultSilenceWindow é o N da janela de silêncio: após um erro, novos
+// diagnósticos ficam suprimidos até que ao menos N tokens sejam consumidos
+// (REQ-3.5).
+const defaultSilenceWindow = 2
 
 func newParser(toks []token.Token, bag *diag.DiagnosticBag) *parser {
 	// Robustez (NFR-2): a sequência sempre termina em EOF, mesmo se o chamador
@@ -21,7 +29,12 @@ func newParser(toks []token.Token, bag *diag.DiagnosticBag) *parser {
 	if len(toks) == 0 || toks[len(toks)-1].Kind != token.EOF {
 		toks = append(toks, token.Token{Kind: token.EOF})
 	}
-	return &parser{toks: toks, bag: bag}
+	return &parser{
+		toks:          toks,
+		bag:           bag,
+		silenceWindow: defaultSilenceWindow,
+		sinceError:    defaultSilenceWindow, // janela aberta: o primeiro erro sempre passa
+	}
 }
 
 // --- cursor ---
@@ -47,11 +60,13 @@ func (p *parser) at(k token.Kind) bool { return p.cur().Kind == k }
 // atEnd reporta se o cursor chegou ao EOF.
 func (p *parser) atEnd() bool { return p.cur().Kind == token.EOF }
 
-// advance consome e devolve o token corrente; no EOF é no-op.
+// advance consome e devolve o token corrente; no EOF é no-op. Cada token
+// consumido reabre progressivamente a janela de silêncio (REQ-3.5).
 func (p *parser) advance() token.Token {
 	t := p.cur()
 	if t.Kind != token.EOF {
 		p.pos++
+		p.sinceError++
 	}
 	return t
 }
@@ -102,8 +117,24 @@ func (p *parser) synchronize(stop stopSet) {
 	}
 }
 
-// errorf registra um erro de sintaxe localizado no DiagnosticBag. A supressão
-// anti-cascata (janela de silêncio) é adicionada na tarefa 3.3.
+// errorf registra um erro de sintaxe localizado, sujeito à janela de silêncio:
+// se menos de silenceWindow tokens foram consumidos desde o último erro emitido,
+// o diagnóstico é suprimido para cortar a cascata (REQ-3.5, NFR-1). A
+// sincronização, ao avançar o cursor, reabre a janela para o próximo erro real.
 func (p *parser) errorf(pos token.Pos, format string, args ...any) {
+	if p.sinceError < p.silenceWindow {
+		return
+	}
 	p.bag.Errorf(pos, format, args...)
+	p.sinceError = 0
+}
+
+// ensureProgress garante que o cursor avançou desde `before`; se um caminho de
+// parsing ficou estacionado (e não estamos no EOF), força um advance para
+// impedir laço infinito (REQ-3.6, NFR-2). Deve ser chamado ao fim de cada laço
+// de parsing, como rede de segurança redundante com os sync sets.
+func (p *parser) ensureProgress(before int) {
+	if p.pos == before && !p.atEnd() {
+		p.advance()
+	}
 }
