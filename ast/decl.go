@@ -180,3 +180,16 @@ func NewAggregateDecl(name string, strategy string, snapshot Expr, storage []Sto
 	return &AggregateDecl{baseNode{span}, name, strategy, snapshot, storage, state, access, handlers, appliers}
 }
 func (*AggregateDecl) declNode() {}
+
+// CommandDecl é a declaração de um Command (§5.1): campos com ValueObjects/Enums
+// e referências via ref.
+type CommandDecl struct {
+	baseNode
+	Name   string
+	Fields []*Field
+}
+
+func NewCommandDecl(name string, fields []*Field, span Span) *CommandDecl {
+	return &CommandDecl{baseNode{span}, name, fields}
+}
+func (*CommandDecl) declNode() {}

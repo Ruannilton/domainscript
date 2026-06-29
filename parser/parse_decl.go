@@ -20,6 +20,8 @@ func (p *parser) parseDecl() ast.Decl {
 		return p.parseEvent()
 	case p.at(token.AGGREGATE):
 		return p.parseAggregate()
+	case p.at(token.COMMAND):
+		return p.parseCommand()
 	default:
 		start := p.cur().Pos
 		p.errorf(start, "esperava uma declaração de topo, encontrei %s", p.cur().Kind)
@@ -224,6 +226,15 @@ func (p *parser) parseCoerce() *ast.CoerceBlock {
 	from := p.parseTypeRef()
 	body := p.parseBlock()
 	return ast.NewCoerceBlock(from, body, p.spanFrom(start))
+}
+
+// parseCommand parseia "Command Name { Fields }" (§5.1).
+func (p *parser) parseCommand() ast.Decl {
+	start := p.cur().Pos
+	p.expect(token.COMMAND)
+	name := p.parseIdentName()
+	fields := p.parseFieldBlock()
+	return ast.NewCommandDecl(name, fields, p.spanFrom(start))
 }
 
 // parseAggregate parseia "Aggregate Name { membros }" (§4.5).

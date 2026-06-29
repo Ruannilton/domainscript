@@ -132,6 +132,12 @@ func sdecl(d ast.Decl) string {
 			s += " (Apply " + ap.Event + " " + sstmt(ap.Body) + ")"
 		}
 		return s + ")"
+	case *ast.CommandDecl:
+		s := "(Command " + n.Name
+		for _, f := range n.Fields {
+			s += " " + sfield(f)
+		}
+		return s + ")"
 	case *ast.ErrorDecl:
 		return "<errdecl>"
 	default:
