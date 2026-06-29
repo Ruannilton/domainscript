@@ -58,3 +58,45 @@ func isStringLit(e ast.Expr) bool {
 	lit, ok := e.(*ast.Literal)
 	return ok && lit.Kind == token.STRING
 }
+
+// checkChannelOrderBy implementa REQ-5.16 (⚠️, §11): um canal de entrega por
+// `queue` ou `stream` sem `orderBy` não garante ordem de mensagens. Avisa por
+// canal sem a chave.
+func (c *Checker) checkChannelOrderBy(topo *ast.TopologyDecl) {
+	for _, ch := range topo.Channels {
+		if ch == nil {
+			continue
+		}
+		via := configIdent(ch.Entries, "via")
+		if via != "queue" && via != "stream" {
+			continue
+		}
+		if !hasConfigKey(ch.Entries, "orderBy") {
+			c.bag.Warningf(ch.Pos(),
+				"canal %s -> %s via %q não declara orderBy: a ordem das mensagens não é garantida (§11)",
+				ch.From, ch.To, via)
+		}
+	}
+}
+
+// configIdent devolve o nome do identificador valor da chave key (ex.: via:
+// queue → "queue"); "" se ausente ou não-identificador.
+func configIdent(entries []ast.ConfigEntry, key string) string {
+	for _, e := range entries {
+		if e.Key == key {
+			if id, ok := e.Value.(*ast.Ident); ok {
+				return id.Name
+			}
+		}
+	}
+	return ""
+}
+
+func hasConfigKey(entries []ast.ConfigEntry, key string) bool {
+	for _, e := range entries {
+		if e.Key == key {
+			return true
+		}
+	}
+	return false
+}
