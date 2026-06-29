@@ -2,12 +2,33 @@ package parser
 
 import (
 	"domainscript/ast"
+	"domainscript/diag"
 	"domainscript/token"
 )
 
-// parseDecl roteia para o parser da declaração de topo conforme a keyword. O
-// switch cresce a cada construto adicionado nas tarefas 4B; o roteamento
-// completo com recovery de arquivo é a tarefa 4B.13.
+// Parse constrói a AST de um arquivo a partir dos tokens, acumulando erros de
+// sintaxe no bag. Nunca retorna nil: declarações não parseáveis viram nós de
+// erro (REQ-2.7). É a API que o driver usa após o lexer.
+func Parse(toks []token.Token, bag *diag.DiagnosticBag) *ast.File {
+	return newParser(toks, bag).parseFile()
+}
+
+// parseFile parseia a sequência de declarações de topo até o EOF. Cada iteração
+// reconhece uma declaração independentemente; falhas reancoram na próxima
+// declaração de topo via o recovery de parseDecl, e ensureProgress garante
+// terminação (REQ-2.1, REQ-3.7).
+func (p *parser) parseFile() *ast.File {
+	start := p.cur().Pos
+	var decls []ast.Decl
+	for !p.atEnd() {
+		before := p.pos
+		decls = append(decls, p.parseDecl())
+		p.ensureProgress(before)
+	}
+	return ast.NewFile(decls, p.spanFrom(start))
+}
+
+// parseDecl roteia para o parser da declaração de topo conforme a keyword.
 func (p *parser) parseDecl() ast.Decl {
 	switch {
 	case p.at(token.VALUEOBJECT):

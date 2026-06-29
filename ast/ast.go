@@ -36,6 +36,15 @@ type Expr interface {
 	exprNode()
 }
 
+// File é a raiz da AST de um arquivo: a sequência de declarações de topo, com
+// nós de erro no lugar das que não puderam ser parseadas (REQ-2.7).
+type File struct {
+	baseNode
+	Decls []Decl
+}
+
+func NewFile(decls []Decl, span Span) *File { return &File{baseNode{span}, decls} }
+
 // baseNode fornece a implementação comum de Node (posição e span) para
 // embutir nos nós concretos, evitando repetição.
 type baseNode struct {
