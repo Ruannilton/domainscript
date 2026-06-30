@@ -3,6 +3,7 @@ package sema
 import (
 	"domainscript/ast"
 	"domainscript/astutil"
+	"domainscript/diag"
 	"domainscript/symbols"
 	"domainscript/token"
 	"domainscript/types"
@@ -145,7 +146,7 @@ func (c *Checker) compatExpr(module string, m *types.Model, sc types.Scope, e as
 		r := m.Infer(module, n.Right, sc)
 		// Operandos devem ser mutuamente compatíveis; reporta no operando direito.
 		if reportable(l, r) && reportable(r, l) {
-			c.bag.Errorf(n.Right.Pos(),
+			c.bag.CodedErrorf(n.Right.Pos(), diag.CodeTypeMismatch,
 				"operandos incompatíveis: %s e %s", l.String(), r.String())
 		}
 	case *ast.CallExpr:
@@ -205,7 +206,7 @@ func paramType(params []types.Field, arg ast.Arg, i int) types.Type {
 // e o par é reportável (ver reportable).
 func (c *Checker) reportIncompat(dst, src types.Type, pos token.Pos) {
 	if reportable(dst, src) {
-		c.bag.Errorf(pos,
+		c.bag.CodedErrorf(pos, diag.CodeTypeMismatch,
 			"tipo incompatível: esperado %s, encontrado %s", dst.String(), src.String())
 	}
 }

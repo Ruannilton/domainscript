@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"domainscript/ast"
+	"domainscript/diag"
 	"domainscript/symbols"
 	"domainscript/token"
 )
@@ -184,7 +185,7 @@ func (r *Resolver) resolveConfigRef(module string, modules map[string]bool, ref 
 	switch ref.expect.space {
 	case spaceModule:
 		if !modules[ref.name] {
-			r.bag.Errorf(ref.pos, "referência de configuração não declarada: %q (esperava %s)", ref.name, ref.expect.label)
+			r.bag.CodedErrorf(ref.pos, diag.CodeConfigRef, "referência de configuração não declarada: %q (esperava %s)", ref.name, ref.expect.label)
 		}
 	case spaceSymbol:
 		sym, ok := r.tab.Lookup(module, ref.name)
@@ -192,11 +193,11 @@ func (r *Resolver) resolveConfigRef(module string, modules map[string]bool, ref 
 			sym, ok = r.tab.Find(ref.name)
 		}
 		if !ok {
-			r.bag.Errorf(ref.pos, "referência de configuração não declarada: %q (esperava %s)", ref.name, ref.expect.label)
+			r.bag.CodedErrorf(ref.pos, diag.CodeConfigRef, "referência de configuração não declarada: %q (esperava %s)", ref.name, ref.expect.label)
 			return
 		}
 		if !kindAllowed(sym.Kind, ref.expect.kinds) {
-			r.bag.Errorf(ref.pos, "referência de configuração %q: esperava %s, encontrou %s",
+			r.bag.CodedErrorf(ref.pos, diag.CodeConfigRef, "referência de configuração %q: esperava %s, encontrou %s",
 				ref.name, ref.expect.label, sym.Kind)
 		}
 	}

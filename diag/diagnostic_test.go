@@ -60,6 +60,19 @@ func TestOrdenacaoEstavelERender(t *testing.T) {
 	}
 }
 
+// REQ-6.6 / §design type-checking 3.7: um diagnóstico com código o renderiza
+// anexado à severidade ("error[E103]"), e um sem código mantém o formato base
+// inalterado — a extensão é compatível com os diagnósticos das fases anteriores.
+func TestRenderComCodigo(t *testing.T) {
+	b := New()
+	b.CodedErrorf(p(2, 4), CodeTypeMismatch, "tipo incompatível: esperado Money, encontrado WalletId")
+	b.Errorf(p(1, 1), "sem código")
+	want := "1:1: error: sem código\n2:4: error[E103]: tipo incompatível: esperado Money, encontrado WalletId"
+	if got := b.Render(); got != want {
+		t.Errorf("Render =\n%s\n\nquero\n%s", got, want)
+	}
+}
+
 func TestHasErrors(t *testing.T) {
 	b := New()
 	if b.HasErrors() {

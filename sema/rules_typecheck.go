@@ -6,6 +6,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/astutil"
+	"domainscript/diag"
 	"domainscript/types"
 )
 
@@ -171,7 +172,7 @@ func (c *Checker) checkMemberExpr(module string, m *types.Model, sc types.Scope,
 	if sug := closestMember(me.Name, members); sug != "" {
 		msg += fmt.Sprintf(" (você quis dizer %q?)", sug)
 	}
-	c.bag.Errorf(me.NamePos, "%s", msg)
+	c.bag.CodedErrorf(me.NamePos, diag.CodeUnknownMember, "%s", msg)
 }
 
 // closestMember devolve o nome de membro mais próximo de name por distância de

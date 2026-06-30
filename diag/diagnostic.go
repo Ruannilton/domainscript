@@ -28,8 +28,8 @@ func (s Severity) String() string {
 	}
 }
 
-// Code é o código estável de um diagnóstico (ex.: "E001", "W014"), reservado
-// para tooling. Ainda não preenchido nesta fase (§design 3.4).
+// Code é o código estável de um diagnóstico (ex.: "E100"), para tooling. Vazio
+// quando a família ainda não tem código atribuído. O catálogo está em codes.go.
 type Code string
 
 // Diagnostic é uma mensagem localizada e acionável emitida por qualquer fase.
@@ -40,9 +40,16 @@ type Diagnostic struct {
 	Code     Code // reservado; vazio por enquanto
 }
 
-// String renderiza o diagnóstico como "linha:coluna: severidade: mensagem".
+// String renderiza o diagnóstico como "linha:coluna: severidade: mensagem"
+// (REQ-6.6). Quando há um código, ele entra anexado à severidade no estilo
+// "error[E103]" — uma extensão estável do mesmo formato (vazio → idêntico ao
+// formato base, preservando os diagnósticos sem código).
 func (d Diagnostic) String() string {
-	return fmt.Sprintf("%d:%d: %s: %s", d.Pos.Line, d.Pos.Col, d.Severity, d.Msg)
+	sev := d.Severity.String()
+	if d.Code != "" {
+		sev = fmt.Sprintf("%s[%s]", sev, d.Code)
+	}
+	return fmt.Sprintf("%d:%d: %s: %s", d.Pos.Line, d.Pos.Col, sev, d.Msg)
 }
 
 // DefaultMaxErrors é o teto padrão de erros antes da supressão (REQ-6.5).
@@ -92,6 +99,12 @@ func (b *DiagnosticBag) Add(d Diagnostic) {
 // Errorf adiciona um erro formatado na posição dada.
 func (b *DiagnosticBag) Errorf(pos token.Pos, format string, args ...any) {
 	b.Add(Diagnostic{Severity: SeverityError, Pos: pos, Msg: fmt.Sprintf(format, args...)})
+}
+
+// CodedErrorf adiciona um erro formatado portando um código estável do catálogo
+// (codes.go), para as famílias de diagnóstico que já o têm atribuído (REQ-9..13).
+func (b *DiagnosticBag) CodedErrorf(pos token.Pos, code Code, format string, args ...any) {
+	b.Add(Diagnostic{Severity: SeverityError, Pos: pos, Msg: fmt.Sprintf(format, args...), Code: code})
 }
 
 // Warningf adiciona um aviso formatado na posição dada.

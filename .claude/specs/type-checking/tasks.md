@@ -131,7 +131,7 @@
 
 ## Fase F — Códigos de Diagnóstico e Fechamento (NFR-9/10)
 
-- [ ] **F.1** Preencher `diag.Code` para as novas famílias (`E100`+), conforme o
+- [x] **F.1** Preencher `diag.Code` para as novas famílias (`E100`+), conforme o
   catálogo do design §3.7. _(REQ-6, §design 3.7)_
   **Conclusão:** diagnósticos novos carregam código estável; teste de render com
   código.

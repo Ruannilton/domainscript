@@ -1,6 +1,9 @@
 package resolver
 
-import "domainscript/ast"
+import (
+	"domainscript/ast"
+	"domainscript/diag"
+)
 
 // resolve_body.go implementa a resolução de nomes em corpos executáveis (REQ-9,
 // §design type-checking 3.3): para cada corpo de cada declaração, monta um Scope
@@ -273,7 +276,7 @@ func (r *Resolver) resolveIdent(module string, sc *Scope, id *ast.Ident) {
 	if r.isEnumMember(module, name) {
 		return // membro de Enum acessível por nome (REQ-9.2)
 	}
-	r.bag.Errorf(id.Pos(), "nome não declarado: %q", name)
+	r.bag.CodedErrorf(id.Pos(), diag.CodeNameInBody, "nome não declarado: %q", name)
 }
 
 // isEnumMember reporta se name é um membro de algum Enum declarado no módulo. Os
