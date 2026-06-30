@@ -78,18 +78,18 @@
 > Base para membro (D) e compatibilidade (E). Sem diagnósticos próprios ainda
 > (exceto o tipo de erro sentinela).
 
-- [ ] **C.1** Pacote `types`: representação `Type` e variantes (`Primitive`,
+- [x] **C.1** Pacote `types`: representação `Type` e variantes (`Primitive`,
   `VOType`, `EnumType`, `ShapeType`, `Generic`, `FuncType`, `errorType`).
   _(REQ-11.1, §design 3.5)_
   **Conclusão:** compila; teste de identidade/igualdade de tipos.
   **Commit:** `feat(types): representação de Type e variantes`
 
-- [ ] **C.2** `model.go`: `TypeOf(symbol)` e catálogo de membros por tipo
+- [x] **C.2** `model.go`: `TypeOf(symbol)` e catálogo de membros por tipo
   (campos de VO/Aggregate/Event/Command, membros de Enum). _(REQ-11.1, §design 3.5)_
   **Conclusão:** teste que dado um Aggregate, `state`/`self` expõem seus campos.
   **Commit:** `feat(types): tipo de declaração e catálogo de membros`
 
-- [ ] **C.3** `infer.go`: `Infer(expr, scope)` com propagação de `errorType` sem
+- [x] **C.3** `infer.go`: `Infer(expr, scope)` com propagação de `errorType` sem
   cascata. _(REQ-11.2/11.3, §design 3.5)_
   **Conclusão:** testes de inferência (literal, construção de VO, acesso, operador);
   teste de que subexpressão de erro produz `errorType` e **não** emite diagnóstico.
