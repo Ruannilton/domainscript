@@ -1,6 +1,10 @@
 package symbols
 
-import "domainscript/ast"
+import (
+	"sort"
+
+	"domainscript/ast"
+)
 
 // Kind classifica um símbolo declarado pela linguagem. É a categoria sob a qual
 // um nome vive na tabela; o resolver e o checker a consultam para distinguir, por
@@ -121,6 +125,28 @@ func (t *SymbolTable) Lookup(module, name string) (*Symbol, bool) {
 func (t *SymbolTable) LookupPublic(name string) (*Symbol, bool) {
 	s, ok := t.public[name]
 	return s, ok
+}
+
+// Find procura name em qualquer escopo: primeiro o nível público, depois os
+// módulos em ordem determinística (NFR-3). É a busca global do programa (REQ-7.3),
+// usada para localizar uma declaração mesmo fora do módulo que a referencia — a
+// base das regras de visibilidade cross-module (ex.: Event privado de outro
+// módulo, REQ-5.8). Devolve o primeiro símbolo encontrado.
+func (t *SymbolTable) Find(name string) (*Symbol, bool) {
+	if s, ok := t.public[name]; ok {
+		return s, true
+	}
+	mods := make([]string, 0, len(t.byModule))
+	for m := range t.byModule {
+		mods = append(mods, m)
+	}
+	sort.Strings(mods)
+	for _, m := range mods {
+		if s, ok := t.byModule[m][name]; ok {
+			return s, true
+		}
+	}
+	return nil, false
 }
 
 // Module devolve o mapa nome→símbolo de um módulo (nil se o módulo não tem

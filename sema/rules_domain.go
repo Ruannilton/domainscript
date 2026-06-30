@@ -1,6 +1,36 @@
 package sema
 
-import "domainscript/ast"
+import (
+	"domainscript/ast"
+	"domainscript/symbols"
+)
+
+// checkPolicyPublicEvent implementa REQ-5.8 (§7, §23): uma Policy só pode reagir,
+// cross-module, a eventos exportados como PublicEvent. Quando o `on` de uma Policy
+// nomeia um Event privado declarado em outro módulo, o consumo viola o
+// encapsulamento do módulo produtor — é erro. Eventos do próprio módulo e
+// PublicEvents resolvem normalmente (Lookup) e não são alvo. É cross-file: o Event
+// privado é invisível ao Lookup module-scoped, então a busca é global (REQ-7.3).
+func (c *Checker) checkPolicyPublicEvent() {
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			pol, ok := d.(*ast.PolicyDecl)
+			if !ok || pol.On == "" {
+				continue
+			}
+			if _, ok := c.tab.Lookup(u.Module, pol.On); ok {
+				continue // resolve no próprio módulo ou como PublicEvent: permitido
+			}
+			sym, ok := c.tab.Find(pol.On)
+			if !ok || sym.Kind != symbols.KindEvent || sym.Public || sym.Module == u.Module {
+				continue
+			}
+			c.bag.Errorf(pol.Pos(),
+				"Policy %q reage ao Event %q do módulo %q, que não é PublicEvent: exporte-o como PublicEvent para consumo cross-module (§7)",
+				pol.Name, pol.On, sym.Module)
+		}
+	}
+}
 
 // checkNotificationAdapters implementa REQ-5.3 (§9.1): toda Notification precisa
 // de um Adapter correspondente (mesmo nome, mesmo módulo); sem ele é erro. É uma

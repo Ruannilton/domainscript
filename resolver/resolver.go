@@ -232,7 +232,16 @@ func (r *Resolver) resolveOn(module, owner, event string, pos token.Pos) {
 	if event == "" {
 		return
 	}
-	if _, ok := r.tab.Lookup(module, event); !ok {
-		r.bag.Errorf(pos, "Policy %q reage a Event não declarado: %q", owner, event)
+	if _, ok := r.tab.Lookup(module, event); ok {
+		return
 	}
+	// Fallback global (REQ-7.3): um Event privado de outro módulo existe no
+	// programa mas não é visível pelo Lookup module-scoped. Resolvê-lo aqui evita
+	// um falso "não declarado"; a regra de visibilidade — consumo cross-module
+	// exige PublicEvent — é decidida na semântica (REQ-5.8). Só é erro de resolução
+	// quando o Event não existe em módulo algum.
+	if _, ok := r.tab.Find(event); ok {
+		return
+	}
+	r.bag.Errorf(pos, "Policy %q reage a Event não declarado: %q", owner, event)
 }
