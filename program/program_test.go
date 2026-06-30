@@ -80,7 +80,7 @@ func TestNewAggregatesFilesByModule(t *testing.T) {
 // PublicEvent declarado ali é visível de outro módulo (REQ-7.4).
 func TestNewContractsInheritParentModule(t *testing.T) {
 	mod := parseSrc(t, `Module Pedidos { Database OrdersDb { provider: "pg" manages: [Order] } }`)
-	contract := parseSrc(t, `PublicEvent OrderPlaced { id OrderId } ValueObject OrderId(string) { Valid { ok } }`)
+	contract := parseSrc(t, `PublicEvent OrderPlaced { id OrderId } ValueObject OrderId(string) { Valid { ok } } Aggregate Order { state { id OrderId } }`)
 	consumer := parseSrc(t, `Policy OnPlaced on OrderPlaced { delivery AtLeastOnce execute { return } }`)
 
 	bag := diag.New()

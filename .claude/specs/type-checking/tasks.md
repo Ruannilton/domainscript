@@ -64,7 +64,7 @@
   `ServiceDef.modules`, `ChannelDef.From/To`, `VersionRoute.Target`.
   **Commit:** `feat(resolver): catálogo de referências de configuração`
 
-- [ ] **B.2** Resolução das refs contra a tabela de símbolos: inexistente → erro;
+- [x] **B.2** Resolução das refs contra a tabela de símbolos: inexistente → erro;
   `Kind` divergente → erro esperado-vs-encontrado. _(REQ-10.2/10.3)_
   **Conclusão (par de testes):** `manages: [Inexistente]` dispara; `manages:
   [Aggregate válido]` silencia; `manages: [umEvent]` dispara erro de Kind. Inclui o

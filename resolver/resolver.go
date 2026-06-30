@@ -67,6 +67,11 @@ func (r *Resolver) ResolveAll() {
 	// (§design type-checking 4). Um identificador solto num corpo resolve contra o
 	// escopo léxico local, os receptores contextuais e os símbolos do módulo.
 	r.resolveBodies()
+	// Passagem de resolução de referências de configuração (REQ-10): os nomes que
+	// amarram a topologia (manages, alvos de rota/rpc, módulos de service, canais,
+	// alvos de versão) são resolvidos contra a tabela de símbolos e os módulos
+	// declarados (§design type-checking 3.4).
+	r.resolveConfig()
 }
 
 // Resolve é o atalho de arquivo único: coleta e resolve um único arquivo num

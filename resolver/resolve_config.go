@@ -146,3 +146,68 @@ func configValue(entries []ast.ConfigEntry, key string) ast.Expr {
 	}
 	return nil
 }
+
+// resolveConfig resolve as referências de configuração de todas as unidades
+// coletadas (REQ-10). Roda como passagem do resolver, após a resolução de tipos e
+// de corpos, quando todos os símbolos e módulos do programa já estão disponíveis.
+func (r *Resolver) resolveConfig() {
+	modules := r.declaredModules()
+	for _, u := range r.units {
+		for _, d := range u.file.Decls {
+			for _, ref := range collectConfigRefs(d) {
+				r.resolveConfigRef(u.module, modules, ref)
+			}
+		}
+	}
+}
+
+// declaredModules é o conjunto de nomes de módulo declarados (mod.ds) no programa.
+// Módulos não vivem na tabela de símbolos, então a resolução de refs de topologia
+// (modules, canais) os consulta aqui (REQ-10.1).
+func (r *Resolver) declaredModules() map[string]bool {
+	mods := make(map[string]bool)
+	for _, u := range r.units {
+		for _, d := range u.file.Decls {
+			if m, ok := d.(*ast.ModuleDecl); ok && m.Name != "" {
+				mods[m.Name] = true
+			}
+		}
+	}
+	return mods
+}
+
+// resolveConfigRef resolve uma única referência: existência e Kind esperado
+// (REQ-10.2/10.3). Refs de símbolo procuram primeiro no módulo do arquivo e depois
+// globalmente (config liga a topologia entre módulos); refs de módulo consultam o
+// conjunto de módulos declarados.
+func (r *Resolver) resolveConfigRef(module string, modules map[string]bool, ref configRef) {
+	switch ref.expect.space {
+	case spaceModule:
+		if !modules[ref.name] {
+			r.bag.Errorf(ref.pos, "referência de configuração não declarada: %q (esperava %s)", ref.name, ref.expect.label)
+		}
+	case spaceSymbol:
+		sym, ok := r.tab.Lookup(module, ref.name)
+		if !ok {
+			sym, ok = r.tab.Find(ref.name)
+		}
+		if !ok {
+			r.bag.Errorf(ref.pos, "referência de configuração não declarada: %q (esperava %s)", ref.name, ref.expect.label)
+			return
+		}
+		if !kindAllowed(sym.Kind, ref.expect.kinds) {
+			r.bag.Errorf(ref.pos, "referência de configuração %q: esperava %s, encontrou %s",
+				ref.name, ref.expect.label, sym.Kind)
+		}
+	}
+}
+
+// kindAllowed reporta se k está entre os Kinds aceitos pelo alvo.
+func kindAllowed(k symbols.Kind, allowed []symbols.Kind) bool {
+	for _, a := range allowed {
+		if k == a {
+			return true
+		}
+	}
+	return false
+}
