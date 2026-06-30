@@ -121,6 +121,8 @@ func (c *Checker) checkDecl(module string, d ast.Decl) {
 		c.checkChannelOrderBy(n) // 8.12
 	case *ast.VersionDecl:
 		c.checkVersionUpcastDefaults(module, n) // 8.8
+	case *ast.UpcastDecl:
+		c.checkUpcastReplaceableByDefault(n) // 11.4 (REQ-5.18)
 	case *ast.TestDecl:
 		c.checkTestFile(module, n) // 8.9
 	}
