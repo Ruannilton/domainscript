@@ -347,19 +347,20 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 ## Fase 11 — Robustez, Determinismo e Fechamento (NFR-2/3/4)
 
-- [ ] **11.1** Testes de robustez: entradas truncadas, adversárias e fuzzing leve;
+- [x] **11.1** Testes de robustez: entradas truncadas, adversárias e fuzzing leve;
   ausência de crash e laço. _(NFR-2)_
   **Commit:** `test(parser): robustez e fuzzing leve`
-- [ ] **11.2** Testes de determinismo: mesma entrada → diagnósticos idênticos em
+- [x] **11.2** Testes de determinismo: mesma entrada → diagnósticos idênticos em
   ordem. _(NFR-3)_
   **Commit:** `test(diag): determinismo da saída`
-- [ ] **11.3** Verificar limite de cascata: erro de sintaxe não gera mais que um
+- [x] **11.3** Verificar limite de cascata: erro de sintaxe não gera mais que um
   pequeno número fixo de diagnósticos derivados. _(NFR-1, REQ-3.5)_
   **Commit:** `test(parser): limite de cascata`
-- [ ] **11.4** Auditoria de cobertura: par de testes (positivo+negativo) para
-  **cada** regra da §23. _(NFR-4)_
+- [x] **11.4** Auditoria de cobertura: par de testes (positivo+negativo) para
+  **cada** regra da §23. _(NFR-4)_ A auditoria revelou e fechou a lacuna da regra
+  REQ-5.18 (Upcast substituível por default).
   **Commit:** `test(sema): auditoria de cobertura da §23`
-- [ ] **11.5** Revisão final contra o **Definition of Done** (`requirements.md` §5);
+- [x] **11.5** Revisão final contra o **Definition of Done** (`requirements.md` §5);
   atualizar `README.md` com estado e exemplos de uso.
   **Commit:** `docs(repo): fechamento e Definition of Done`
 
