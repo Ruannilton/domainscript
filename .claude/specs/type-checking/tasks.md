@@ -137,7 +137,7 @@
   código.
   **Commit:** `feat(diag): códigos para diagnósticos de nome e tipo`
 
-- [ ] **F.2** Regressão do Wallet: corrigir `docs/examples/wallet` e fixar o teste
+- [x] **F.2** Regressão do Wallet: corrigir `docs/examples/wallet` e fixar o teste
   de que (a) a versão com os 3 typos dispara exatamente 3 erros esperados e (b) a
   versão corrigida silencia. _(DoD §5.1–5.4)_
   **Conclusão:** `dsc docs/examples/wallet` (corrigido) → exit 0; teste de
