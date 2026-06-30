@@ -73,6 +73,33 @@ func TestErrorTypeSentinel(t *testing.T) {
 	}
 }
 
+func TestAssignable(t *testing.T) {
+	money := &VOType{Name: "Money"}
+	walletId := &VOType{Name: "WalletId"}
+	intT := &Primitive{"integer"}
+	decT := &Primitive{"decimal"}
+	strT := &Primitive{"string"}
+
+	cases := []struct {
+		name     string
+		dst, src Type
+		want     bool
+	}{
+		{"tipo idêntico", money, &VOType{Name: "Money"}, true},
+		{"VO distinto", money, walletId, false},
+		{"coerção integer→decimal", decT, intT, true},
+		{"sem coerção decimal→integer", intT, decT, false},
+		{"primitivos distintos", intT, strT, false},
+		{"erro à esquerda absorve", ErrorType, money, true},
+		{"erro à direita absorve", money, ErrorType, true},
+	}
+	for _, c := range cases {
+		if got := Assignable(c.dst, c.src); got != c.want {
+			t.Errorf("%s: Assignable(%s, %s) = %v, quer %v", c.name, c.dst, c.src, got, c.want)
+		}
+	}
+}
+
 func TestStringForms(t *testing.T) {
 	cases := []struct {
 		t    Type

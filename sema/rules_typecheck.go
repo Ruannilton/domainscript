@@ -24,9 +24,8 @@ import (
 // do state; event/cmd → campos do Event/Command), origem do bug `self.i` do Wallet.
 
 // checkMemberAccess roda a checagem de acesso a membro sobre todas as unidades,
-// construindo um único Model (memoizado) sobre a tabela de símbolos.
-func (c *Checker) checkMemberAccess() {
-	m := types.NewModel(c.tab)
+// usando o Model compartilhado (memoizado) sobre a tabela de símbolos.
+func (c *Checker) checkMemberAccess(m *types.Model) {
 	for _, u := range c.units {
 		for _, d := range u.File.Decls {
 			c.checkDeclMembers(u.Module, m, d)

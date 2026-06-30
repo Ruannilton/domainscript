@@ -121,6 +121,41 @@ func IsError(t Type) bool {
 	return ok
 }
 
+// IsPrimitive reporta se t é um tipo primitivo embutido. Usado pela checagem de
+// compatibilidade para coordenar com a Regra de Ouro do Write Side (REQ-5.1): um
+// primitivo onde um tipo de domínio é estruturalmente esperado já é reportado por
+// aquela regra, então a checagem de tipos não o reporta de novo (REQ-13.3).
+func IsPrimitive(t Type) bool {
+	_, ok := t.(*Primitive)
+	return ok
+}
+
+// Assignable reporta se um valor de tipo src pode ser usado onde dst é esperado
+// (atribuição, argumento, operando, return — REQ-13.1). É a relação de
+// atribuibilidade do §design type-checking 3.6: igualdade de tipo mais as poucas
+// coerções explícitas do spec. Um tipo de erro de qualquer lado é sempre
+// atribuível — a causa já foi reportada e a anti-cascata (REQ-13/NFR-9) não deve
+// gerar um segundo diagnóstico.
+func Assignable(dst, src Type) bool {
+	if IsError(dst) || IsError(src) {
+		return true
+	}
+	if Identical(dst, src) {
+		return true
+	}
+	// Coerção numérica: um integer encaixa onde um decimal é esperado.
+	if isPrim(dst, "decimal") && isPrim(src, "integer") {
+		return true
+	}
+	return false
+}
+
+// isPrim reporta se t é o primitivo de nome name.
+func isPrim(t Type, name string) bool {
+	p, ok := t.(*Primitive)
+	return ok && p.Name == name
+}
+
 // Identical reporta se a e b são o mesmo tipo. Tipos nomeados (Primitive, VOType,
 // EnumType, ShapeType) usam identidade nominal — comparar só o nome evita recursão
 // infinita em tipos mutuamente recursivos. Generic e FuncType são estruturais

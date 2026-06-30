@@ -115,7 +115,7 @@
 
 > Profundidade definida no design; coordena com REQ-5.1 para não duplicar.
 
-- [ ] **E.1** Relação de atribuibilidade e checagem em atribuição/argumento/
+- [x] **E.1** Relação de atribuibilidade e checagem em atribuição/argumento/
   operador/return. _(REQ-13.1/13.2, §design 3.6)_
   **Conclusão (par de testes):** uso incompatível dispara erro esperado-vs-
   encontrado; uso compatível silencia.

@@ -182,6 +182,65 @@ func (m *Model) Members(t Type) map[string]Type {
 	}
 }
 
+// CtorParams devolve os parâmetros posicionais da construção/chamada de um
+// símbolo, na ordem de declaração: os campos de um VO composto/Command/Event/
+// View/Notification, o tipo embrulhado de um VO wrapper, ou os parâmetros de uma
+// Query. É a base da checagem de argumentos (REQ-13.1). Devolve nil para símbolos
+// que não se constroem com argumentos posicionais checáveis. Um campo `ref`
+// (referência por id, type-safety de Command) recebe o tipo de erro: o que se
+// passa ali é um id cujo modelo este estágio não captura, então não é checado.
+func (m *Model) CtorParams(sym *symbols.Symbol) []Field {
+	if sym == nil {
+		return nil
+	}
+	switch n := sym.Decl.(type) {
+	case *ast.ValueObjectDecl:
+		if len(n.Fields) > 0 {
+			return m.ctorFields(sym.Module, n.Fields)
+		}
+		if n.Base != nil {
+			return []Field{{Type: m.typeRef(sym.Module, n.Base)}}
+		}
+	case *ast.CommandDecl:
+		return m.ctorFields(sym.Module, n.Fields)
+	case *ast.EventDecl:
+		return m.ctorFields(sym.Module, n.Fields)
+	case *ast.ViewDecl:
+		return m.ctorFields(sym.Module, n.Fields)
+	case *ast.NotificationDecl:
+		return m.ctorFields(sym.Module, n.Fields)
+	case *ast.QueryDecl:
+		out := make([]Field, 0, len(n.Params))
+		for _, p := range n.Params {
+			if p != nil {
+				out = append(out, Field{Name: p.Name, Type: m.typeRef(sym.Module, p.Type)})
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// ctorFields resolve campos a parâmetros de construção, neutralizando os campos
+// `ref` (ver CtorParams).
+func (m *Model) ctorFields(module string, fields []*ast.Field) []Field {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]Field, 0, len(fields))
+	for _, f := range fields {
+		if f == nil || f.Name == "" {
+			continue
+		}
+		t := ErrorType
+		if !f.Ref {
+			t = m.typeRef(module, f.Type)
+		}
+		out = append(out, Field{Name: f.Name, Type: t})
+	}
+	return out
+}
+
 // fieldMap indexa campos por nome.
 func fieldMap(fields []Field) map[string]Type {
 	if len(fields) == 0 {

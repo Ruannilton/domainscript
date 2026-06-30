@@ -7,6 +7,7 @@ import (
 	"domainscript/diag"
 	"domainscript/program"
 	"domainscript/symbols"
+	"domainscript/types"
 )
 
 // Unit é um arquivo a checar com o módulo a que pertence. As regras cross-file
@@ -53,7 +54,14 @@ func (c *Checker) Check() {
 	c.checkNotificationAdapters() // 8.7
 	c.checkForeignSignatures()    // 8.10
 	c.checkHandleErrorCoverage()  // 8.14
-	c.checkMemberAccess()         // REQ-12 (acesso a membro)
+
+	// Tipos: um único Model sobre a tabela de símbolos serve às duas regras de
+	// checagem estática (REQ-12 acesso a membro, REQ-13 compatibilidade), que
+	// rodam depois da resolução de nomes para que um nome não resolvido vire tipo
+	// de erro em vez de um segundo diagnóstico (anti-cascata, §design 4).
+	m := types.NewModel(c.tab)
+	c.checkMemberAccess(m) // REQ-12 (acesso a membro)
+	c.checkTypeCompat(m)   // REQ-13 (compatibilidade de tipos)
 
 	// Regras cross-file (Fase 9): exigem o programa inteiro agregado (REQ-7) e só
 	// rodam na checagem de projeto. Cada uma percorre as unidades consultando o
