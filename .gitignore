@@ -1,7 +1,7 @@
 # Binários compilados
 /dist/
-dsc
-dsc.exe
+/dsc
+/dsc.exe
 *.exe
 
 # Artefatos de teste e cobertura
