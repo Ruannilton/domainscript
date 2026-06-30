@@ -121,7 +121,7 @@
   encontrado; uso compatível silencia.
   **Commit:** `feat(sema): checagem de compatibilidade de tipos`
 
-- [ ] **E.2** Coordenação com a Regra de Ouro (REQ-5.1): uma só mensagem por causa.
+- [x] **E.2** Coordenação com a Regra de Ouro (REQ-5.1): uma só mensagem por causa.
   _(REQ-13.3)_
   **Conclusão:** teste de que primitivo no Write Side gera **um** diagnóstico, não
   dois.
