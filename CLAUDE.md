@@ -78,7 +78,7 @@ These are the load-bearing decisions — violating them breaks the design's core
 - **Cross-file rules need the whole program.** Rules REQ-5.9–12, 16–17, 23 cannot
   run file-by-file; they run after program aggregation (REQ-7).
 
-## Planned package layout (per design.md §2)
+## Package layout (per design.md §2 — all implemented)
 
 ```
 cmd/dsc/        CLI (REQ-8)
