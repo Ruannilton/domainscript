@@ -137,14 +137,23 @@ func (m *Model) typeRef(module string, t *ast.TypeRef) Type {
 		}
 		return &Generic{Ctor: t.Name, Args: args}
 	}
-	if sym, ok := m.tab.Lookup(module, t.Name); ok {
-		return m.TypeOf(sym)
-	}
-	// Fallback global: um tipo público de outro módulo (REQ-7.3).
-	if sym, ok := m.tab.Find(t.Name); ok {
+	if sym, ok := m.symbol(module, t.Name); ok {
 		return m.TypeOf(sym)
 	}
 	return ErrorType
+}
+
+// symbol procura name no módulo e, em fallback, globalmente (tipo público de outro
+// módulo, REQ-7.3). Tolera uma tabela nil (Model sem programa, usado em testes de
+// inferência puramente local).
+func (m *Model) symbol(module, name string) (*symbols.Symbol, bool) {
+	if m.tab == nil {
+		return nil, false
+	}
+	if sym, ok := m.tab.Lookup(module, name); ok {
+		return sym, true
+	}
+	return m.tab.Find(name)
 }
 
 // Members devolve o catálogo de membros acessíveis por '.' sobre um valor de t
