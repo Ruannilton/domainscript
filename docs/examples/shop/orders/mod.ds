@@ -1,0 +1,8 @@
+// mod.ds — infraestrutura do módulo Orders.
+// Declara o módulo e o banco que persiste seu Aggregate (§12).
+Module Orders {
+    Database MainDb {
+        provider: "postgres"
+        manages: [Order]
+    }
+}

@@ -1,0 +1,16 @@
+// application.ds — a camada de aplicação (§5) do módulo Orders.
+// Command descreve a intenção; o UseCase carrega o Aggregate e despacha o Handle.
+
+Command Place {
+    id ref Order
+    customer CustomerName
+    total Money
+}
+
+UseCase PlaceOrder handles Place {
+    timeout 5s
+    execute {
+        order = load Order(cmd.id)
+        order.Place(cmd.customer, cmd.total)
+    }
+}

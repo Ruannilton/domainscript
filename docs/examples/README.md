@@ -6,6 +6,7 @@ Cada exemplo é um projeto válido — `dsc` o valida sem erros nem avisos.
 | Exemplo | O que demonstra |
 |---------|-----------------|
 | [`wallet/`](./wallet) | Um módulo de domínio completo: ValueObjects, Enum, Aggregate EventSourced, Commands, UseCases, Read Side (View/Query), interface HTTP e testes nativos. |
+| [`shop/`](./shop) | Um projeto multi-módulo: dois módulos em services distintos, ligados por um canal na topologia. Foca nas regras arquiteturais *cross-file* — PublicEvent, Policy cross-service e canal obrigatório. |
 
 ## Como validar
 

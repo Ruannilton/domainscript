@@ -1,0 +1,20 @@
+// topology.ds — a topologia do sistema (§11): como os módulos se agrupam em
+// services e por quais canais conversam. É o arquivo que amarra a arquitetura
+// distribuída e onde as regras cross-service do compilador ganham contexto.
+Topology {
+    // Cada service roda um conjunto de módulos. Orders e Shipping vivem em
+    // services separados — logo, qualquer comunicação entre eles cruza a rede.
+    services {
+        Sales    { modules: [Orders] }
+        Delivery { modules: [Shipping] }
+    }
+
+    // A Policy NotifyShipping (módulo Shipping) reage ao PublicEvent OrderPlaced
+    // (módulo Orders). Como os módulos estão em services diferentes, a fronteira
+    // de rede exige um canal explícito — senão o compilador acusa "sem canal"
+    // (REQ-5.11). Canal de fila precisa de ordem total (orderBy), senão é aviso
+    // (REQ-5.16).
+    channels {
+        Orders -> Shipping { via: queue orderBy: id }
+    }
+}

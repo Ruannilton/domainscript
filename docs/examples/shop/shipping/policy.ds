@@ -1,0 +1,8 @@
+// policy.ds — a reação do módulo Shipping (§7).
+// A Policy reage ao PublicEvent OrderPlaced, emitido por Orders. Como os dois
+// módulos rodam em services diferentes, esta reação cross-service exige o canal
+// declarado em topology.ds (REQ-5.11).
+Policy NotifyShipping on OrderPlaced {
+    delivery AtLeastOnce
+    execute { return }
+}

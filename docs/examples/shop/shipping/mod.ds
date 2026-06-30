@@ -1,0 +1,4 @@
+// mod.ds — infraestrutura do módulo Shipping.
+// O módulo só reage a eventos de Orders via Policy; não tem Aggregate próprio
+// neste exemplo mínimo.
+Module Shipping { }

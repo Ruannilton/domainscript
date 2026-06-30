@@ -1,0 +1,6 @@
+// interface.ds — a borda HTTP do módulo Orders (§10).
+// Toda operação precisa estar exposta numa interface, senão o compilador avisa
+// (REQ-5.23).
+Interface HTTP {
+    POST "/orders" -> PlaceOrder
+}

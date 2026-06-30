@@ -1,0 +1,46 @@
+// domain.ds — o núcleo de domínio (Write Side) do módulo Orders.
+// A Regra de Ouro (§2.1): o Write Side só usa ValueObjects e Enums.
+
+// --- ValueObjects: blocos atômicos, imutáveis e auto-validáveis (§2.2) ---
+
+ValueObject OrderId(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject CustomerName(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject Money {
+    amount   decimal
+    currency string
+    Valid { amount >= 0 }
+}
+
+// --- PublicEvent: o contrato compartilhado entre módulos (§4.2, REQ-7.4) ---
+// É público porque um módulo de outro service (Shipping) reage a ele.
+PublicEvent OrderPlaced { id OrderId, customer CustomerName, total Money }
+
+// --- Aggregate: a fronteira de consistência (§4.5) ---
+Aggregate Order {
+    strategy EventSourced
+
+    state {
+        id       OrderId
+        customer CustomerName
+        total    Money
+    }
+
+    access {
+        Place requires caller.authenticated
+    }
+
+    Handle Place(customer CustomerName, total Money) {
+        emit OrderPlaced(self.id, customer, total)
+    }
+
+    Apply OrderPlaced {
+        state.customer = event.customer
+        state.total = event.total
+    }
+}
