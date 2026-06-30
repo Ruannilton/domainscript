@@ -96,6 +96,32 @@ func (c *Checker) checkServiceChannels() {
 	}
 }
 
+// checkCrossTenantOptIn implementa REQ-5.12 (§13.3): o compilador injeta filtro
+// de tenant em todo carregamento, mantendo cada bounded context isolado. Quando um
+// UseCase acessa um Aggregate de outro módulo ele sai do seu contexto isolado —
+// um acesso cross-tenant que precisa ser declarado explicitamente com `tenancy:
+// cross_tenant`. Sem o opt-in, é erro. Sagas (que coordenam contextos por design)
+// não são alvo desta regra.
+func (c *Checker) checkCrossTenantOptIn() {
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			uc, ok := d.(*ast.UseCaseDecl)
+			if !ok || uc.Execute == nil || uc.Tenancy == "cross_tenant" {
+				continue
+			}
+			for _, agg := range c.referencedAggregates(uc.Execute) {
+				owner := c.prog.ModuleOfAggregate(agg)
+				if owner != u.Module {
+					c.bag.Errorf(uc.Pos(),
+						"UseCase %q acessa o Aggregate %q do módulo %q, fora do seu bounded context, sem o opt-in `tenancy: cross_tenant` (§13.3)",
+						uc.Name, agg, owner)
+					break // um erro por UseCase basta
+				}
+			}
+		}
+	}
+}
+
 // checkCrossDatabaseJoin implementa REQ-5.10 (§6.3, §23): um JOIN só é válido
 // dentro do mesmo banco. Quando a fonte base e a fonte juntada de uma operação
 // (`list X join Y on ...`) são Aggregates geridos por bancos distintos, não há

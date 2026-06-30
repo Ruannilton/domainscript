@@ -61,6 +61,7 @@ func (c *Checker) Check() {
 		c.checkTransactions()      // 9.1
 		c.checkCrossDatabaseJoin() // 9.2
 		c.checkServiceChannels()   // 9.3
+		c.checkCrossTenantOptIn()  // 9.4
 	}
 }
 
