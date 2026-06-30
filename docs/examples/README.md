@@ -1,0 +1,22 @@
+# Exemplos de DomainScript
+
+Projetos de exemplo que exercitam o front-end do transpilador de ponta a ponta.
+Cada exemplo é um projeto válido — `dsc` o valida sem erros nem avisos.
+
+| Exemplo | O que demonstra |
+|---------|-----------------|
+| [`wallet/`](./wallet) | Um módulo de domínio completo: ValueObjects, Enum, Aggregate EventSourced, Commands, UseCases, Read Side (View/Query), interface HTTP e testes nativos. |
+
+## Como validar
+
+Compile a CLI a partir da raiz do repositório e aponte para a pasta do exemplo:
+
+```sh
+go build -o dsc ./cmd/dsc
+./dsc docs/examples/wallet
+```
+
+Saída esperada: nenhuma — exit code `0`, sinalizando um projeto válido. Introduza
+um erro (ex.: troque um ValueObject por `integer` no `state` de um Aggregate) e a
+CLI passa a reportar o diagnóstico com posição e mensagem acionável, retornando
+exit code `1`.

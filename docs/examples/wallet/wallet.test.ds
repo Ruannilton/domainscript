@@ -1,0 +1,39 @@
+// wallet.test.ds — testes nativos do Aggregate Wallet (§22).
+// Cada cenário descreve `given` (eventos passados) → `when` (um Handle) → `then`
+// (eventos emitidos, ou um erro de negócio). Cobrir o caminho de erro de cada
+// Handle silencia o aviso de cobertura (REQ-5.22).
+Test Wallet {
+    scenario "depósito numa carteira ativa" {
+        given [
+            WalletCreated(id: "W1", holder: "Ana")
+        ]
+        when Deposit(amount: Money(100, "BRL"), description: "Salário")
+        then [ DepositPerformed(id: "W1", amount: Money(100, "BRL"), description: "Salário") ]
+    }
+
+    scenario "depósito numa carteira inativa falha" {
+        given [
+            WalletCreated(id: "W1", holder: "Ana")
+        ]
+        when Deposit(amount: Money(10, "BRL"), description: "x")
+        then error InactiveWallet
+    }
+
+    scenario "saque com saldo suficiente" {
+        given [
+            WalletCreated(id: "W1", holder: "Ana"),
+            DepositPerformed(id: "W1", amount: Money(100, "BRL"), description: "Salário")
+        ]
+        when Withdraw(amount: Money(30, "BRL"), description: "Mercado")
+        then [ WithdrawalPerformed(id: "W1", amount: Money(30, "BRL"), description: "Mercado") ]
+    }
+
+    scenario "saque com saldo insuficiente falha" {
+        given [
+            WalletCreated(id: "W1", holder: "Ana"),
+            DepositPerformed(id: "W1", amount: Money(20, "BRL"), description: "Salário")
+        ]
+        when Withdraw(amount: Money(50, "BRL"), description: "Mercado")
+        then error InsufficientBalance
+    }
+}

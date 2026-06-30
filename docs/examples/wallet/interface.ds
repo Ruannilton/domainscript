@@ -1,0 +1,9 @@
+// interface.ds — a borda HTTP do módulo (§10).
+// Cada rota mapeia para um UseCase (escrita) ou Query (leitura). Toda operação
+// precisa estar exposta em alguma interface, senão o compilador avisa (REQ-5.23).
+Interface HTTP {
+    POST "/wallets/{id}/deposit"  -> PerformDeposit
+    POST "/wallets/{id}/withdraw" -> PerformWithdrawal
+    GET  "/wallets/{id}"          -> GetWallet
+    GET  "/wallets/{id}/entries"  -> ListEntries
+}

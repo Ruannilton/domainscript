@@ -1,0 +1,102 @@
+// domain.ds — o núcleo de domínio (Write Side) do módulo Wallet.
+// Tipos, erros, eventos e o Aggregate. A Regra de Ouro (§2.1): o Write Side só
+// usa ValueObjects e Enums — nunca tipos primitivos diretamente.
+
+// --- ValueObjects: blocos atômicos, imutáveis e auto-validáveis (§2.2) ---
+
+ValueObject WalletId(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject HolderName(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject TransactionDescription(string) {
+    Valid { value.length() <= 140 }
+}
+
+ValueObject ActiveStatus(boolean) {
+    Valid { ok }
+}
+
+// ValueObject composto: o dinheiro carrega valor e moeda juntos.
+ValueObject Money {
+    amount decimal
+    currency string
+    Valid { amount >= 0 }
+}
+
+// Uma linha do extrato — composta por outros tipos de domínio.
+ValueObject StatementEntry {
+    type TransactionType
+    amount Money
+    description TransactionDescription
+    Valid { ok }
+}
+
+// --- Enum: conjunto fechado de valores, permitido no Write Side (§2.3) ---
+
+Enum TransactionType : string {
+    Deposit    = "DEPOSIT"
+    Withdrawal = "WITHDRAWAL"
+}
+
+// --- Errors de negócio (§4.1) ---
+
+Error InactiveWallet     { message "A carteira está inativa." }
+Error InsufficientBalance { message "Saldo insuficiente para a operação." }
+
+// --- Events: o que de fato aconteceu, no passado (§4.2) ---
+
+Event WalletCreated      { id WalletId, holder HolderName }
+Event DepositPerformed   { id WalletId, amount Money, description TransactionDescription }
+Event WithdrawalPerformed { id WalletId, amount Money, description TransactionDescription }
+
+// --- Aggregate: a fronteira de consistência (§4.5) ---
+// EventSourced, com bloco `access` fechado por padrão e pares Handle/Apply.
+Aggregate Wallet {
+    strategy EventSourced
+
+    state {
+        id      WalletId
+        balance Money
+        active  ActiveStatus
+        holder  HolderName
+        entries AppendList<StatementEntry>
+    }
+
+    access {
+        Deposit  requires caller.authenticated
+        Withdraw requires caller.id == self.id
+    }
+
+    Handle Deposit(amount Money, description TransactionDescription) {
+        ensure state.active == ActiveStatus(true) else InactiveWallet
+        emit DepositPerformed(self.id, amount, description)
+    }
+
+    Apply DepositPerformed {
+        state.balance = state.balance + event.amount
+        state.entries.add(StatementEntry(
+            type: TransactionType.Deposit,
+            amount: event.amount,
+            description: event.description
+        ))
+    }
+
+    Handle Withdraw(amount Money, description TransactionDescription) {
+        ensure state.active == ActiveStatus(true) else InactiveWallet
+        ensure state.balance >= amount else InsufficientBalance
+        emit WithdrawalPerformed(self.id, amount, description)
+    }
+
+    Apply WithdrawalPerformed {
+        state.balance = state.balance - event.amount
+        state.entries.add(StatementEntry(
+            type: TransactionType.Withdrawal,
+            amount: event.amount,
+            description: event.description
+        ))
+    }
+}

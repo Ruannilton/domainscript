@@ -1,0 +1,36 @@
+// application.ds — a camada de aplicação (§5).
+// Commands descrevem intenções; UseCases as orquestram numa unidade de trabalho.
+
+// --- Commands: a intenção do chamador, sempre com tipos de domínio (§5.1) ---
+// O Command tem o mesmo nome do Handle que ele aciona, deixando o vínculo
+// comando→handler explícito em todo o caminho (inclusive nos testes).
+
+Command Deposit {
+    walletId ref Wallet
+    amount Money
+    description TransactionDescription
+}
+
+Command Withdraw {
+    walletId ref Wallet
+    amount Money
+    description TransactionDescription
+}
+
+// --- UseCases: carregam o Aggregate e despacham o Handle (§5.2) ---
+
+UseCase PerformDeposit handles Deposit {
+    timeout 5s
+    execute {
+        wallet = load Wallet(cmd.walletId)
+        wallet.Deposit(cmd.amount, cmd.description)
+    }
+}
+
+UseCase PerformWithdrawal handles Withdraw {
+    timeout 5s
+    execute {
+        wallet = load Wallet(cmd.walletId)
+        wallet.Withdraw(cmd.amount, cmd.description)
+    }
+}

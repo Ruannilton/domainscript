@@ -1,0 +1,8 @@
+// mod.ds — infraestrutura do módulo Wallet.
+// Declara o módulo e o banco que persiste seus Aggregates (§12).
+Module Wallet {
+    Database MainDb {
+        provider: "postgres"
+        manages: [Wallet]
+    }
+}

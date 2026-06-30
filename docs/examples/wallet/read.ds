@@ -1,0 +1,18 @@
+// read.ds — o Read Side (§6): Views e Queries de leitura.
+// Views são projeções otimizadas para consulta; Queries as expõem.
+
+View WalletView {
+    id      WalletId
+    balance Money
+    holder  HolderName
+}
+
+// Leitura cirúrgica de uma carteira por id.
+Query GetWallet(id WalletId) -> WalletView {
+    return load Wallet(id) as WalletView
+}
+
+// Listagem do extrato de uma carteira.
+Query ListEntries(id WalletId) -> List<StatementEntry> {
+    return list StatementEntry
+}
