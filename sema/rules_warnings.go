@@ -102,6 +102,19 @@ func hasConfigKey(entries []ast.ConfigEntry, key string) bool {
 	return false
 }
 
+// checkCrossTenantAudit implementa REQ-5.21 (⚠️, §13.3): declarar `tenancy:
+// cross_tenant` é uma operação privilegiada (lê dados de todos os tenants) e gera
+// trilha de auditoria automática. Avisa em toda declaração para que o opt-in seja
+// uma decisão consciente, não acidental. É local (não depende do programa).
+func (c *Checker) checkCrossTenantAudit(uc *ast.UseCaseDecl) {
+	if uc.Tenancy != "cross_tenant" {
+		return
+	}
+	c.bag.Warningf(uc.Pos(),
+		"UseCase %q é cross_tenant: acessa dados de todos os tenants e gera trilha de auditoria — confirme que o opt-in é intencional (§13.3)",
+		uc.Name)
+}
+
 // checkSagaAwaitQueue implementa REQ-5.17 (⚠️, §18.2): uma Saga em modo `await`
 // bloqueia até a conclusão, sob timeout. Se ela coordena por um canal `queue` —
 // entrega assíncrona, latência imprevisível — o bloqueio tende a esgotar o
