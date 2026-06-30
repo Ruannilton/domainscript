@@ -64,6 +64,7 @@ func (c *Checker) Check() {
 		c.checkCrossTenantOptIn()  // 9.4
 		c.checkPolicyPublicEvent() // 9.5
 		c.checkSagaAwaitQueue()    // 9.6
+		c.checkExposure()          // 9.8
 	}
 }
 

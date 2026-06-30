@@ -310,22 +310,22 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 > Dependem da Fase 7 (Program). Cada tarefa = par de testes + commit.
 
-- [ ] **9.1** Cross-database sem XA → erro; cross-service sem Saga → erro. _(REQ-5.9,
+- [x] **9.1** Cross-database sem XA → erro; cross-service sem Saga → erro. _(REQ-5.9,
   §design 4.3)_
   **Commit:** `feat(sema): transações cross-database e cross-service`
-- [ ] **9.2** `JOIN` cross-database → erro. _(REQ-5.10)_
+- [x] **9.2** `JOIN` cross-database → erro. _(REQ-5.10)_
   **Commit:** `feat(sema): proíbe JOIN cross-database`
-- [ ] **9.3** Módulos em services diferentes sem canal → erro. _(REQ-5.11)_
+- [x] **9.3** Módulos em services diferentes sem canal → erro. _(REQ-5.11)_
   **Commit:** `feat(sema): exige canal entre services`
-- [ ] **9.4** Acesso cross-tenant sem opt-in → erro. _(REQ-5.12)_
+- [x] **9.4** Acesso cross-tenant sem opt-in → erro. _(REQ-5.12)_
   **Commit:** `feat(sema): exige opt-in cross-tenant`
-- [ ] **9.5** `Policy` cross-module escutando `Event` privado → erro. _(REQ-5.8)_
+- [x] **9.5** `Policy` cross-module escutando `Event` privado → erro. _(REQ-5.8)_
   **Commit:** `feat(sema): Policy cross-module exige PublicEvent`
-- [ ] **9.6** ⚠️ Saga `await` sobre canal `queue`. _(REQ-5.17)_
+- [x] **9.6** ⚠️ Saga `await` sobre canal `queue`. _(REQ-5.17)_
   **Commit:** `feat(sema): aviso Saga await sobre queue`
-- [ ] **9.7** ⚠️ UseCase cross-tenant declarado (auditoria). _(REQ-5.21)_
+- [x] **9.7** ⚠️ UseCase cross-tenant declarado (auditoria). _(REQ-5.21)_
   **Commit:** `feat(sema): aviso auditoria cross-tenant`
-- [ ] **9.8** ⚠️ UseCase/Query não exposto em nenhuma interface. _(REQ-5.23)_
+- [x] **9.8** ⚠️ UseCase/Query não exposto em nenhuma interface. _(REQ-5.23)_
   **Conclusão de fase:** todas as regras ❌/⚠️ da §23 cobertas com par de testes.
   **Commit:** `feat(sema): aviso UseCase/Query não exposto`
 

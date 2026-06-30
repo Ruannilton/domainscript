@@ -150,6 +150,60 @@ func (c *Checker) checkCacheHighCardinality(q *ast.QueryDecl) {
 		q.Name)
 }
 
+// checkExposure implementa REQ-5.23 (⚠️, §10): todo UseCase e Query deveria ser
+// alcançável por alguma interface (rota HTTP, RPC gRPC ou rota de versão); um que
+// não aparece como alvo em nenhuma é provavelmente código morto ou esquecido na
+// exposição. Avisa por declaração não exposta. É cross-file: a exposição vive em
+// interface.ds/versions, separada da declaração — exige o programa agregado.
+func (c *Checker) checkExposure() {
+	exposed := map[string]bool{}
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			switch n := d.(type) {
+			case *ast.InterfaceDecl:
+				for _, r := range n.Routes {
+					if r != nil && r.Target != "" {
+						exposed[r.Target] = true
+					}
+				}
+				for _, s := range n.Services {
+					for _, rpc := range s.RPCs {
+						if rpc.Target != "" {
+							exposed[rpc.Target] = true
+						}
+					}
+				}
+			case *ast.VersionDecl:
+				for _, r := range n.Routes {
+					if r != nil && r.Target != "" {
+						exposed[r.Target] = true
+					}
+				}
+			}
+		}
+	}
+
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			var name, kind string
+			switch n := d.(type) {
+			case *ast.UseCaseDecl:
+				name, kind = n.Name, "UseCase"
+			case *ast.QueryDecl:
+				name, kind = n.Name, "Query"
+			default:
+				continue
+			}
+			if name == "" || exposed[name] {
+				continue
+			}
+			c.bag.Warningf(d.Pos(),
+				"%s %q não é exposto em nenhuma interface (HTTP/gRPC) nem rota de versão: confirme se é alcançável (§10)",
+				kind, name)
+		}
+	}
+}
+
 // checkHandleErrorCoverage implementa REQ-5.22 (⚠️, §22.7): para um Aggregate sob
 // teste, cada Handle com caminho de erro de negócio (um `ensure ... else <Error>`)
 // deveria ter um cenário que exercita esse erro (`then error ...`). Avisa por
