@@ -1,6 +1,9 @@
 package sema
 
-import "domainscript/ast"
+import (
+	"domainscript/ast"
+	"domainscript/astutil"
+)
 
 // primitiveTypes são os tipos primitivos proibidos no Write Side (a "Regra de
 // Ouro" do §2.1: integer, decimal, string, boolean, datetime). Devem ser
@@ -52,16 +55,16 @@ func (c *Checker) checkAppendListMutation(agg *ast.AggregateDecl) {
 		if !ok || (method.Name != "remove" && method.Name != "clear") {
 			return
 		}
-		if field := stateField(method.X); field != "" && appendLists[field] {
+		if field := astutil.StateField(method.X); field != "" && appendLists[field] {
 			c.bag.Errorf(call.Pos(),
 				"%s() é proibido em AppendList: o campo de state %q é append-only (use apenas add())",
 				method.Name, field)
 		}
 	}
 	for _, h := range agg.Handlers {
-		forEachExprInBlock(h.Body, flag)
+		astutil.ForEachExprInBlock(h.Body, flag)
 	}
 	for _, a := range agg.Appliers {
-		forEachExprInBlock(a.Body, flag)
+		astutil.ForEachExprInBlock(a.Body, flag)
 	}
 }

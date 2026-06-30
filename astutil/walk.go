@@ -1,14 +1,10 @@
-package sema
+package astutil
 
 import "domainscript/ast"
 
-// walk.go reúne percursos genéricos da AST usados por várias regras semânticas.
-// São deliberadamente totais sobre os nós existentes: adicionar um construto novo
-// exige estendê-los aqui, num só lugar (NFR-5).
-
-// forEachStmt visita s e todos os statements aninhados (profundidade primeiro),
+// ForEachStmt visita s e todos os statements aninhados (profundidade primeiro),
 // descendo em blocos, corpos de for, ações de ensure e braços de match-statement.
-func forEachStmt(s ast.Stmt, fn func(ast.Stmt)) {
+func ForEachStmt(s ast.Stmt, fn func(ast.Stmt)) {
 	if s == nil {
 		return
 	}
@@ -16,70 +12,70 @@ func forEachStmt(s ast.Stmt, fn func(ast.Stmt)) {
 	switch n := s.(type) {
 	case *ast.Block:
 		for _, st := range n.Stmts {
-			forEachStmt(st, fn)
+			ForEachStmt(st, fn)
 		}
 	case *ast.ForStmt:
-		forEachStmt(n.Body, fn)
+		ForEachStmt(n.Body, fn)
 	case *ast.EnsureStmt:
-		forEachStmt(n.Else, fn)
+		ForEachStmt(n.Else, fn)
 	case *ast.MatchStmt:
 		for _, arm := range n.Arms {
-			forEachStmt(arm.Body, fn)
+			ForEachStmt(arm.Body, fn)
 		}
 	}
 }
 
-// forEachExpr visita e e todas as suas subexpressões (profundidade primeiro).
-func forEachExpr(e ast.Expr, fn func(ast.Expr)) {
+// ForEachExpr visita e e todas as suas subexpressões (profundidade primeiro).
+func ForEachExpr(e ast.Expr, fn func(ast.Expr)) {
 	if e == nil {
 		return
 	}
 	fn(e)
 	switch n := e.(type) {
 	case *ast.BinaryExpr:
-		forEachExpr(n.Left, fn)
-		forEachExpr(n.Right, fn)
+		ForEachExpr(n.Left, fn)
+		ForEachExpr(n.Right, fn)
 	case *ast.UnaryExpr:
-		forEachExpr(n.X, fn)
+		ForEachExpr(n.X, fn)
 	case *ast.MemberExpr:
-		forEachExpr(n.X, fn)
+		ForEachExpr(n.X, fn)
 	case *ast.CallExpr:
-		forEachExpr(n.Fn, fn)
+		ForEachExpr(n.Fn, fn)
 		for _, a := range n.Args {
-			forEachExpr(a.Value, fn)
+			ForEachExpr(a.Value, fn)
 		}
 	case *ast.IndexExpr:
-		forEachExpr(n.X, fn)
-		forEachExpr(n.Index, fn)
+		ForEachExpr(n.X, fn)
+		ForEachExpr(n.Index, fn)
 	case *ast.RangeExpr:
-		forEachExpr(n.Low, fn)
-		forEachExpr(n.High, fn)
+		ForEachExpr(n.Low, fn)
+		ForEachExpr(n.High, fn)
 	case *ast.LambdaExpr:
-		forEachExpr(n.Body, fn)
+		ForEachExpr(n.Body, fn)
 	case *ast.ListExpr:
 		for _, el := range n.Elems {
-			forEachExpr(el, fn)
+			ForEachExpr(el, fn)
 		}
 	case *ast.QueryExpr:
-		forEachExpr(n.Target, fn)
+		ForEachExpr(n.Target, fn)
 		for _, cl := range n.Clauses {
-			forEachExpr(cl.Expr, fn)
+			ForEachExpr(cl.Expr, fn)
 		}
 	case *ast.MatchExpr:
-		forEachExpr(n.Subject, fn)
+		ForEachExpr(n.Subject, fn)
 		for _, arm := range n.Arms {
 			for _, p := range arm.Patterns {
-				forEachExpr(p, fn)
+				ForEachExpr(p, fn)
 			}
-			forEachExpr(arm.Guard, fn)
-			forEachExpr(arm.Body, fn)
+			ForEachExpr(arm.Guard, fn)
+			ForEachExpr(arm.Body, fn)
 		}
 	}
 }
 
-// stmtExprs devolve as expressões diretamente contidas por um único statement (não
-// desce em statements aninhados — quem faz isso é forEachStmt).
-func stmtExprs(s ast.Stmt) []ast.Expr {
+// StmtExprs devolve as expressões diretamente contidas por um único statement (não
+// desce em statements aninhados — quem faz isso é ForEachStmt).
+func StmtExprs(s ast.Stmt) []ast.Expr {
 	switch n := s.(type) {
 	case *ast.ExprStmt:
 		return []ast.Expr{n.X}
@@ -117,23 +113,23 @@ func stmtExprs(s ast.Stmt) []ast.Expr {
 	return nil
 }
 
-// forEachExprInBlock visita toda expressão que aparece em qualquer ponto de b,
+// ForEachExprInBlock visita toda expressão que aparece em qualquer ponto de b,
 // incluindo as de statements aninhados e suas subexpressões.
-func forEachExprInBlock(b *ast.Block, fn func(ast.Expr)) {
+func ForEachExprInBlock(b *ast.Block, fn func(ast.Expr)) {
 	if b == nil {
 		return
 	}
-	forEachStmt(b, func(s ast.Stmt) {
-		for _, e := range stmtExprs(s) {
-			forEachExpr(e, fn)
+	ForEachStmt(b, func(s ast.Stmt) {
+		for _, e := range StmtExprs(s) {
+			ForEachExpr(e, fn)
 		}
 	})
 }
 
-// declBlocks devolve todos os blocos de execução de uma declaração (corpos de
+// DeclBlocks devolve todos os blocos de execução de uma declaração (corpos de
 // Handle/Apply, execute, Valid, coerce, steps de Saga, ...). É a base das regras
-// de fluxo, que percorrem o corpo de cada construto.
-func declBlocks(d ast.Decl) []*ast.Block {
+// de fluxo e da resolução de corpos, que percorrem o corpo de cada construto.
+func DeclBlocks(d ast.Decl) []*ast.Block {
 	var out []*ast.Block
 	add := func(b *ast.Block) {
 		if b != nil {
@@ -176,17 +172,17 @@ func declBlocks(d ast.Decl) []*ast.Block {
 	return out
 }
 
-// isIdent reporta se e é um identificador de nome name.
-func isIdent(e ast.Expr, name string) bool {
+// IsIdent reporta se e é um identificador de nome name.
+func IsIdent(e ast.Expr, name string) bool {
 	id, ok := e.(*ast.Ident)
 	return ok && id.Name == name
 }
 
-// headName devolve o nome da "cabeça" de uma referência de domínio: o callee de
+// HeadName devolve o nome da "cabeça" de uma referência de domínio: o callee de
 // uma construção (Withdraw(...), DepositPerformed(...)) ou um identificador nu
 // (alvo de mock). Devolve "" para qualquer outra forma (acesso a membro, literal,
-// método). Usado pelas regras que ligam expressões de teste a símbolos.
-func headName(e ast.Expr) string {
+// método). Usado pelas regras que ligam expressões a símbolos.
+func HeadName(e ast.Expr) string {
 	switch n := e.(type) {
 	case *ast.CallExpr:
 		if id, ok := n.Fn.(*ast.Ident); ok {
@@ -198,13 +194,13 @@ func headName(e ast.Expr) string {
 	return ""
 }
 
-// stateField devolve o nome do campo se e é o acesso "state.<campo>", senão "".
-func stateField(e ast.Expr) string {
+// StateField devolve o nome do campo se e é o acesso "state.<campo>", senão "".
+func StateField(e ast.Expr) string {
 	m, ok := e.(*ast.MemberExpr)
 	if !ok {
 		return ""
 	}
-	if isIdent(m.X, "state") {
+	if IsIdent(m.X, "state") {
 		return m.Name
 	}
 	return ""

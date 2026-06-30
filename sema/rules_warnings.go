@@ -2,6 +2,7 @@ package sema
 
 import (
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/symbols"
 	"domainscript/token"
 )
@@ -255,7 +256,7 @@ func (c *Checker) testedErrorHandles() map[string]map[string]bool {
 				if sc == nil || sc.When == nil || sc.Then == nil || sc.Then.Error == "" {
 					continue
 				}
-				if h := headName(sc.When.Action); h != "" {
+				if h := astutil.HeadName(sc.When.Action); h != "" {
 					out[key][h] = true
 				}
 			}
@@ -268,7 +269,7 @@ func (c *Checker) testedErrorHandles() map[string]map[string]bool {
 // negócio, i.e. tem um `ensure ... else <Error>` cuja ação é um Error declarado.
 func (c *Checker) handleRaisesError(module string, h *ast.HandleDecl) bool {
 	raises := false
-	forEachStmt(h.Body, func(s ast.Stmt) {
+	astutil.ForEachStmt(h.Body, func(s ast.Stmt) {
 		ens, ok := s.(*ast.EnsureStmt)
 		if !ok {
 			return

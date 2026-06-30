@@ -2,6 +2,7 @@ package sema
 
 import (
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/symbols"
 )
 
@@ -28,7 +29,7 @@ func (c *Checker) referencedAggregates(b *ast.Block) []string {
 			out = append(out, name)
 		}
 	}
-	forEachExprInBlock(b, func(e ast.Expr) {
+	astutil.ForEachExprInBlock(b, func(e ast.Expr) {
 		switch n := e.(type) {
 		case *ast.Ident:
 			record(n.Name)
@@ -130,13 +131,13 @@ func (c *Checker) checkCrossTenantOptIn() {
 func (c *Checker) checkCrossDatabaseJoin() {
 	for _, u := range c.units {
 		for _, d := range u.File.Decls {
-			for _, b := range declBlocks(d) {
-				forEachExprInBlock(b, func(e ast.Expr) {
+			for _, b := range astutil.DeclBlocks(d) {
+				astutil.ForEachExprInBlock(b, func(e ast.Expr) {
 					qe, ok := e.(*ast.QueryExpr)
 					if !ok {
 						return
 					}
-					baseDB := c.prog.DatabaseOfAggregate(headName(qe.Target))
+					baseDB := c.prog.DatabaseOfAggregate(astutil.HeadName(qe.Target))
 					if baseDB == nil {
 						return
 					}
@@ -144,11 +145,11 @@ func (c *Checker) checkCrossDatabaseJoin() {
 						if cl.Kw != "join" {
 							continue
 						}
-						joinDB := c.prog.DatabaseOfAggregate(headName(cl.Expr))
+						joinDB := c.prog.DatabaseOfAggregate(astutil.HeadName(cl.Expr))
 						if joinDB != nil && joinDB.Name != baseDB.Name {
 							c.bag.Errorf(qe.Pos(),
 								"JOIN cross-database entre %q (%s) e %q (%s) não é possível: use uma Projection (§6.4)",
-								headName(qe.Target), baseDB.Name, headName(cl.Expr), joinDB.Name)
+								astutil.HeadName(qe.Target), baseDB.Name, astutil.HeadName(cl.Expr), joinDB.Name)
 						}
 					}
 				})

@@ -1,6 +1,9 @@
 package sema
 
-import "domainscript/ast"
+import (
+	"domainscript/ast"
+	"domainscript/astutil"
+)
 
 // checkUpcastReplaceableByDefault implementa REQ-5.18 (⚠️, §4.3): a regra do spec
 // é "campos novos com `default`; transformações complexas com `Upcast`". Um Upcast
@@ -40,8 +43,8 @@ func (c *Checker) checkUpcastReplaceableByDefault(u *ast.UpcastDecl) {
 // se em qualquer ponto referencia o identificador `event`.
 func referencesEvent(e ast.Expr) bool {
 	found := false
-	forEachExpr(e, func(x ast.Expr) {
-		if isIdent(x, "event") {
+	astutil.ForEachExpr(e, func(x ast.Expr) {
+		if astutil.IsIdent(x, "event") {
 			found = true
 		}
 	})

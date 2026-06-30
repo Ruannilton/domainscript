@@ -2,6 +2,7 @@ package sema
 
 import (
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/symbols"
 )
 
@@ -67,7 +68,7 @@ func (c *Checker) checkTestFile(module string, t *ast.TestDecl) {
 // identificador nu) não resolve a um símbolo declarado. Formas sem cabeça
 // (literais, acessos a membro) são ignoradas.
 func (c *Checker) checkTestRef(module string, e ast.Expr, ctx string) {
-	name := headName(e)
+	name := astutil.HeadName(e)
 	if name == "" {
 		return
 	}
@@ -120,8 +121,8 @@ func (c *Checker) checkForeignSignatures() {
 	}
 	for _, u := range c.units {
 		for _, d := range u.File.Decls {
-			for _, b := range declBlocks(d) {
-				forEachExprInBlock(b, func(e ast.Expr) {
+			for _, b := range astutil.DeclBlocks(d) {
+				astutil.ForEachExprInBlock(b, func(e ast.Expr) {
 					call, ok := e.(*ast.CallExpr)
 					if !ok {
 						return

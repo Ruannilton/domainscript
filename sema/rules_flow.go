@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/symbols"
 	"domainscript/token"
 )
@@ -20,13 +21,13 @@ type armInfo struct {
 // exige `_`. Percorre todos os match-statement e match-expressão dos corpos da
 // declaração.
 func (c *Checker) checkMatchExhaustiveness(module string, d ast.Decl) {
-	for _, b := range declBlocks(d) {
-		forEachStmt(b, func(s ast.Stmt) {
+	for _, b := range astutil.DeclBlocks(d) {
+		astutil.ForEachStmt(b, func(s ast.Stmt) {
 			if m, ok := s.(*ast.MatchStmt); ok {
 				c.checkMatch(module, m.Pos(), stmtArms(m.Arms))
 			}
 		})
-		forEachExprInBlock(b, func(e ast.Expr) {
+		astutil.ForEachExprInBlock(b, func(e ast.Expr) {
 			if m, ok := e.(*ast.MatchExpr); ok {
 				c.checkMatch(module, m.Pos(), exprArms(m.Arms))
 			}
@@ -65,7 +66,7 @@ func (c *Checker) checkMatch(module string, pos token.Pos, arms []armInfo) {
 			hasGuard = true
 		}
 		for _, p := range a.patterns {
-			if isIdent(p, "_") {
+			if astutil.IsIdent(p, "_") {
 				hasWild = true
 				continue
 			}
@@ -111,8 +112,8 @@ func (c *Checker) checkMatch(module string, pos token.Pos, arms []armInfo) {
 // Handle e UseCase — só é aceito em Policy/Worker e dentro de for. Sinaliza
 // qualquer uso de Nop no corpo, em qualquer posição de ação.
 func (c *Checker) checkNop(b *ast.Block, ctx string) {
-	forEachExprInBlock(b, func(e ast.Expr) {
-		if isIdent(e, "Nop") {
+	astutil.ForEachExprInBlock(b, func(e ast.Expr) {
+		if astutil.IsIdent(e, "Nop") {
 			c.bag.Errorf(e.Pos(), "`Nop` é proibido em %s: toda ação deve ter efeito (§3.1)", ctx)
 		}
 	})
@@ -122,7 +123,7 @@ func (c *Checker) checkNop(b *ast.Block, ctx string) {
 // valem dentro de um for. Percorre cada corpo da declaração rastreando a
 // profundidade de laço.
 func (c *Checker) checkLoopControlDecl(d ast.Decl) {
-	for _, b := range declBlocks(d) {
+	for _, b := range astutil.DeclBlocks(d) {
 		c.checkLoopControl(b, false)
 	}
 }
