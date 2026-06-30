@@ -63,6 +63,7 @@ func (c *Checker) Check() {
 		c.checkServiceChannels()   // 9.3
 		c.checkCrossTenantOptIn()  // 9.4
 		c.checkPolicyPublicEvent() // 9.5
+		c.checkSagaAwaitQueue()    // 9.6
 	}
 }
 

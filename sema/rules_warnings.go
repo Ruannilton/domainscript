@@ -102,6 +102,29 @@ func hasConfigKey(entries []ast.ConfigEntry, key string) bool {
 	return false
 }
 
+// checkSagaAwaitQueue implementa REQ-5.17 (⚠️, §18.2): uma Saga em modo `await`
+// bloqueia até a conclusão, sob timeout. Se ela coordena por um canal `queue` —
+// entrega assíncrona, latência imprevisível — o bloqueio tende a esgotar o
+// timeout. Avisa por Saga await cujo módulo tem um canal de saída via queue.
+func (c *Checker) checkSagaAwaitQueue() {
+	for _, u := range c.units {
+		for _, d := range u.File.Decls {
+			saga, ok := d.(*ast.SagaDecl)
+			if !ok || saga.Mode != "await" {
+				continue
+			}
+			for _, ch := range c.prog.Channels {
+				if ch.From == u.Module && ch.Via == "queue" {
+					c.bag.Warningf(saga.Pos(),
+						"Saga %q em modo await coordena pelo canal %s -> %s via queue: bloquear sobre uma fila assíncrona pode esgotar o timeout (§18.2)",
+						saga.Name, ch.From, ch.To)
+					break // um aviso por Saga basta
+				}
+			}
+		}
+	}
+}
+
 // checkCacheHighCardinality implementa REQ-5.20 (⚠️, §15): cache sobre uma Query
 // que retorna uma listagem (List) é cache de alta cardinalidade, frequentemente
 // ineficaz. Avisa quando há bloco cache e o retorno é List.
