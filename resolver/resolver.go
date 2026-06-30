@@ -62,6 +62,11 @@ func (r *Resolver) ResolveAll() {
 			r.resolveDecl(u.module, d)
 		}
 	}
+	// Passagem de resolução de corpos (REQ-9): roda após a coleta+resolução de
+	// tipos, quando todos os símbolos do módulo/programa já estão na tabela
+	// (§design type-checking 4). Um identificador solto num corpo resolve contra o
+	// escopo léxico local, os receptores contextuais e os símbolos do módulo.
+	r.resolveBodies()
 }
 
 // Resolve é o atalho de arquivo único: coleta e resolve um único arquivo num

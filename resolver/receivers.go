@@ -12,18 +12,18 @@ package resolver
 type construct int
 
 const (
-	constructHandle construct = iota // Handle de Aggregate
-	constructApply                   // Apply de Aggregate
-	constructAccess                  // regra do bloco access de Aggregate
-	constructValid                   // bloco Valid de ValueObject
-	constructOperator                // corpo de Operator de ValueObject
-	constructUseCaseExecute          // execute de UseCase
-	constructPolicyExecute           // execute de Policy
-	constructCoerce                  // bloco coerce de Enum
-	constructSagaStep                // up/down/onInfraError de um passo de Saga
-	constructQuery                   // corpo de Query (só params)
-	constructWorkerSource            // bloco source de Worker
-	constructWorkerExecute           // execute de Worker (param próprio)
+	constructHandle         construct = iota // Handle de Aggregate
+	constructApply                           // Apply de Aggregate
+	constructAccess                          // regra do bloco access de Aggregate
+	constructValid                           // bloco Valid de ValueObject
+	constructOperator                        // corpo de Operator de ValueObject
+	constructUseCaseExecute                  // execute de UseCase
+	constructPolicyExecute                   // execute de Policy
+	constructCoerce                          // bloco coerce de Enum
+	constructSagaStep                        // up/down/onInfraError de um passo de Saga
+	constructQuery                           // corpo de Query (só params)
+	constructWorkerSource                    // bloco source de Worker
+	constructWorkerExecute                   // execute de Worker (param próprio)
 )
 
 // contextualReceiverNames mapeia cada construto aos receptores contextuais que
