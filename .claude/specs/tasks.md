@@ -333,13 +333,13 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
 
 ## Fase 10 — Relatório, Driver e CLI (REQ-6, REQ-8)
 
-- [ ] **10.1** API pública `CheckSource` e `CheckProject` no pacote `driver`.
+- [x] **10.1** API pública `CheckSource` e `CheckProject` no pacote `driver`.
   _(REQ-8.1, §design 3.10)_
   **Commit:** `feat(driver): API CheckSource e CheckProject`
-- [ ] **10.2** CLI `dsc` (`cmd/dsc`): arquivo **ou** diretório; roteia parser por
+- [x] **10.2** CLI `dsc` (`cmd/dsc`): arquivo **ou** diretório; roteia parser por
   nome de arquivo; exit code coerente com `HasErrors`. _(REQ-8.2/8.3/8.4, REQ-6.7)_
   **Commit:** `feat(cli): dsc para arquivo e diretório`
-- [ ] **10.3** Revisar mensagens acionáveis (esperado vs. encontrado) em todos os
+- [x] **10.3** Revisar mensagens acionáveis (esperado vs. encontrado) em todos os
   caminhos de erro. _(REQ-6.8, NFR-1)_
   **Commit:** `refactor(diag): mensagens acionáveis em todo o pipeline`
 

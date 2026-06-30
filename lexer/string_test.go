@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"strings"
 	"testing"
 
 	"domainscript/token"
@@ -30,6 +31,10 @@ func TestUnterminatedStringAtEOF(t *testing.T) {
 	if toks[0].Kind != token.STRING || toks[0].Lit != "sem fim" {
 		t.Errorf("token = {%v %q}, quero STRING 'sem fim'", toks[0].Kind, toks[0].Lit)
 	}
+	// Mensagem acionável (REQ-6.8): aponta o que faltou (aspas) e a causa (EOF).
+	if msg := diags[0].Msg; !strings.Contains(msg, "aspas de fechamento") || !strings.Contains(msg, "arquivo") {
+		t.Errorf("mensagem pouco acionável: %q", msg)
+	}
 }
 
 func TestUnterminatedStringAtNewline(t *testing.T) {
@@ -43,6 +48,10 @@ func TestUnterminatedStringAtNewline(t *testing.T) {
 		{token.IDENT, "cd"},
 		{token.EOF, ""},
 	})
+	// A causa concreta aqui é o fim da linha, não do arquivo (REQ-6.8).
+	if msg := diags[0].Msg; !strings.Contains(msg, "aspas de fechamento") || !strings.Contains(msg, "linha") {
+		t.Errorf("mensagem pouco acionável: %q", msg)
+	}
 }
 
 func TestInvalidEscape(t *testing.T) {

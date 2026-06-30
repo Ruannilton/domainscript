@@ -158,12 +158,21 @@ func (l *lexer) advanceN(n int) {
 // linha ou do arquivo gera um diagnóstico localizado no início da string
 // (REQ-1.7); o token STRING ainda é emitido com o conteúdo lido até ali, para o
 // parser poder prosseguir. O Lit guarda o valor já decodificado, sem aspas.
+// lineOrFile nomeia a fronteira onde a string deixou de ser fechada, para que o
+// diagnóstico aponte a causa concreta (fim de linha vs. fim de arquivo).
+func lineOrFile(atEOF bool) string {
+	if atEOF {
+		return "arquivo"
+	}
+	return "linha"
+}
+
 func (l *lexer) lexString(start token.Pos) {
 	l.advance() // aspas de abertura
 	var sb strings.Builder
 	for {
 		if l.atEnd() || l.peek() == '\n' {
-			l.errorf(start, "string não terminada")
+			l.errorf(start, "string não terminada: esperava aspas de fechamento %q antes do fim da %s", `"`, lineOrFile(l.atEnd()))
 			l.emit(token.STRING, sb.String(), start)
 			return
 		}
@@ -175,7 +184,7 @@ func (l *lexer) lexString(start token.Pos) {
 			return
 		case '\\':
 			if l.atEnd() || l.peek() == '\n' {
-				l.errorf(start, "string não terminada")
+				l.errorf(start, "string não terminada: esperava aspas de fechamento %q antes do fim da %s", `"`, lineOrFile(l.atEnd()))
 				l.emit(token.STRING, sb.String(), start)
 				return
 			}
