@@ -101,7 +101,7 @@
 
 > Fecha o bug `self.i`. Depende de C.
 
-- [ ] **D.1** Regra de acesso a membro em `sema/rules_typecheck.go`: valida
+- [x] **D.1** Regra de acesso a membro em `sema/rules_typecheck.go`: valida
   `X.nome` contra o catálogo do tipo de `X`; pula `errorType`; sugere membro mais
   próximo. _(REQ-12.1/12.2/12.3/12.4, §design 3.6)_
   **Conclusão (par de testes):** `self.i` (campo inexistente) dispara erro

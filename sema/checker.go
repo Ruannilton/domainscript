@@ -53,6 +53,7 @@ func (c *Checker) Check() {
 	c.checkNotificationAdapters() // 8.7
 	c.checkForeignSignatures()    // 8.10
 	c.checkHandleErrorCoverage()  // 8.14
+	c.checkMemberAccess()         // REQ-12 (acesso a membro)
 
 	// Regras cross-file (Fase 9): exigem o programa inteiro agregado (REQ-7) e só
 	// rodam na checagem de projeto. Cada uma percorre as unidades consultando o

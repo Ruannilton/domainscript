@@ -64,7 +64,7 @@ func TestInferConstructionAndMember(t *testing.T) {
 
 	// m.amount → decimal, com m: Money no escopo.
 	sc := MapScope{"m": moneyT}
-	access := ast.NewMemberExpr(id("m"), "amount", span())
+	access := ast.NewMemberExpr(id("m"), "amount", token.Pos{}, span())
 	if got := m.Infer("m", access, sc); got.String() != "decimal" {
 		t.Errorf("Infer(m.amount) = %v, quer decimal", got)
 	}
@@ -93,7 +93,7 @@ func TestInferErrorSubexpressionPropagates(t *testing.T) {
 		t.Error("operação com subexpressão de erro deveria inferir ErrorType")
 	}
 	// Acesso a membro sobre um erro não vira erro novo: continua ErrorType.
-	access := ast.NewMemberExpr(ast.NewErrorExpr(span()), "campo", span())
+	access := ast.NewMemberExpr(ast.NewErrorExpr(span()), "campo", token.Pos{}, span())
 	if !IsError(m.Infer("m", access, nil)) {
 		t.Error("acesso a membro sobre erro deveria inferir ErrorType")
 	}

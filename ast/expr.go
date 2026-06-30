@@ -53,15 +53,17 @@ func NewUnaryExpr(op token.Kind, x Expr, span Span) *UnaryExpr {
 func (*UnaryExpr) exprNode() {}
 
 // MemberExpr é o acesso a um membro: X.Name (campo, propriedade ou método antes
-// da chamada).
+// da chamada). NamePos é a posição do nome do membro (após o ponto), para que a
+// checagem de acesso a membro sublinhe o próprio membro, não o receptor (REQ-12.3).
 type MemberExpr struct {
 	baseNode
-	X    Expr
-	Name string
+	X       Expr
+	Name    string
+	NamePos token.Pos
 }
 
-func NewMemberExpr(x Expr, name string, span Span) *MemberExpr {
-	return &MemberExpr{baseNode{span}, x, name}
+func NewMemberExpr(x Expr, name string, namePos token.Pos, span Span) *MemberExpr {
+	return &MemberExpr{baseNode{span}, x, name, namePos}
 }
 func (*MemberExpr) exprNode() {}
 

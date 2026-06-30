@@ -143,6 +143,11 @@ func (m *Model) typeRef(module string, t *ast.TypeRef) Type {
 	return ErrorType
 }
 
+// TypeOfRef resolve uma referência de tipo da AST (de um campo ou parâmetro) ao
+// seu Type. Exposto para a checagem semântica semear escopos com os tipos dos
+// parâmetros de um construto (Fase D/E).
+func (m *Model) TypeOfRef(module string, t *ast.TypeRef) Type { return m.typeRef(module, t) }
+
 // symbol procura name no módulo e, em fallback, globalmente (tipo público de outro
 // módulo, REQ-7.3). Tolera uma tabela nil (Model sem programa, usado em testes de
 // inferência puramente local).

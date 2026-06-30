@@ -102,8 +102,9 @@ func (p *parser) parsePostfix() ast.Expr {
 		switch {
 		case p.at(token.DOT) && !p.atDotDot():
 			p.advance()
+			namePos := p.cur().Pos
 			name := p.parseIdentName()
-			x = ast.NewMemberExpr(x, name, p.spanFrom(start))
+			x = ast.NewMemberExpr(x, name, namePos, p.spanFrom(start))
 		case p.at(token.LPAREN):
 			args := p.parseArgList()
 			x = ast.NewCallExpr(x, args, p.spanFrom(start))
