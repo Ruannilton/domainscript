@@ -4,19 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**No production code exists yet.** The repository contains only a spec-driven
-plan under `.claude/specs/`. There is no `go.mod`, no git repository, and no
-source tree. Building the project means executing the plan in `tasks.md` from
-Fase 0 (setup) onward. Read the three spec files before writing any code — they
-are the source of truth and are written in Portuguese:
+**The front-end is implemented and green** (`go build ./...` / `go test ./...`),
+committed in a Go module named `domainscript`. The original plan in
+`.claude/specs/{requirements,design,tasks}.md` (Fases 0–11, REQ-1..8) is done,
+and the follow-up plan in `.claude/specs/type-checking/` — full name & type
+resolution (REQ-9..13) — is also complete: bodies and config refs are resolved,
+a type model backs member-access and type-compatibility checks, and the new
+name/type diagnostics carry stable codes (`E100`..`E103`). Both spec sets are the
+source of truth and are written in Portuguese:
 
-- `.claude/specs/requirements.md` — **what & why** (EARS-format criteria REQ-1..8, NFR-1..7).
-- `.claude/specs/design.md` — **how** (architecture, package layout, component contracts).
-- `.claude/specs/tasks.md` — **executable plan** (ordered tasks, each with a completion criterion and a commit).
+- `.claude/specs/requirements.md` / `design.md` / `tasks.md` — the front-end
+  (REQ-1..8, NFR-1..7).
+- `.claude/specs/type-checking/{requirements,design,tasks}.md` — name & type
+  resolution (REQ-9..13, NFR-8..10).
 
-When implementing, follow the spec flow strictly: a task references the REQ it
-satisfies (`(REQ-n)`) and the design section (`(§design x)`). Do not invent
-architecture that contradicts `design.md`; if a change is needed, update the spec.
+Work now is maintenance and extension, not greenfield. Still follow the spec
+flow: a task references the REQ it satisfies (`(REQ-n)`) and the design section
+(`(§design x)`). Do not invent architecture that contradicts `design.md`; if a
+change is needed, update the spec. Go code generation (the back-end) remains
+out of scope.
 
 ## What is being built
 
@@ -29,8 +35,15 @@ Pipeline (a shared, accumulating `DiagnosticBag` runs across all stages):
 
 ```
 source ─▶ LEXER ─▶ tokens ─▶ PARSER ─▶ AST ─▶ RESOLVER ─▶ CHECKER ─▶ validated AST
-          REQ-1              REQ-2/3           REQ-4        REQ-5
+          REQ-1              REQ-2/3           REQ-4/9/10   REQ-5/12/13
 ```
+
+The RESOLVER now does three passes: type/ref resolution (REQ-4), then name
+resolution in executable bodies (REQ-9), then config-ref resolution (REQ-10). The
+CHECKER runs the §23 rules (REQ-5) plus, over a shared `types.Model`, member-access
+(REQ-12) and type-compatibility (REQ-13) checks. The ordering is deliberate: an
+unresolved name becomes `types.ErrorType` downstream, so it never spawns a second
+type diagnostic (anti-cascade, NFR-9).
 
 For multi-file projects, a **program aggregation** stage (REQ-7) runs between
 PARSER and RESOLVER: every file is parsed, then ASTs are merged into one program
@@ -70,13 +83,16 @@ These are the load-bearing decisions — violating them breaks the design's core
 ```
 cmd/dsc/        CLI (REQ-8)
 token/          TokenKind, Token, Pos (1-based), keywords
-diag/           Diagnostic, Severity, DiagnosticBag (dedup, cap=100, render)
+diag/           Diagnostic, Severity, DiagnosticBag (dedup, cap=100, render); codes E1xx
 lexer/          single-pass over []rune (REQ-1)
 ast/            Node/Decl/Stmt/Expr interfaces, Span, error nodes
+astutil/        generic AST traversal shared by resolver & sema (NFR-8)
 parser/         cursor, expect, synchronize, sync_sets, parse_{decl,stmt,expr,config,test}
 symbols/        SymbolTable, per-module scope + public level
-resolver/       symbol collection + name resolution (REQ-4)
-sema/           checker + rules_{types,flow,domain,program,warnings} (REQ-5)
+resolver/       symbol collection + name resolution (REQ-4); bodies (REQ-9) + config refs (REQ-10)
+types/          Type model, TypeOf/Members catalog, expr inference, Assignable (REQ-11)
+sema/           checker + rules_{types,flow,domain,program,warnings} (REQ-5);
+                rules_typecheck (member, REQ-12) + rules_compat (compat, REQ-13)
 program/        aggregates files into a unified model (REQ-7)
 driver/         pipeline orchestration + public API (REQ-8)
 ```
@@ -86,7 +102,7 @@ and `driver.CheckProject(dir) (*program.Program, *diag.DiagnosticBag)`.
 
 ## Commands
 
-The module is named `domainscript` (Go). Once Fase 0 sets it up:
+The module is named `domainscript` (Go):
 
 ```sh
 go build ./...                         # build all packages
@@ -96,8 +112,8 @@ go vet ./...                           # static checks
 gofmt -l .                             # list unformatted files
 ```
 
-`tasks.md` Fase 0.3 also calls for a `Makefile` with `build`/`test`/`lint`/`fmt`
-targets — prefer `make test` etc. once it exists.
+A `Makefile` wraps these with `build`/`test`/`lint`/`fmt` targets — prefer
+`make test`, `make lint`, etc.
 
 ## Working conventions (from tasks.md)
 
@@ -112,7 +128,7 @@ targets — prefer `make test` etc. once it exists.
 - **Conventional Commits**, in Portuguese imperative, e.g.
   `feat(parser): declaração Aggregate`. Types: `feat`/`test`/`refactor`/`chore`/
   `docs`/`fix`. Scopes: `lexer`/`parser`/`ast`/`diag`/`sema`/`resolver`/
-  `symbols`/`program`/`cli`/`repo`.
+  `symbols`/`types`/`program`/`cli`/`repo`.
 
 ## Delivery milestones
 

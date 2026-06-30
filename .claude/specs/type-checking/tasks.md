@@ -6,7 +6,8 @@
 > fecha em **commit** atômico (Conventional Commits, português imperativo). Só
 > commitar com a árvore verde (`go build ./...` e `go test ./...`).
 >
-> **Esta spec ainda não foi iniciada** — todas as tasks começam `[ ]`.
+> **Esta spec está concluída** — todas as fases (A–F) estão `[x]`, com a árvore
+> verde (`go build ./...` / `go test ./...`).
 >
 > Escopos de commit novos: `types`. Reusa os existentes (`resolver`, `sema`,
 > `ast`, `diag`, `repo`).
@@ -144,7 +145,7 @@
   regressão verde.
   **Commit:** `test(sema): regressão dos três bugs do Wallet`
 
-- [ ] **F.3** Revalidar determinismo e limite de cascata sobre as novas regras;
+- [x] **F.3** Revalidar determinismo e limite de cascata sobre as novas regras;
   atualizar `CLAUDE.md` (estado real do projeto) e os specs. _(NFR-9, NFR-1)_
   **Conclusão:** testes de determinismo/cascata cobrindo erros de nome/tipo; árvore
   verde; auditoria de par positivo+negativo por REQ-9..13 completa (NFR-10).
