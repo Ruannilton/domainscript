@@ -108,7 +108,7 @@
   colisão) e uma ref cross-pacote (`contracts.OrderPlaced`).
   **Commit:** `feat(codegen): mapeamento de identificadores idiomáticos`
 
-- [ ] **E1.3** **Mapa de tipos primitivos → Go** e tabela de **métodos embutidos**.
+- [x] **E1.3** **Mapa de tipos primitivos → Go** e tabela de **métodos embutidos**.
   Primitivos: `integer`→`int64`, `decimal`→`runtime.Decimal` (exato, ver E3.1),
   `string`→`string`, `boolean`→`bool`, `datetime`→`time.Time`, `bytes`→`[]byte`,
   `duration`→`time.Duration`, `size`→`int64`, coleções `List<T>`→`[]T`,
