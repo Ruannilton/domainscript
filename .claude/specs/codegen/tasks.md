@@ -63,7 +63,7 @@
   <path>` preservam o comportamento atual (exit 0/1/2).
   **Commit:** `chore(codegen): scaffold do gerador e API GenerateProject`
 
-- [ ] **E0.2** Infra de teste: helper de **golden test** (gera → compara com artefato
+- [x] **E0.2** Infra de teste: helper de **golden test** (gera → compara com artefato
   versionado; roda **duas vezes** e exige bytes idênticos p/ determinismo) e helper de
   **smoke compile** (escreve o gerado num tmp, roda `go build ./...` e `go vet ./...`
   sobre a saída). _(NFR-13/14/17, §design 5)_

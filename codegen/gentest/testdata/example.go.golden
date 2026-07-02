@@ -1,0 +1,3 @@
+package example
+
+func Hello() string { return "hi" }
