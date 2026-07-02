@@ -294,7 +294,7 @@
   `ListEntries` (`List<StatementEntry>`) compilam e retornam o tipo declarado.
   **Commit:** `feat(codegen): Views e Queries (read side in-memory)`
 
-- [ ] **E8.2** `Projection`→view materializada cross-aggregate atualizada nos eventos
+- [x] **E8.2** `Projection`→view materializada cross-aggregate atualizada nos eventos
   de `refreshOn` (`ProjectionDecl.Sources`/`Map`/`RefreshOn`). _(REQ-21.4)_ *(Sem
   Projection no wallet; cobrir por fixture — ex. `InvoiceWithHolderVW` do spec §6.4.)*
   **Commit:** `feat(codegen): Projections`

@@ -1,0 +1,16 @@
+package invoicing
+
+// InvoiceWithHolderVW é a Projection InvoiceWithHolderVW (§6.4): view materializada cross-aggregate,
+// recomputada a partir de Invoice/Wallet.
+type InvoiceWithHolderVW struct {
+	InvoiceId InvoiceId  `json:"invoiceId"`
+	Amount    Money      `json:"amount"`
+	Holder    HolderName `json:"holder"`
+}
+
+// ComputeInvoiceWithHolderVW recomputa a projeção a partir dos Aggregates de origem já
+// carregados. A atualização reativa em refreshOn (InvoiceCreated, WalletUpdated) chega quando
+// Policy/Dispatcher existirem (Marco F).
+func ComputeInvoiceWithHolderVW(invoice *Invoice, wallet *Wallet) InvoiceWithHolderVW {
+	return InvoiceWithHolderVW{InvoiceId: invoice.state.Id, Amount: invoice.state.Amount, Holder: wallet.state.Holder}
+}
