@@ -190,7 +190,7 @@
   Performed` compilam e fazem round-trip JSON estável (mesma ordem de campos).
   **Commit:** `feat(codegen): Events, registry e serialização`
 
-- [ ] **E4.3** Versionamento de evento: `Field.Default` aplicado na desserialização de
+- [x] **E4.3** Versionamento de evento: `Field.Default` aplicado na desserialização de
   eventos antigos; `UpcastDecl` (`Event vN -> vN+1`) → função de upcast aplicada no
   replay. `Field.Redactable` → suporte a placeholder tipado sem quebrar round-trip.
   _(REQ-18.4/18.5/18.6)_ *(Nenhum evento do wallet usa `default`/`Upcast`/`redactable`;

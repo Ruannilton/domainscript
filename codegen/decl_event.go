@@ -20,9 +20,13 @@ import (
 // encoding/json (stdlib) via as tags `json` de cada campo, com o nome
 // original preservado (REQ-18.3).
 //
-// Field.Default e Field.Redactable são ignorados por ora: nenhum Event do
-// wallet os usa, e a lógica de default/redação é E4.3 (próxima task) — os
-// campos são emitidos normalmente, sem tratamento especial.
+// Field.Default e Field.Redactable (E4.3, REQ-18.4/18.5/18.6, spec
+// §4.3/§4.4): quando ao menos 1 campo do Event declara Default, um
+// UnmarshalJSON customizado é gerado; quando ao menos 1 campo é Redactable,
+// um método Redact() é gerado. Ambos em codegen/decl_event_version.go — nenhum
+// Event do wallet usa nenhuma das 2 features (cobertas por fixture sintética
+// nos testes daquela task). Events sem nenhuma delas continuam exatamente
+// como antes (sem custo extra).
 //
 // O roteamento de pacote de fato para PublicEvent (pacote compartilhado
 // contracts/, §design 3.4) é wiring de projeto (E9.1); aqui pkg só decide o
@@ -95,6 +99,12 @@ func emitEventDecl(e *emit.Emitter, runtimeAlias string, decl *ast.EventDecl) er
 	e.Line("")
 	e.Line("// EventType implementa %s.Event.", runtimeAlias)
 	e.Line("func (*%s) EventType() string { return %q }", decl.Name, decl.Name)
+
+	if err := emitEventUnmarshalJSON(e, runtimeAlias, infos, decl); err != nil {
+		return err
+	}
+	emitEventRedact(e, infos, decl)
+
 	return nil
 }
 

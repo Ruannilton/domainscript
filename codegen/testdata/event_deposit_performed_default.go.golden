@@ -1,0 +1,49 @@
+package versioning
+
+import (
+	runtime "domainscript/generated/runtime"
+	json "encoding/json"
+)
+
+// DepositPerformed é o Event DepositPerformed (§4.2): id EntityId, amount Money, channel Channel.
+type DepositPerformed struct {
+	runtime.EventMeta
+	Id      EntityId `json:"id"`
+	Amount  Money    `json:"amount"`
+	Channel Channel  `json:"channel"`
+}
+
+// EventType implementa runtime.Event.
+func (*DepositPerformed) EventType() string { return "DepositPerformed" }
+
+// UnmarshalJSON desserializa DepositPerformed aplicando os Field.Default (spec §4.3) aos
+// campos cuja chave está ausente do payload bruto — não só zero-value: um
+// evento gravado antes do campo existir nunca teve essa chave; presente-mas-
+// zero não é sobrescrito pelo default.
+func (e *DepositPerformed) UnmarshalJSON(data []byte) error {
+	type alias DepositPerformed
+	if err := json.Unmarshal(data, (*alias)(e)); err != nil {
+		return err
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if _, present := raw["channel"]; !present {
+		defaultVal, err := NewChannel("unknown")
+		if err != nil {
+			return err
+		}
+		e.Channel = defaultVal
+	}
+
+	return nil
+}
+
+// eventRegistry mapeia o nome estável do evento ao seu construtor Go, para
+// (de)serialização quando o tipo concreto não é conhecido estaticamente.
+var eventRegistry = map[string]func() runtime.Event{
+	"DepositPerformed": func() runtime.Event { return &DepositPerformed{} },
+}
