@@ -81,6 +81,19 @@ func (env *TypeEnv) Child() *TypeEnv {
 	return &TypeEnv{model: env.model, tab: env.tab, module: env.module, parent: env, vars: make(map[string]types.Type)}
 }
 
+// BoundLocally reporta se name já foi vinculado NESTE nível de escopo, sem
+// subir para o pai (ao contrário de LookupType) — usado pelo lowering de
+// AssignStmt (E5.2, REQ-22.8) para decidir ":=" (1ª atribuição no bloco Go
+// imediato) vs "=" (reatribuição): um nome herdado do escopo léxico pai
+// (receptor, parâmetro, ou variável de um bloco Go externo) não conta como
+// "já atribuído AQUI" — declarar com ":=" nesse caso é uma NOVA variável Go,
+// correta quando o alvo nu está de fato entrando em cena pela 1ª vez neste
+// bloco (mesmo que sombreie um nome do escopo pai).
+func (env *TypeEnv) BoundLocally(name string) bool {
+	_, ok := env.vars[name]
+	return ok
+}
+
 // ChildForIter abre um escopo-filho vinculando varName ao tipo do elemento de
 // iterType (§design 3.6a): iterType é List<T>/AppendList<T>/Set<T> (Args[0]) ou
 // já um Range convertido para List<integer> (types.Model.Infer já mapeia

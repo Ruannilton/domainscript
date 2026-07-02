@@ -225,7 +225,7 @@
   event.amount` → `state.Balance.Add(ev.Amount)`.
   **Commit:** `feat(codegen): lowering de expressões`
 
-- [ ] **E5.2** `lower/stmt.go`: `EnsureStmt` por contexto (`else Error`→`return zero,
+- [x] **E5.2** `lower/stmt.go`: `EnsureStmt` por contexto (`else Error`→`return zero,
   ErrX`; `Nop` (Ident) → no-op de laço; `break`/`break all`(`BreakStmt.All`)/`continue`
   → controle de laço, `break all` via **label**), `MatchStmt`/`MatchExpr` exaustivo →
   `switch` (Enum coberto → `case`s sem `default`; com guard → `switch { case cond
