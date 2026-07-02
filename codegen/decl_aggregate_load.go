@@ -24,11 +24,25 @@ import (
 // único caminho que constrói um Aggregate a partir de dados EXTERNOS (o
 // stream) em vez de a partir de um Handle "de negócio" que nunca toca id.
 //
-// EventSourced (REQ-19.4): Load<Nome> lê o stream via Tx.Load — chave =
-// aggregateId (metadata do store), nunca um campo "id" do payload do evento,
-// mesma convenção de EventStore.Append/decl_aggregate.go — e aplica cada
-// evento, NA ORDEM DO STREAM (não na ordem declarada de Appliers — essa ordem
-// só decide quais "case"s o switch tem), via o applyX correspondente.
+// EventSourced (REQ-19.4): Load<Nome> lê o stream via EventLoader.Load —
+// chave = aggregateId (metadata do store), nunca um campo "id" do payload do
+// evento, mesma convenção de EventStore.Append/decl_aggregate.go — e aplica
+// cada evento, NA ORDEM DO STREAM (não na ordem declarada de Appliers — essa
+// ordem só decide quais "case"s o switch tem), via o applyX correspondente.
+//
+// Parâmetro "store runtime.EventLoader" (não "tx runtime.Tx"): EventLoader
+// (codegen/rtsrc/eventloader.go.txt) é o subconjunto de LEITURA de Tx — só
+// Load, sem Append — que Tx já satisfaz estruturalmente (Go não exige
+// declaração explícita de conformidade de interface). A motivação é permitir
+// que uma Query (E8.1, §design 3.9), que NUNCA abre uma unit of work e por
+// isso não tem um Tx disponível, ainda assim chame Load<Nome> — via o
+// adaptador runtime.NewEventLoader(ctx, store), que fecha um EventStore sobre
+// um ctx fixo. Todo call site PRÉ-EXISTENTE (ex. "LoadWallet(tx, id)" dentro
+// de um UseCase, decl_usecase.go/E7.2) continua compilando sem nenhuma
+// mudança: um valor de tipo runtime.Tx é atribuível a um parâmetro
+// runtime.EventLoader porque o conjunto de métodos de Tx é um superconjunto
+// do de EventLoader — alargamento de assinatura compatível, não uma
+// mudança "breaking".
 //
 // StateStored (REQ-19.5, o padrão do spec quando "strategy" está ausente do
 // bloco Aggregate, §4.5): lê o state direto de um Repository[<stateName>] —
@@ -36,15 +50,16 @@ import (
 // persistência muda.
 //
 // Assimetria de ctx entre as duas formas (documentada aqui, única vez —
-// §design 3.1a): runtime.Tx já carrega o context.Context com que a unit of
-// work foi aberta (mesmo padrão que Append já usa, ver uow.go.txt) — por
-// isso Load<Nome> EventSourced não precisa de um parâmetro ctx explícito.
-// runtime.Repository[T], ao contrário, pede ctx em toda chamada
-// (codegen/rtsrc/repository.go.txt: "Load(ctx, id) (T, bool, error)") — não
-// existe hoje um equivalente a Tx para StateStored (só chegaria com
-// E7.2/G1). Por isso Load<Nome> StateStored tem UM parâmetro a mais (ctx,
-// convencionalmente o primeiro, idiomático) que a versão EventSourced não
-// tem — é real, não um descuido desta task.
+// §design 3.1a): tanto runtime.Tx (dentro de uma unit of work) quanto o
+// adaptador runtime.NewEventLoader (numa Query, E8.1) já carregam o
+// context.Context internamente (mesmo padrão que Append já usa, ver
+// uow.go.txt) — por isso Load<Nome> EventSourced não precisa de um parâmetro
+// ctx explícito, em nenhum dos dois casos. runtime.Repository[T], ao
+// contrário, pede ctx em toda chamada (codegen/rtsrc/repository.go.txt:
+// "Load(ctx, id) (T, bool, error)") — não existe hoje um equivalente a Tx/
+// EventLoader para StateStored. Por isso Load<Nome> StateStored tem UM
+// parâmetro a mais (ctx, convencionalmente o primeiro, idiomático) que a
+// versão EventSourced não tem — é real, não um descuido desta task.
 //
 // Conversão id→string (decisão documentada): tanto EventStore quanto
 // Repository chaveiam por um "string" cru. O "id" de um Aggregate, em todo
@@ -164,25 +179,32 @@ func idToStreamKeyExpr(idGoType, idGoExpr string) string {
 
 // --- EventSourced (REQ-19.4). ---
 
-// emitLoadEventSourced emite "func Load<Nome>(tx runtime.Tx, id <idGoType>)
-// (*<Nome>, error)": lê o stream via tx.Load, sincroniza o espelho id (ver
-// doc do arquivo) e aplica cada evento em ordem via um switch de type-assertion
-// que despacha para o applyX correspondente. Um evento do stream sem Apply
-// correspondente é uma falha explícita EM RUNTIME (não dá para garantir
-// estaticamente que só esses tipos aparecem no stream — o stream é dado
-// externo, possivelmente escrito por uma versão anterior/futura do gerador —
-// então o "default" é a defesa em profundidade, não um caminho esperado).
+// emitLoadEventSourced emite "func Load<Nome>(store runtime.EventLoader, id
+// <idGoType>) (*<Nome>, error)": lê o stream via store.Load, sincroniza o
+// espelho id (ver doc do arquivo) e aplica cada evento em ordem via um switch
+// de type-assertion que despacha para o applyX correspondente. Um evento do
+// stream sem Apply correspondente é uma falha explícita EM RUNTIME (não dá
+// para garantir estaticamente que só esses tipos aparecem no stream — o
+// stream é dado externo, possivelmente escrito por uma versão anterior/futura
+// do gerador — então o "default" é a defesa em profundidade, não um caminho
+// esperado).
+//
+// "store runtime.EventLoader" (não "tx runtime.Tx", ver doc do arquivo):
+// dentro de uma unit of work (UseCase, E7.2) chama-se "Load<Nome>(tx, id)" —
+// continua compilando, Tx satisfaz EventLoader estruturalmente; numa Query
+// (E8.1, sem Tx) chama-se "Load<Nome>(runtime.NewEventLoader(ctx, store),
+// id)".
 func emitLoadEventSourced(e *emit.Emitter, decl *ast.AggregateDecl, idGoType, runtimeAlias string) {
 	fmtAlias := e.Import("fmt")
 	fnName := "Load" + decl.Name
 	localVar := aggregateReceiver(decl.Name)
 
 	e.Line("// %s reconstrói um %s a partir do stream de eventos de id", fnName, decl.Name)
-	e.Line("// (EventSourced, §4.5): lê o stream via Tx.Load (chaveado por aggregateId,")
-	e.Line("// nunca um campo \"id\" de payload) e aplica cada evento, na ORDEM DO STREAM,")
-	e.Line("// via o método applyX correspondente. Um evento do stream sem Apply")
-	e.Line("// correspondente é uma falha explícita (defesa em profundidade: o stream é")
-	e.Line("// dado externo).")
+	e.Line("// (EventSourced, §4.5): lê o stream via EventLoader.Load (chaveado por")
+	e.Line("// aggregateId, nunca um campo \"id\" de payload) e aplica cada evento, na")
+	e.Line("// ORDEM DO STREAM, via o método applyX correspondente. Um evento do stream")
+	e.Line("// sem Apply correspondente é uma falha explícita (defesa em profundidade: o")
+	e.Line("// stream é dado externo).")
 	if decl.Snapshot != nil {
 		e.Line("//")
 		e.Line("// \"snapshot every N events\" está declarado, mas o runtime ainda não tem um")
@@ -191,9 +213,9 @@ func emitLoadEventSourced(e *emit.Emitter, decl *ast.AggregateDecl, idGoType, ru
 		e.Line("// só o restante fica para quando esse mecanismo existir (decisão da task E6.2).")
 	}
 
-	sig := fmt.Sprintf("func %s(tx %s.Tx, id %s) (*%s, error)", fnName, runtimeAlias, idGoType, decl.Name)
+	sig := fmt.Sprintf("func %s(store %s.EventLoader, id %s) (*%s, error)", fnName, runtimeAlias, idGoType, decl.Name)
 	e.Block(sig, func() {
-		e.Line("events, err := tx.Load(%s)", idToStreamKeyExpr(idGoType, "id"))
+		e.Line("events, err := store.Load(%s)", idToStreamKeyExpr(idGoType, "id"))
 		e.Block("if err != nil", func() {
 			e.Line("return nil, err")
 		})

@@ -283,7 +283,7 @@
 
 ### Fase E8 — Read Side
 
-- [ ] **E8.1** `View`→struct de leitura (campos próprios; `From Aggregate`→projeta os
+- [x] **E8.1** `View`→struct de leitura (campos próprios; `From Aggregate`→projeta os
   campos do state); `Query`→função com parâmetros e corpo. Cláusulas SQL-like
   (`QueryClause`: `where`/`orderBy`/`skip`/`take`/`as`) sobre o runtime in-memory
   (filter/sort/paginate); `… as V`→`map` para o struct da View. **Definir a semântica

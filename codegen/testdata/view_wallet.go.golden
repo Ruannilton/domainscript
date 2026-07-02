@@ -1,0 +1,9 @@
+package wallet
+
+// WalletView é a View WalletView (§6.1): id WalletId, balance Money, holder HolderName.
+// Struct de leitura pura — sem validação, sem metadata.
+type WalletView struct {
+	Id      WalletId   `json:"id"`
+	Balance Money      `json:"balance"`
+	Holder  HolderName `json:"holder"`
+}

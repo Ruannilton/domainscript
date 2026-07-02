@@ -1,0 +1,16 @@
+package wallet
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+)
+
+// GetWallet é a Query GetWallet (§6.3): leitura pura, sem unit of work.
+func GetWallet(ctx context.Context, store runtime.EventStore, id WalletId) (WalletView, error) {
+	wallet, err := LoadWallet(runtime.NewEventLoader(ctx, store), id)
+	if err != nil {
+		var zero WalletView
+		return zero, err
+	}
+	return WalletView{Id: wallet.state.Id, Balance: wallet.state.Balance, Holder: wallet.state.Holder}, nil
+}

@@ -6,13 +6,13 @@ import (
 )
 
 // LoadWallet reconstrói um Wallet a partir do stream de eventos de id
-// (EventSourced, §4.5): lê o stream via Tx.Load (chaveado por aggregateId,
-// nunca um campo "id" de payload) e aplica cada evento, na ORDEM DO STREAM,
-// via o método applyX correspondente. Um evento do stream sem Apply
-// correspondente é uma falha explícita (defesa em profundidade: o stream é
-// dado externo).
-func LoadWallet(tx runtime.Tx, id WalletId) (*Wallet, error) {
-	events, err := tx.Load(string(id))
+// (EventSourced, §4.5): lê o stream via EventLoader.Load (chaveado por
+// aggregateId, nunca um campo "id" de payload) e aplica cada evento, na
+// ORDEM DO STREAM, via o método applyX correspondente. Um evento do stream
+// sem Apply correspondente é uma falha explícita (defesa em profundidade: o
+// stream é dado externo).
+func LoadWallet(store runtime.EventLoader, id WalletId) (*Wallet, error) {
+	events, err := store.Load(string(id))
 	if err != nil {
 		return nil, err
 	}

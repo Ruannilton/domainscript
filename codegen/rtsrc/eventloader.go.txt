@@ -1,0 +1,48 @@
+package runtime
+
+import "context"
+
+// EventLoader is the read-only subset of Tx used by a generated LoadX
+// function (EventSourced Aggregate reconstruction, §design codegen 3.7):
+// anything that knows how to load an aggregate's event stream by id, with no
+// explicit ctx parameter (already bound internally — same contract as
+// Tx.Load). Tx satisfies EventLoader automatically: Go interface
+// satisfaction is structural, and Tx's method set ({Append, Load}) is a
+// superset of EventLoader's ({Load}) — no change to memoryTx or the
+// UnitOfWork seam (uow.go.txt) is needed for every existing call site
+// (LoadX(tx, id), inside a UseCase's unit of work) to keep compiling as-is.
+//
+// The seam exists because a Query is read-only and never opens a unit of
+// work — it has no Tx available, only a ctx and (typically) direct access to
+// an EventStore. NewEventLoader (below) adapts an EventStore into an
+// EventLoader so generated Query code can call the very same LoadX function
+// a UseCase already calls through its Tx.
+type EventLoader interface {
+	// Load returns every event recorded for the aggregate stream
+	// aggregateID, in the order they were appended — the seam an
+	// EventSourced Aggregate's generated LoadX function reads through to
+	// reconstruct state by replay. An unknown aggregateID returns an empty,
+	// non-nil slice and no error (same contract as EventStore.Load).
+	Load(aggregateID string) ([]Event, error)
+}
+
+// eventStoreLoader adapts an EventStore (which requires an explicit ctx on
+// every call) to EventLoader (used by LoadX), closing over a fixed ctx — used
+// by Queries, which have no Tx (they never open a unit of work; they are
+// read-only).
+type eventStoreLoader struct {
+	ctx   context.Context
+	store EventStore
+}
+
+// Load implements EventLoader.
+func (l eventStoreLoader) Load(aggregateID string) ([]Event, error) {
+	return l.store.Load(l.ctx, aggregateID)
+}
+
+// NewEventLoader exposes the eventStoreLoader adapter to generated code: it
+// lets a generated Query call the same LoadX function a UseCase's Tx already
+// satisfies, without needing a unit of work.
+func NewEventLoader(ctx context.Context, store EventStore) EventLoader {
+	return eventStoreLoader{ctx: ctx, store: store}
+}
