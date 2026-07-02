@@ -106,4 +106,16 @@ func TestGoBuiltinCall(t *testing.T) {
 	if _, ok := GoBuiltinCall("value", BuiltinMethod{Receiver: "string", Method: "reverse"}, nil); ok {
 		t.Errorf("GoBuiltinCall(string.reverse) ok = true, want false (par desconhecido)")
 	}
+
+	got, ok = GoBuiltinCall("v", BuiltinMethod{Receiver: "string", Method: "uppercase"}, nil)
+	if !ok {
+		t.Fatalf("GoBuiltinCall(string.uppercase) ok = false, want true")
+	}
+	if want := "strings.ToUpper(v)"; got != want {
+		t.Errorf("GoBuiltinCall(string.uppercase) = %q, want %q", got, want)
+	}
+
+	if _, ok := GoBuiltinCall("v", BuiltinMethod{Receiver: "string", Method: "uppercase"}, []string{"demais"}); ok {
+		t.Errorf("GoBuiltinCall(string.uppercase) com aridade errada: ok = true, want false")
+	}
 }

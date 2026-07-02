@@ -1,0 +1,28 @@
+package wallet
+
+import (
+	strings "strings"
+)
+
+// PaymentMethod é o Enum PaymentMethod (§2.3): conjunto fechado de valores nomeados.
+// Construa via ParsePaymentMethod para validar a coerção.
+type PaymentMethod string
+
+const (
+	PaymentMethodCreditCard PaymentMethod = "CREDIT_CARD"
+	PaymentMethodPix        PaymentMethod = "PIX"
+)
+
+// ParsePaymentMethod coage v para um PaymentMethod válido, executando o coerce declarado
+// (§2.3).
+func ParsePaymentMethod(v string) (PaymentMethod, error) {
+	switch strings.ToUpper(v) {
+	case "CREDIT_CARD", "CC":
+		return PaymentMethodCreditCard, nil
+	case "PIX":
+		return PaymentMethodPix, nil
+	default:
+		var zero PaymentMethod
+		return zero, ErrInvalidPaymentMethod
+	}
+}

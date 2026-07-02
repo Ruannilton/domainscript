@@ -87,8 +87,9 @@ type BuiltinMethod struct {
 // Method) — usada só para validar a chamada; a emissão em si é o switch de
 // GoBuiltinCall.
 var builtinArity = map[BuiltinMethod]int{
-	{Receiver: "string", Method: "length"}:  0,
-	{Receiver: "AppendList", Method: "add"}: 1,
+	{Receiver: "string", Method: "length"}:    0,
+	{Receiver: "AppendList", Method: "add"}:   1,
+	{Receiver: "string", Method: "uppercase"}: 0,
 }
 
 // GoBuiltinCall mapeia um BuiltinMethod para como ele é emitido em Go, dado o
@@ -109,6 +110,11 @@ func GoBuiltinCall(recv string, m BuiltinMethod, args []string) (string, bool) {
 		return fmt.Sprintf("len(%s)", recv), true
 	case BuiltinMethod{Receiver: "AppendList", Method: "add"}:
 		return fmt.Sprintf("%s.Add(%s)", recv, args[0]), true
+	case BuiltinMethod{Receiver: "string", Method: "uppercase"}:
+		// Requer o import "strings" (stdlib) no arquivo que emite esta chamada;
+		// GoBuiltinCall só produz o texto — quem chama registra o import
+		// (ex.: codegen/decl_enum.go, sujeito de coerce, §design 3.6).
+		return fmt.Sprintf("strings.ToUpper(%s)", recv), true
 	}
 	return "", false // inalcançável: todo par em builtinArity é tratado acima
 }

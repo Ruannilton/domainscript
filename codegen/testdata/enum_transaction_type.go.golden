@@ -1,0 +1,28 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// TransactionType é o Enum TransactionType (§2.3): conjunto fechado de valores nomeados.
+// Construa via ParseTransactionType para validar a coerção.
+type TransactionType string
+
+const (
+	TransactionTypeDeposit    TransactionType = "DEPOSIT"
+	TransactionTypeWithdrawal TransactionType = "WITHDRAWAL"
+)
+
+// ParseTransactionType coage v para um TransactionType válido (coerção implícita — valor
+// desconhecido é erro, §2.3).
+func ParseTransactionType(v string) (TransactionType, error) {
+	switch v {
+	case "DEPOSIT":
+		return TransactionTypeDeposit, nil
+	case "WITHDRAWAL":
+		return TransactionTypeWithdrawal, nil
+	default:
+		var zero TransactionType
+		return zero, runtime.BusinessError{Code: "InvalidTransactionType", Msg: "TransactionType: valor desconhecido"}
+	}
+}

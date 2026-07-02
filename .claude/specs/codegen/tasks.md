@@ -162,7 +162,7 @@
   `state.active == ActiveStatus(true)` (sem operador) vira `==` nativo.
   **Commit:** `feat(codegen): operadores de ValueObject`
 
-- [ ] **E3.3** `Enum` → tipo nomeado sobre o base + `const` por membro + `ParseX`. Sem
+- [x] **E3.3** `Enum` → tipo nomeado sobre o base + `const` por membro + `ParseX`. Sem
   `coerce`: coerção implícita (valor desconhecido → erro). Com `coerce`: corpo do
   `Parse` via lowering de `match` (E5.2). _(REQ-17.4, §design 3.5)_
   **Conclusão (golden + smoke):** `TransactionType` gera tipo+consts+`ParseTransaction
