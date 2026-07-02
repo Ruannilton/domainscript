@@ -95,7 +95,7 @@
   gofmt-ada e **byte-idêntica** entre duas emissões.
   **Commit:** `feat(emit): Emitter com imports geridos e go/format`
 
-- [ ] **E1.2** `names.go`: mapeamento de identificadores — tipo (PascalCase), campo
+- [x] **E1.2** `names.go`: mapeamento de identificadores — tipo (PascalCase), campo
   (exporta + tag `json` com nome original), `Operator`→método (`+`→`Add`, `-`→`Sub`,
   `*`→`Mul`, `/`→`Div`, `>=`→`Gte`, `<=`→`Lte`, `>`→`Gt`, `<`→`Lt`, `==`→`Eq`,
   `!=`→`Neq`), membro de Enum (`Tipo`+`Membro`), pacote (nome do módulo, minúsculo),
