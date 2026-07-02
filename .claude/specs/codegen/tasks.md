@@ -71,8 +71,8 @@
   (um arquivo Go fixo) — golden compara, smoke compila.
   **Commit:** `test(codegen): helpers de golden test e smoke compile`
 
-- [ ] **E0.3** **Prep do exemplo wallet (pré-requisito do smoke do Marco E).** ✅ FEITO
-  (commit pendente). Declarados em `Money` os operadores que o domínio já usa mas não
+- [x] **E0.3** **Prep do exemplo wallet (pré-requisito do smoke do Marco E).**
+  Declarados em `Money` os operadores que o domínio já usa mas não
   definia — `Operator +`, `Operator -`, `Operator >=` (spec §2.2) — pois `Apply` faz
   `state.balance +/- event.amount` e `Handle Withdraw` faz `ensure state.balance >=
   amount`. Sem eles o Go gerado não compilaria (design §4.2 ramo (d); §7). Os
@@ -83,7 +83,7 @@
   **Toca:** `docs/examples/wallet/domain.ds`.
   **Conclusão:** ✅ `go build ./...` e `go test ./...` verdes; `TestWalletExampleClean`
   (zero diagnósticos) e `TestWalletThreeBugsRegression` (linhas intactas) passam.
-  **Commit:** `docs(examples): operadores de Money no exemplo wallet`
+  **Commit:** feito em `5421153` ("nova especificação").
 
 ### Fase E1 — Emissor, nomes e mapa de tipos
 
