@@ -1,0 +1,46 @@
+package runtime
+
+import (
+	"context"
+	"sync"
+)
+
+// Repository is the seam for StateStored aggregate persistence: it loads and
+// saves the concrete state struct T directly, without event replay. T is the
+// per-domain state struct generated for a specific Aggregate — unknown to
+// this package, hence the generic.
+type Repository[T any] interface {
+	// Load returns the stored state for id. found is false when no state
+	// has been saved for id yet, in which case state is T's zero value.
+	Load(ctx context.Context, id string) (state T, found bool, err error)
+	// Save persists state under id, replacing any previously saved value.
+	Save(ctx context.Context, id string, state T) error
+}
+
+// memoryRepository is a thread-safe, in-process Repository[T] backed by a
+// map keyed by aggregate id.
+type memoryRepository[T any] struct {
+	mu     sync.RWMutex
+	states map[string]T
+}
+
+// NewMemoryRepository creates an empty in-memory Repository[T].
+func NewMemoryRepository[T any]() Repository[T] {
+	return &memoryRepository[T]{states: make(map[string]T)}
+}
+
+// Load implements Repository.
+func (r *memoryRepository[T]) Load(ctx context.Context, id string) (T, bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, found := r.states[id]
+	return state, found, nil
+}
+
+// Save implements Repository.
+func (r *memoryRepository[T]) Save(ctx context.Context, id string, state T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.states[id] = state
+	return nil
+}

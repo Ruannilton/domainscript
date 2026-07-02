@@ -1,0 +1,15 @@
+package runtime
+
+// Caller represents the identity invoking a Handle or UseCase, used to
+// evaluate `access` rules and by business logic that branches on identity.
+// A concrete implementation is wired at the HTTP/gRPC edge (E9.2/H1); only
+// the contract lives here.
+type Caller interface {
+	// Authenticated reports whether the request carries a verified identity.
+	Authenticated() bool
+	// ID returns the caller's stable identifier. Empty when not
+	// Authenticated().
+	ID() string
+	// HasRole reports whether the caller holds role.
+	HasRole(role string) bool
+}

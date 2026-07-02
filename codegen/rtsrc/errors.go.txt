@@ -1,0 +1,31 @@
+package runtime
+
+// BusinessError is a domain-level error: the Go representation of a
+// DomainScript Error declaration. Code identifies the declared Error by
+// name and is stable across releases; Msg is the human-readable message.
+type BusinessError struct {
+	Code string
+	Msg  string
+}
+
+// Error implements the error interface.
+func (e BusinessError) Error() string { return e.Msg }
+
+// Is reports whether target is a BusinessError with the same Code, so that
+// errors.Is(err, ErrX) works across distinct instances carrying the same
+// Code (e.g. after a JSON round-trip, where Msg formatting may differ).
+func (e BusinessError) Is(target error) bool {
+	other, ok := target.(BusinessError)
+	if !ok {
+		return false
+	}
+	return e.Code == other.Code
+}
+
+// ErrForbidden is the reserved BusinessError for `access`-rule failures
+// (closed-by-default access) — mapped to HTTP 403 at the edge.
+var ErrForbidden = BusinessError{Code: "Forbidden", Msg: "access denied"}
+
+// ErrNotFound is the reserved BusinessError for missing aggregates/entities
+// — mapped to HTTP 404 at the edge.
+var ErrNotFound = BusinessError{Code: "NotFound", Msg: "not found"}

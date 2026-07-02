@@ -1,0 +1,46 @@
+package runtime
+
+import (
+	"context"
+	"sync"
+)
+
+// IdempotencyStore is the storage seam for idempotent Command results: a
+// key maps to the raw result recorded the first time a Command with that
+// key ran. Full conflict/retry semantics (concurrent requests, key reused
+// with a different command) are a later milestone (G2) — this is only the
+// storage primitive.
+type IdempotencyStore interface {
+	// Get returns the result recorded for key, if any.
+	Get(ctx context.Context, key string) (result []byte, found bool, err error)
+	// Put records result under key, replacing any previous value.
+	Put(ctx context.Context, key string, result []byte) error
+}
+
+// memoryIdempotencyStore is a thread-safe, in-process IdempotencyStore
+// backed by a map.
+type memoryIdempotencyStore struct {
+	mu      sync.RWMutex
+	results map[string][]byte
+}
+
+// NewMemoryIdempotencyStore creates an empty in-memory IdempotencyStore.
+func NewMemoryIdempotencyStore() IdempotencyStore {
+	return &memoryIdempotencyStore{results: make(map[string][]byte)}
+}
+
+// Get implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result, found := s.results[key]
+	return result, found, nil
+}
+
+// Put implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Put(ctx context.Context, key string, result []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.results[key] = result
+	return nil
+}

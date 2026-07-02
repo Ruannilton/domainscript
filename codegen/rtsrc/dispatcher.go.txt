@@ -1,0 +1,51 @@
+package runtime
+
+import (
+	"context"
+	"sync"
+)
+
+// Dispatcher fans out published events to the handlers subscribed for their
+// event type — the mechanism behind Policy execution (Marco F).
+type Dispatcher interface {
+	// Subscribe registers handler to run for every event whose EventType()
+	// equals eventType.
+	Subscribe(eventType string, handler func(ctx context.Context, ev Event) error)
+	// Publish calls every handler subscribed for ev.EventType(), in
+	// subscription order, synchronously, stopping at the first error. This
+	// in-process, best-effort delivery is enough for Marco E; AtLeastOnce
+	// via outbox is Marco F.
+	Publish(ctx context.Context, ev Event) error
+}
+
+// memoryDispatcher is a thread-safe, in-process Dispatcher.
+type memoryDispatcher struct {
+	mu       sync.RWMutex
+	handlers map[string][]func(ctx context.Context, ev Event) error
+}
+
+// NewDispatcher creates an empty in-memory Dispatcher.
+func NewDispatcher() Dispatcher {
+	return &memoryDispatcher{handlers: make(map[string][]func(ctx context.Context, ev Event) error)}
+}
+
+// Subscribe implements Dispatcher.
+func (d *memoryDispatcher) Subscribe(eventType string, handler func(ctx context.Context, ev Event) error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.handlers[eventType] = append(d.handlers[eventType], handler)
+}
+
+// Publish implements Dispatcher.
+func (d *memoryDispatcher) Publish(ctx context.Context, ev Event) error {
+	d.mu.RLock()
+	handlers := append([]func(ctx context.Context, ev Event) error(nil), d.handlers[ev.EventType()]...)
+	d.mu.RUnlock()
+
+	for _, handler := range handlers {
+		if err := handler(ctx, ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}

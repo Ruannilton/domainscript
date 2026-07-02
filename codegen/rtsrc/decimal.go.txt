@@ -1,0 +1,170 @@
+package runtime
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"strings"
+)
+
+// decimalScale is the fixed number of fractional digits every Decimal
+// carries (spec §3.3/§6: money/decimal is exact, never float64).
+const decimalScale = 4
+
+// Decimal is a fixed-point decimal number with decimalScale digits of
+// scale, backed by math/big.Int so arithmetic never loses precision the way
+// float64 would (e.g. 0.1+0.2 is exactly 0.3, not 0.30000000000000004). The
+// zero Decimal is 0.0000, ready to use. Decimal is NOT comparable with ==
+// (big.Int embeds a slice); use Cmp for equality and ordering.
+type Decimal struct {
+	unscaled big.Int // value * 10^decimalScale
+}
+
+// NewDecimalFromInt creates a Decimal representing whole units, e.g.
+// NewDecimalFromInt(5) is 5.0000.
+func NewDecimalFromInt(whole int64) Decimal {
+	var d Decimal
+	d.unscaled.Mul(big.NewInt(whole), pow10(decimalScale))
+	return d
+}
+
+// ParseDecimal parses s (e.g. "12.3400", "-7", ".5") into a Decimal. When s
+// has more than decimalScale fractional digits, the extra digits are
+// rounded away using round-half-to-even (banker's rounding) — the standard
+// rounding rule for financial decimals, avoiding round-half-up's systematic
+// upward bias.
+func ParseDecimal(s string) (Decimal, error) {
+	trimmed := strings.TrimSpace(s)
+
+	neg := false
+	rest := trimmed
+	if rest != "" && (rest[0] == '+' || rest[0] == '-') {
+		neg = rest[0] == '-'
+		rest = rest[1:]
+	}
+	if rest == "" {
+		return Decimal{}, fmt.Errorf("runtime: decimal inválido: %q", s)
+	}
+
+	intPart, fracPart, hasDot := rest, "", false
+	if i := strings.IndexByte(rest, '.'); i >= 0 {
+		intPart, fracPart, hasDot = rest[:i], rest[i+1:], true
+	}
+	if intPart == "" {
+		intPart = "0"
+	}
+	if (hasDot && fracPart == "") || !isDigits(intPart) || !isDigits(fracPart) {
+		return Decimal{}, fmt.Errorf("runtime: decimal inválido: %q", s)
+	}
+
+	raw, ok := new(big.Int).SetString(intPart+fracPart, 10)
+	if !ok {
+		return Decimal{}, fmt.Errorf("runtime: decimal inválido: %q", s)
+	}
+
+	var unscaled *big.Int
+	if extra := len(fracPart) - decimalScale; extra > 0 {
+		unscaled = roundHalfEven(raw, pow10(extra))
+	} else {
+		unscaled = raw.Mul(raw, pow10(-extra))
+	}
+	if neg {
+		unscaled.Neg(unscaled)
+	}
+	return Decimal{unscaled: *unscaled}, nil
+}
+
+// Add returns d+other. Exact: both operands share the fixed scale, so no
+// rounding is involved.
+func (d Decimal) Add(other Decimal) Decimal {
+	var out Decimal
+	out.unscaled.Add(&d.unscaled, &other.unscaled)
+	return out
+}
+
+// Sub returns d-other. Exact, for the same reason as Add.
+func (d Decimal) Sub(other Decimal) Decimal {
+	var out Decimal
+	out.unscaled.Sub(&d.unscaled, &other.unscaled)
+	return out
+}
+
+// Cmp compares d and other, returning -1 if d<other, 0 if d==other, and +1
+// if d>other. Every relational comparison (Gte/Lte/Gt/Lt/Eq) lowers to a
+// check against Cmp's result.
+func (d Decimal) Cmp(other Decimal) int {
+	return d.unscaled.Cmp(&other.unscaled)
+}
+
+// String renders d with exactly decimalScale fractional digits, e.g.
+// "12.3400", "-0.0500", "0.0000".
+func (d Decimal) String() string {
+	digits := new(big.Int).Abs(&d.unscaled).String()
+	for len(digits) <= decimalScale {
+		digits = "0" + digits
+	}
+	intPart, fracPart := digits[:len(digits)-decimalScale], digits[len(digits)-decimalScale:]
+	sign := ""
+	if d.unscaled.Sign() < 0 {
+		sign = "-"
+	}
+	return sign + intPart + "." + fracPart
+}
+
+// MarshalJSON implements json.Marshaler, encoding d as a JSON string —
+// never a bare JSON number, since Go's encoding/json decodes bare numbers
+// into float64 by default, which would silently reintroduce the precision
+// loss Decimal exists to avoid.
+func (d Decimal) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.String())
+}
+
+// UnmarshalJSON implements json.Unmarshaler, decoding a JSON string
+// produced by MarshalJSON.
+func (d *Decimal) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("runtime: Decimal inválido: %w", err)
+	}
+	parsed, err := ParseDecimal(s)
+	if err != nil {
+		return err
+	}
+	*d = parsed
+	return nil
+}
+
+// isDigits reports whether every rune in s is an ASCII digit (s == "" is
+// vacuously true).
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// pow10 returns 10^n as a fresh *big.Int.
+func pow10(n int) *big.Int {
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
+}
+
+// roundHalfEven divides num by div (both non-negative) and rounds the
+// quotient to the nearest integer, breaking exact ties toward the even
+// neighbor (banker's rounding).
+func roundHalfEven(num, div *big.Int) *big.Int {
+	q, r := new(big.Int), new(big.Int)
+	q.QuoRem(num, div, r)
+
+	twiceR := new(big.Int).Lsh(r, 1)
+	switch twiceR.Cmp(div) {
+	case 1:
+		q.Add(q, big.NewInt(1))
+	case 0:
+		if q.Bit(0) == 1 {
+			q.Add(q, big.NewInt(1))
+		}
+	}
+	return q
+}

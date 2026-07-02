@@ -1,0 +1,60 @@
+package runtime
+
+import "context"
+
+// ctxKey is a private type for context.Context keys defined by this
+// package, so runtime keys never collide with keys from other packages —
+// the standard Go context-key pattern.
+type ctxKey int
+
+const (
+	callerCtxKey ctxKey = iota
+	tenantCtxKey
+	idempotencyKeyCtxKey
+	traceCtxKey // accessor pair (WithTrace/TraceFrom) lands with observability, H2.
+)
+
+// WithCaller returns a copy of ctx carrying caller, retrievable via
+// CallerFrom.
+func WithCaller(ctx context.Context, caller Caller) context.Context {
+	return context.WithValue(ctx, callerCtxKey, caller)
+}
+
+// CallerFrom returns the Caller carried by ctx, if any.
+func CallerFrom(ctx context.Context) (Caller, bool) {
+	caller, ok := ctx.Value(callerCtxKey).(Caller)
+	return caller, ok
+}
+
+// Tenant identifies the tenant a request belongs to in a multi-tenant
+// deployment. Filtering/enforcement by Tenant is a no-op until
+// multi-tenancy lands (Marco G5) — for now it is only a context carrier.
+type Tenant struct {
+	ID string
+}
+
+// WithTenant returns a copy of ctx carrying tenant, retrievable via
+// TenantFrom.
+func WithTenant(ctx context.Context, tenant Tenant) context.Context {
+	return context.WithValue(ctx, tenantCtxKey, tenant)
+}
+
+// TenantFrom returns the Tenant carried by ctx, if any.
+func TenantFrom(ctx context.Context) (Tenant, bool) {
+	tenant, ok := ctx.Value(tenantCtxKey).(Tenant)
+	return tenant, ok
+}
+
+// WithIdempotencyKey returns a copy of ctx carrying the client-supplied
+// idempotency key, retrievable via IdempotencyKeyFrom. Enforcement
+// (conflict detection, concurrent-retry policy) is a no-op until
+// idempotency lands (Marco G2) — for now it is only a context carrier.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKeyCtxKey, key)
+}
+
+// IdempotencyKeyFrom returns the idempotency key carried by ctx, if any.
+func IdempotencyKeyFrom(ctx context.Context) (string, bool) {
+	key, ok := ctx.Value(idempotencyKeyCtxKey).(string)
+	return key, ok
+}

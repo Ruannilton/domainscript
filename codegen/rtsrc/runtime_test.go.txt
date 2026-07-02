@@ -1,0 +1,360 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+// testEvent is a minimal Event implementation for these tests: it embeds
+// EventMeta (getting SetMeta for free via promotion) and reports a fixed
+// EventType.
+type testEvent struct {
+	EventMeta
+	Msg string
+}
+
+func (e *testEvent) EventType() string { return "TestEvent" }
+
+func TestBusinessErrorIsMatchesByCode(t *testing.T) {
+	err := BusinessError{Code: "InsufficientBalance", Msg: "saldo insuficiente"}
+	sameCodeDifferentMsg := BusinessError{Code: "InsufficientBalance", Msg: "outra mensagem"}
+	other := BusinessError{Code: "InactiveWallet", Msg: "carteira inativa"}
+
+	if !errors.Is(err, sameCodeDifferentMsg) {
+		t.Fatal("esperava errors.Is casar por Code, ignorando Msg")
+	}
+	if errors.Is(err, other) {
+		t.Fatal("esperava errors.Is NÃO casar Codes diferentes")
+	}
+	if errors.Is(err, ErrForbidden) {
+		t.Fatal("esperava errors.Is NÃO casar com ErrForbidden")
+	}
+}
+
+func TestDecimalAddPreservesExactPrecision(t *testing.T) {
+	a, err := ParseDecimal("0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ParseDecimal("0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := a.Add(b)
+	want, err := ParseDecimal("0.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Em float64, 0.1+0.2 é 0.30000000000000004: aqui tem que bater exato.
+	if got.Cmp(want) != 0 {
+		t.Fatalf("Add impreciso: got %s, want %s", got, want)
+	}
+	if got.String() != "0.3000" {
+		t.Fatalf("String() = %q, want %q", got.String(), "0.3000")
+	}
+}
+
+func TestDecimalSub(t *testing.T) {
+	a, _ := ParseDecimal("10.0000")
+	b, _ := ParseDecimal("3.5000")
+	got := a.Sub(b)
+	if got.String() != "6.5000" {
+		t.Fatalf("Sub = %q, want %q", got.String(), "6.5000")
+	}
+}
+
+func TestDecimalCmp(t *testing.T) {
+	small, _ := ParseDecimal("1.5")
+	big, _ := ParseDecimal("2.5")
+	if small.Cmp(big) != -1 {
+		t.Fatalf("esperava -1, got %d", small.Cmp(big))
+	}
+	if big.Cmp(small) != 1 {
+		t.Fatalf("esperava 1, got %d", big.Cmp(small))
+	}
+	if small.Cmp(small) != 0 {
+		t.Fatalf("esperava 0, got %d", small.Cmp(small))
+	}
+}
+
+func TestDecimalParseRoundsHalfEven(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"1.23445", "1.2344"},   // descarte exatamente .5 -> arredonda pro par (4 fica)
+		{"1.23455", "1.2346"},   // descarte exatamente .5 -> arredonda pro par (5 -> 6)
+		{"1.23459", "1.2346"},   // descarte .9 -> não é empate, arredonda pra cima
+		{"1.23441", "1.2344"},   // descarte .1 -> não é empate, arredonda pra baixo
+		{"-1.23445", "-1.2344"}, // sinal preservado, mesma regra de empate
+	}
+	for _, c := range cases {
+		got, err := ParseDecimal(c.in)
+		if err != nil {
+			t.Fatalf("ParseDecimal(%q): %v", c.in, err)
+		}
+		if got.String() != c.want {
+			t.Fatalf("ParseDecimal(%q).String() = %q, want %q", c.in, got.String(), c.want)
+		}
+	}
+}
+
+func TestDecimalParseRejectsGarbage(t *testing.T) {
+	for _, in := range []string{"", "abc", "1.2.3", "-", "1.", "."} {
+		if _, err := ParseDecimal(in); err == nil {
+			t.Fatalf("ParseDecimal(%q) deveria falhar", in)
+		}
+	}
+}
+
+func TestDecimalJSONRoundTrip(t *testing.T) {
+	d, _ := ParseDecimal("42.5000")
+	data, err := d.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Decimal
+	if err := got.UnmarshalJSON(data); err != nil {
+		t.Fatal(err)
+	}
+	if got.Cmp(d) != 0 {
+		t.Fatalf("round-trip JSON mudou o valor: got %s, want %s", got, d)
+	}
+}
+
+func TestAppendListAddItems(t *testing.T) {
+	var l AppendList[string]
+	l.Add("a")
+	l.Add("b")
+	got := l.Items()
+	want := []string{"a", "b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Items() = %v, want %v", got, want)
+	}
+}
+
+func TestAppendListJSONRoundTrip(t *testing.T) {
+	var l AppendList[int]
+	l.Add(1)
+	l.Add(2)
+	l.Add(3)
+
+	data, err := l.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "[1,2,3]" {
+		t.Fatalf("MarshalJSON = %q, want %q", data, "[1,2,3]")
+	}
+
+	var got AppendList[int]
+	if err := got.UnmarshalJSON(data); err != nil {
+		t.Fatal(err)
+	}
+	items := got.Items()
+	if len(items) != 3 || items[0] != 1 || items[1] != 2 || items[2] != 3 {
+		t.Fatalf("round-trip = %v", items)
+	}
+}
+
+func TestMemoryEventStoreAppendLoadPreservesOrder(t *testing.T) {
+	store := NewMemoryEventStore()
+	ctx := context.Background()
+
+	first := &testEvent{Msg: "first"}
+	second := &testEvent{Msg: "second"}
+	if err := store.Append(ctx, "wallet-1", []Event{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, "wallet-1", []Event{second}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.Load(ctx, "wallet-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("esperava 2 eventos, got %d", len(events))
+	}
+	got1 := events[0].(*testEvent)
+	got2 := events[1].(*testEvent)
+	if got1.Msg != "first" || got2.Msg != "second" {
+		t.Fatalf("ordem não preservada: %q, %q", got1.Msg, got2.Msg)
+	}
+	if got1.Sequence != 1 || got2.Sequence != 2 {
+		t.Fatalf("Sequence não incremental: %d, %d", got1.Sequence, got2.Sequence)
+	}
+	if got1.AggregateID != "wallet-1" || got2.AggregateID != "wallet-1" {
+		t.Fatalf("AggregateID não atribuído: %q, %q", got1.AggregateID, got2.AggregateID)
+	}
+	if got1.Timestamp.IsZero() {
+		t.Fatal("Timestamp não atribuído")
+	}
+
+	// Um aggregateId desconhecido devolve stream vazia, sem erro.
+	empty, err := store.Load(ctx, "desconhecido")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("Load de id desconhecido: events=%v err=%v", empty, err)
+	}
+}
+
+func TestDispatcherPublishCallsSubscribedHandler(t *testing.T) {
+	d := NewDispatcher()
+	called := false
+	d.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		called = true
+		return nil
+	})
+	if err := d.Publish(context.Background(), &testEvent{Msg: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("esperava que o handler inscrito fosse chamado")
+	}
+}
+
+func TestDispatcherPublishSkipsUnsubscribedType(t *testing.T) {
+	d := NewDispatcher()
+	called := false
+	d.Subscribe("OutroEvento", func(ctx context.Context, ev Event) error {
+		called = true
+		return nil
+	})
+	if err := d.Publish(context.Background(), &testEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("não esperava chamada de handler de outro tipo")
+	}
+}
+
+func TestUnitOfWorkRunAppendsOnSuccess(t *testing.T) {
+	store := NewMemoryEventStore()
+	uow := NewUnitOfWork(store)
+
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		return tx.Append("wallet-1", []Event{&testEvent{Msg: "committed"}})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.Load(context.Background(), "wallet-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("esperava 1 evento após commit, got %d", len(events))
+	}
+}
+
+func TestUnitOfWorkRunPropagatesError(t *testing.T) {
+	store := NewMemoryEventStore()
+	uow := NewUnitOfWork(store)
+	sentinel := errors.New("boom")
+
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("esperava propagar o erro de fn, got %v", err)
+	}
+}
+
+func TestMemoryRepositorySaveLoad(t *testing.T) {
+	repo := NewMemoryRepository[string]()
+	ctx := context.Background()
+
+	if _, found, err := repo.Load(ctx, "missing"); err != nil || found {
+		t.Fatalf("esperava found=false para id ausente, got found=%v err=%v", found, err)
+	}
+	if err := repo.Save(ctx, "id-1", "estado"); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := repo.Load(ctx, "id-1")
+	if err != nil || !found || got != "estado" {
+		t.Fatalf("Load = (%q, %v, %v), want (%q, true, nil)", got, found, err, "estado")
+	}
+}
+
+func TestMemoryIdempotencyStoreGetPut(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+
+	if _, found, err := store.Get(ctx, "key-1"); err != nil || found {
+		t.Fatalf("esperava found=false, got found=%v err=%v", found, err)
+	}
+	if err := store.Put(ctx, "key-1", []byte("resultado")); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := store.Get(ctx, "key-1")
+	if err != nil || !found || string(got) != "resultado" {
+		t.Fatalf("Get = (%q, %v, %v)", got, found, err)
+	}
+}
+
+// devCaller é um Caller mínimo só para exercitar WithCaller/CallerFrom
+// (a implementação real de borda chega em E9.2).
+type devCaller struct {
+	id    string
+	auth  bool
+	roles map[string]bool
+}
+
+func (c devCaller) Authenticated() bool      { return c.auth }
+func (c devCaller) ID() string               { return c.id }
+func (c devCaller) HasRole(role string) bool { return c.roles[role] }
+
+func TestWithCallerCallerFrom(t *testing.T) {
+	ctx := WithCaller(context.Background(), devCaller{id: "u1", auth: true, roles: map[string]bool{"admin": true}})
+	got, ok := CallerFrom(ctx)
+	if !ok {
+		t.Fatal("esperava caller presente no contexto")
+	}
+	if got.ID() != "u1" || !got.Authenticated() || !got.HasRole("admin") {
+		t.Fatalf("caller recuperado incorreto: %+v", got)
+	}
+	if _, ok := CallerFrom(context.Background()); ok {
+		t.Fatal("esperava ausência de caller num contexto vazio")
+	}
+}
+
+func TestWithTenantTenantFrom(t *testing.T) {
+	ctx := WithTenant(context.Background(), Tenant{ID: "acme"})
+	got, ok := TenantFrom(ctx)
+	if !ok || got.ID != "acme" {
+		t.Fatalf("TenantFrom = (%+v, %v)", got, ok)
+	}
+}
+
+func TestWithIdempotencyKeyFrom(t *testing.T) {
+	ctx := WithIdempotencyKey(context.Background(), "key-abc")
+	got, ok := IdempotencyKeyFrom(ctx)
+	if !ok || got != "key-abc" {
+		t.Fatalf("IdempotencyKeyFrom = (%q, %v)", got, ok)
+	}
+}
+
+func TestUUIDGeneratesValidV4(t *testing.T) {
+	id := UUID()
+	if len(id) != 36 {
+		t.Fatalf("UUID com tamanho inesperado: %q", id)
+	}
+	if id[14] != '4' {
+		t.Fatalf("esperava dígito de versão 4 na posição 14, got %q", id)
+	}
+	variant := id[19]
+	if variant != '8' && variant != '9' && variant != 'a' && variant != 'b' {
+		t.Fatalf("esperava dígito de variante RFC4122, got %q", string(variant))
+	}
+	if id == UUID() {
+		t.Fatal("duas chamadas geraram o mesmo UUID (extremamente improvável)")
+	}
+}
+
+func TestNowReturnsUTC(t *testing.T) {
+	got := Now(context.Background())
+	if got.Location() != time.UTC {
+		t.Fatalf("esperava UTC, got %v", got.Location())
+	}
+}

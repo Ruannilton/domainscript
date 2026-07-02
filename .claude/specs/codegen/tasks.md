@@ -124,7 +124,7 @@
 
 ### Fase E2 — Runtime in-memory vendorado
 
-- [ ] **E2.1** `rtsrc/` com o núcleo do runtime, como `.go.txt` embutidos via
+- [x] **E2.1** `rtsrc/` com o núcleo do runtime, como `.go.txt` embutidos via
   `//go:embed`; `codegen` emite `runtime/*.go` verbatim. Conteúdo mínimo: **event
   store** (interface + in-memory, chaveado por `aggregateId`), **repositório de
   aggregate**, **dispatcher de eventos**, **unit of work** (`Run(ctx, func(Tx) error)`

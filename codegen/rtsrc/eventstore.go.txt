@@ -1,0 +1,67 @@
+package runtime
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+// EventStore is the seam for durable event storage, keyed by aggregate
+// stream id — not by any "id" field inside an event's own payload, which is
+// business data the store never inspects.
+type EventStore interface {
+	// Append records events for the aggregate stream aggregateID, stamping
+	// each event's AggregateID/Sequence/Timestamp (via Event.SetMeta)
+	// before storing it.
+	Append(ctx context.Context, aggregateID string, events []Event) error
+	// Load returns every event recorded for aggregateID, in the order they
+	// were appended. An unknown aggregateID returns an empty, non-nil slice
+	// and no error.
+	Load(ctx context.Context, aggregateID string) ([]Event, error)
+}
+
+// memoryEventStore is a thread-safe, in-process EventStore backed by a map
+// keyed by aggregate id.
+type memoryEventStore struct {
+	mu      sync.Mutex
+	streams map[string][]Event
+}
+
+// NewMemoryEventStore creates an empty in-memory EventStore.
+func NewMemoryEventStore() EventStore {
+	return &memoryEventStore{streams: make(map[string][]Event)}
+}
+
+// Append implements EventStore.
+func (s *memoryEventStore) Append(ctx context.Context, aggregateID string, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stream := s.streams[aggregateID]
+	now := time.Now().UTC()
+	for _, ev := range events {
+		ev.SetMeta(EventMeta{
+			AggregateID: aggregateID,
+			Sequence:    int64(len(stream)) + 1,
+			Timestamp:   now,
+		})
+		stream = append(stream, ev)
+	}
+	s.streams[aggregateID] = stream
+	return nil
+}
+
+// Load implements EventStore.
+func (s *memoryEventStore) Load(ctx context.Context, aggregateID string) ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stream := s.streams[aggregateID]
+	out := make([]Event, len(stream))
+	copy(out, stream)
+	return out, nil
+}

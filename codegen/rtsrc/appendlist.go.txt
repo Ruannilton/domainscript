@@ -1,0 +1,42 @@
+package runtime
+
+import "encoding/json"
+
+// AppendList is a fixed-growth collection: items can only be added, never
+// removed or cleared (the language forbids it — spec §2.4). It backs the
+// DomainScript AppendList<T> primitive.
+type AppendList[T any] struct {
+	items []T
+}
+
+// Add appends v to the list.
+func (l *AppendList[T]) Add(v T) {
+	l.items = append(l.items, v)
+}
+
+// Items returns the list's elements, in append order. The returned slice is
+// a copy; mutating it does not affect the AppendList.
+func (l *AppendList[T]) Items() []T {
+	out := make([]T, len(l.items))
+	copy(out, l.items)
+	return out
+}
+
+// MarshalJSON implements json.Marshaler, serializing the list as a plain
+// JSON array.
+func (l AppendList[T]) MarshalJSON() ([]byte, error) {
+	if l.items == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(l.items)
+}
+
+// UnmarshalJSON implements json.Unmarshaler, reading a plain JSON array.
+func (l *AppendList[T]) UnmarshalJSON(data []byte) error {
+	var items []T
+	if err := json.Unmarshal(data, &items); err != nil {
+		return err
+	}
+	l.items = items
+	return nil
+}

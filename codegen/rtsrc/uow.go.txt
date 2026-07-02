@@ -1,0 +1,53 @@
+package runtime
+
+import "context"
+
+// Tx is the mutation surface available inside a UnitOfWork.Run callback. It
+// is already bound to the context.Context the unit of work was started
+// with, so callers never thread ctx through Append explicitly.
+type Tx interface {
+	// Append appends events to the aggregate stream aggregateID as part of
+	// this unit of work.
+	Append(aggregateID string, events []Event) error
+}
+
+// UnitOfWork runs a function within a single logical transaction: commit
+// happens when fn returns nil, rollback when fn returns a non-nil error.
+type UnitOfWork interface {
+	// Run executes fn inside a transaction and commits or rolls back based
+	// on its result.
+	Run(ctx context.Context, fn func(tx Tx) error) error
+}
+
+// memoryUnitOfWork is the in-memory UnitOfWork. MemoryEventStore has no
+// staging area, so "commit" and "rollback" are both no-ops here: events
+// appended via Tx.Append during fn are already durable in the store the
+// moment Append returns, and there is nothing to undo on error. A real
+// (e.g. database/sql) UnitOfWork buffers writes and only makes them visible
+// on commit — that lands with the database/sql adapter (Marco G).
+type memoryUnitOfWork struct {
+	store EventStore
+}
+
+// NewUnitOfWork creates a UnitOfWork backed by store.
+func NewUnitOfWork(store EventStore) UnitOfWork {
+	return &memoryUnitOfWork{store: store}
+}
+
+// Run implements UnitOfWork.
+func (u *memoryUnitOfWork) Run(ctx context.Context, fn func(tx Tx) error) error {
+	tx := &memoryTx{ctx: ctx, store: u.store}
+	return fn(tx)
+}
+
+// memoryTx implements Tx over an EventStore, carrying the ctx it was opened
+// with so Append never needs it as an explicit parameter.
+type memoryTx struct {
+	ctx   context.Context
+	store EventStore
+}
+
+// Append implements Tx.
+func (tx *memoryTx) Append(aggregateID string, events []Event) error {
+	return tx.store.Append(tx.ctx, aggregateID, events)
+}
