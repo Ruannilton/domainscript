@@ -87,7 +87,7 @@
 
 ### Fase E1 — Emissor, nomes e mapa de tipos
 
-- [ ] **E1.1** Pacote `emit`: `Emitter` com buffer, indentação, **imports geridos**
+- [x] **E1.1** Pacote `emit`: `Emitter` com buffer, indentação, **imports geridos**
   (`Import(path) string` devolve o alias usável) e `Bytes()` que monta header+imports+
   corpo e roda `go/format.Source`. _(REQ-15.1/15.3, §design 3.2)_
   **Conclusão:** teste que emite um arquivo com 2 imports (um usado, verificar que um
