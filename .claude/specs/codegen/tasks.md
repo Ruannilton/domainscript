@@ -202,7 +202,7 @@
 > Cross-cutting: base para Aggregate/UseCase/Query. **E5.0 vem primeiro** — sem o
 > ambiente de tipos, o dispatch de operador e o acesso a membro não sabem a forma Go.
 
-- [ ] **E5.0** **`lower/env.go` — `TypeEnv` (ambiente de tipos local).** Implementa
+- [x] **E5.0** **`lower/env.go` — `TypeEnv` (ambiente de tipos local).** Implementa
   `types.Scope`; semeia receptores por construto (espelhando `resolver/receivers.go`)
   e parâmetros (`Model.TypeOfRef`); ao percorrer o corpo, **estende o escopo em cada
   `AssignStmt` de alvo nu** inferindo o RHS, **incluindo o que `types.Infer` não
