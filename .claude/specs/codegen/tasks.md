@@ -257,7 +257,7 @@
   state.Balance.Add(ev.Amount)` e `state.Entries.Add(...)`.
   **Commit:** `feat(codegen): Aggregate — state, Handle e Apply`
 
-- [ ] **E6.2** Reconstrução sobre o seam de store: `EventSourced` (`LoadWallet` lê o
+- [x] **E6.2** Reconstrução sobre o seam de store: `EventSourced` (`LoadWallet` lê o
   stream **por `aggregateId`** e aplica `applyX` em ordem; snapshot quando `snapshot
   every N` — o wallet **não** usa snapshot, cobrir o caminho sem snapshot + fixture com
   snapshot) e `StateStored` (persistência direta do `state`, mesmos Handle/Apply).

@@ -1,0 +1,27 @@
+package counter
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+)
+
+// LoadCounter lê o state do Aggregate Counter direto de um Repository (StateStored,
+// §4.5, o padrão do spec quando "strategy" está ausente): sem replay — os
+// mesmos Handle/Apply de Counter valem, só a fonte de persistência muda (E6.1).
+// "não encontrado" (found=false) devolve (nil, nil): não é erro de
+// infraestrutura — tratado depois, explicitamente, por "ensure ... exists".
+//
+// Assimetria vs. a forma EventSourced: runtime.Repository[T].Load exige um
+// ctx explícito em toda chamada (ao contrário de runtime.Tx, que já o carrega
+// desde a unit of work) — por isso esta função recebe um parâmetro ctx a mais.
+func LoadCounter(ctx context.Context, repo runtime.Repository[counterState], id EntityId) (*Counter, error) {
+	state, found, err := repo.Load(ctx, string(id))
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	c := &Counter{id: id, state: state}
+	return c, nil
+}

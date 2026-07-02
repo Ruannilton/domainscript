@@ -4,11 +4,18 @@ import "context"
 
 // Tx is the mutation surface available inside a UnitOfWork.Run callback. It
 // is already bound to the context.Context the unit of work was started
-// with, so callers never thread ctx through Append explicitly.
+// with, so callers never thread ctx through Append/Load explicitly.
 type Tx interface {
 	// Append appends events to the aggregate stream aggregateID as part of
 	// this unit of work.
 	Append(aggregateID string, events []Event) error
+	// Load returns every event recorded for the aggregate stream
+	// aggregateID, in the order they were appended — the seam an
+	// EventSourced Aggregate's generated Load<Name> function reads through
+	// to reconstruct state by replay (§design codegen 3.7). An unknown
+	// aggregateID returns an empty, non-nil slice and no error (same
+	// contract as EventStore.Load).
+	Load(aggregateID string) ([]Event, error)
 }
 
 // UnitOfWork runs a function within a single logical transaction: commit
@@ -50,4 +57,9 @@ type memoryTx struct {
 // Append implements Tx.
 func (tx *memoryTx) Append(aggregateID string, events []Event) error {
 	return tx.store.Append(tx.ctx, aggregateID, events)
+}
+
+// Load implements Tx.
+func (tx *memoryTx) Load(aggregateID string) ([]Event, error) {
+	return tx.store.Load(tx.ctx, aggregateID)
 }

@@ -248,6 +248,52 @@ func TestUnitOfWorkRunAppendsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestUnitOfWorkTxLoadReturnsAppendedEvents(t *testing.T) {
+	store := NewMemoryEventStore()
+	uow := NewUnitOfWork(store)
+
+	if err := uow.Run(context.Background(), func(tx Tx) error {
+		return tx.Append("wallet-1", []Event{&testEvent{Msg: "first"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tx.Load é lido numa unit of work SEPARADA (o padrão real: LoadWallet
+	// reconstrói o aggregate numa unit of work antes de um Handle mutar mais
+	// eventos nela) — prova que a leitura enxerga o que uma unit of work
+	// anterior já commitou no store durável.
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		events, err := tx.Load("wallet-1")
+		if err != nil {
+			return err
+		}
+		if len(events) != 1 {
+			t.Fatalf("esperava 1 evento via Tx.Load, got %d", len(events))
+		}
+		got := events[0].(*testEvent)
+		if got.Msg != "first" {
+			t.Fatalf("Msg incorreto: got %q", got.Msg)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// aggregateID desconhecido: stream vazia, sem erro (mesmo contrato de
+	// EventStore.Load).
+	err = uow.Run(context.Background(), func(tx Tx) error {
+		events, err := tx.Load("desconhecido")
+		if err != nil || len(events) != 0 {
+			t.Fatalf("Tx.Load de id desconhecido: events=%v err=%v", events, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnitOfWorkRunPropagatesError(t *testing.T) {
 	store := NewMemoryEventStore()
 	uow := NewUnitOfWork(store)

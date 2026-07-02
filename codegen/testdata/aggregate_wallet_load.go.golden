@@ -1,0 +1,32 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+)
+
+// LoadWallet reconstrói um Wallet a partir do stream de eventos de id
+// (EventSourced, §4.5): lê o stream via Tx.Load (chaveado por aggregateId,
+// nunca um campo "id" de payload) e aplica cada evento, na ORDEM DO STREAM,
+// via o método applyX correspondente. Um evento do stream sem Apply
+// correspondente é uma falha explícita (defesa em profundidade: o stream é
+// dado externo).
+func LoadWallet(tx runtime.Tx, id WalletId) (*Wallet, error) {
+	events, err := tx.Load(string(id))
+	if err != nil {
+		return nil, err
+	}
+	w := &Wallet{id: id}
+	w.state.Id = id
+	for _, ev := range events {
+		switch ev := ev.(type) {
+		case *DepositPerformed:
+			w.applyDepositPerformed(*ev)
+		case *WithdrawalPerformed:
+			w.applyWithdrawalPerformed(*ev)
+		default:
+			return nil, fmt.Errorf("LoadWallet: tipo de evento inesperado no stream: %T", ev)
+		}
+	}
+	return w, nil
+}
