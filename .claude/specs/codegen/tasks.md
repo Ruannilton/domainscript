@@ -301,7 +301,7 @@
 
 ### Fase E9 — Exposição HTTP básica e wiring
 
-- [ ] **E9.1** `go.mod` (module `opts.ModulePath` — default derivado do dir de saída;
+- [x] **E9.1** `go.mod` (module `opts.ModulePath` — default derivado do dir de saída;
   `go opts.GoVersion` default `1.22`, **sem `require`**) + layout do projeto (inclui o
   pacote **`contracts/`** dos `PublicEvent`) + `cmd/<service>/main.go` por service, com
   wiring in-memory a partir de `mod.ds`/topologia (`prog.Services`/`ServiceOfModule`;

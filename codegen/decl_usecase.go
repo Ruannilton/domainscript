@@ -60,9 +60,32 @@ import (
 //     a mesma convenção de decl_aggregate.go.
 //  3. "uow" é uma variável de PACOTE ainda não inicializada ("var uow
 //     runtime.UnitOfWork" — só a declaração; a instância real vem do wiring,
-//     E9.1, que ainda não existe). EmitUseCases (plural) declara essa var
-//     UMA VEZ por arquivo/pacote, mesmo quando gera vários UseCases — a
-//     mesma convenção de var compartilhada de emissores em lote.
+//     E9.1). EmitUseCases (plural) declara essa var UMA VEZ por
+//     arquivo/pacote, mesmo quando gera vários UseCases — a mesma convenção
+//     de var compartilhada de emissores em lote.
+//
+// --- Wire: como cmd/<service>/main.go injeta a uow de verdade (E9.1) ---
+//
+// "var uow runtime.UnitOfWork" acima é NÃO-EXPORTADA (minúscula) — de
+// propósito, imutabilidade de pacote é preferível a expor um ponteiro/valor
+// mutável de estado global (§design 3.11). Mas cmd/<service>/main.go vive
+// num pacote DIFERENTE ("main") do pacote de domínio (ex. "wallet") e por
+// isso NÃO CONSEGUE atribuir a "wallet.uow" diretamente — Go não permite
+// atribuir a uma variável não-exportada de outro pacote. A opção adotada
+// (documentada em codegen/codegen.go, orquestrador E9.1, decisão (a) do
+// prompt da task, preferida a exportar a var): uma função exportada Wire
+// no MESMO arquivo/pacote que declara "uow", que faz "uow = u" — o único
+// lugar que escreve na var. cmd/main.go chama "<pkg>.Wire(uow)" na
+// inicialização (ver codegen.go, generateCmdMain). Só existe quando o
+// módulo de fato declara UseCases (só então "uow" existe para injetar).
+func emitUOWWireFunc(e *emit.Emitter, runtimeAlias string) {
+	e.Line("")
+	e.Line("// Wire injeta a unit of work usada pelos UseCases deste pacote — chamada por")
+	e.Line("// cmd/<service>/main.go na inicialização (wiring in-memory, §design 3.11).")
+	e.Block(fmt.Sprintf("func Wire(u %s.UnitOfWork)", runtimeAlias), func() {
+		e.Line("uow = u")
+	})
+}
 
 // EmitUseCase gera o Go de um único UseCaseDecl — a mesma forma de
 // EmitUseCases, mantendo o contrato uniforme entre as duas funções (mesmo
@@ -83,8 +106,9 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 
 	e.Line("// uow é a unit of work do módulo (§design 3.8), compartilhada por todos os")
 	e.Line("// UseCases deste pacote — só a declaração de pacote; a instância de verdade")
-	e.Line("// vem do wiring (E9.1, ainda não implementado).")
+	e.Line("// vem do wiring (E9.1, Wire abaixo).")
 	e.Line("var uow %s.UnitOfWork", runtimeAlias)
+	emitUOWWireFunc(e, runtimeAlias)
 
 	for _, decl := range decls {
 		e.Line("")

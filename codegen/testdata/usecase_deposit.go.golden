@@ -8,8 +8,14 @@ import (
 
 // uow é a unit of work do módulo (§design 3.8), compartilhada por todos os
 // UseCases deste pacote — só a declaração de pacote; a instância de verdade
-// vem do wiring (E9.1, ainda não implementado).
+// vem do wiring (E9.1, Wire abaixo).
 var uow runtime.UnitOfWork
+
+// Wire injeta a unit of work usada pelos UseCases deste pacote — chamada por
+// cmd/<service>/main.go na inicialização (wiring in-memory, §design 3.11).
+func Wire(u runtime.UnitOfWork) {
+	uow = u
+}
 
 // PerformDeposit é o UseCase PerformDeposit (§5.2): abre uma unit of work, executa
 // o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.

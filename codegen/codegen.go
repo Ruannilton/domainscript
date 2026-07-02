@@ -1,14 +1,33 @@
 package codegen
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"path"
+	"sort"
+	"strconv"
+	"strings"
+
+	"domainscript/ast"
+	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
+	"domainscript/codegen/rtsrc"
+	"domainscript/diag"
+	"domainscript/program"
+	"domainscript/symbols"
+	"domainscript/token"
+	"domainscript/types"
+)
 
 // ErrHasDiagnostics é devolvido quando o programa tem ao menos um diagnóstico
 // de severidade error: o gerador recusa produzir código (REQ-14.1).
 var ErrHasDiagnostics = errors.New("codegen: programa com diagnósticos de erro, geração recusada")
 
 // ErrNotImplemented sinaliza que a geração de código ainda não está
-// implementada. É o estado do scaffold do Marco E; some quando codegen.Generate
-// ganha corpo nas fases seguintes deste ciclo.
+// implementada. Era o estado do scaffold do Marco E antes de Generate ganhar
+// corpo (E9.1); mantido só como sinalizador residual para quem ainda o
+// referencia (driver.GenerateProject, E10.1) — Generate em si nunca o
+// devolve mais.
 var ErrNotImplemented = errors.New("codegen: geração de código ainda não implementada")
 
 // Options configura a geração de um projeto Go (REQ-14.5, REQ-15).
@@ -23,8 +42,564 @@ type Options struct {
 	GoVersion string
 }
 
-// File é um arquivo do projeto Go gerado, com caminho relativo à raiz de saída.
+// File é um arquivo do projeto Go gerado, com caminho relativo à raiz de
+// saída, SEMPRE separado por "/" (como um import path Go, nunca
+// filepath.Separator) — quem escreve em disco converte via
+// filepath.FromSlash (é exatamente o contrato que gentest.SmokeCompile já
+// assume: "path := filepath.Join(dir, filepath.FromSlash(rel))").
 type File struct {
 	Path    string
 	Content []byte
+}
+
+// domainModuleRoot é a raiz de módulo Go que TODO import gerado (runtime E
+// pacotes de domínio) assume hoje — derivada de RuntimeImportPath
+// ("domainscript/generated/runtime" -> "domainscript/generated").
+// RuntimeImportPath está fixo desde E3.1 (decl_value.go) — antes de
+// Options.ModulePath existir de verdade nesta task; parametrizá-lo por
+// Options.ModulePath em todo decl_*.go que o usa (8 arquivos, cada um com
+// golden tests byte-a-byte) é trabalho futuro fora do orçamento de E9.1 (ver
+// a doc de EmitGoMod em project.go). cmd/<service>/main.go IMPORTA os
+// pacotes de domínio sob esta MESMA raiz (não Options.ModulePath) — do
+// contrário os imports de runtime e de domínio divergiriam e o projeto
+// gerado nunca resolveria. Para o gerado compilar de fato hoje, o chamador
+// de Generate precisa passar Options.ModulePath == domainModuleRoot.
+var domainModuleRoot = strings.TrimSuffix(RuntimeImportPath, "/runtime")
+
+// Generate produz os arquivos de um projeto Go completo a partir de um
+// programa VALIDADO (REQ-14.1 — bag.HasErrors() já deveria ter sido checado
+// pelo chamador; Generate não valida, só verifica defensivamente e recusa se
+// bag tiver erros, ecoando REQ-14.1). tab é a SymbolTable usada para
+// reconsultar tipos/nomes (§design 1.1) — tipicamente prog.Symbols, mas
+// aceita separado porque é o que o chamador (driver, E10.1) já tem em mãos.
+//
+// Fluxo (§design 3.1): go.mod + runtime/ vendorado; um pacote Go por módulo
+// de domínio (prog.Modules, em ordem alfabética — NFR-13), cada um com um
+// arquivo por CATEGORIA de declaração (value_objects.go, errors.go,
+// events.go, aggregate_<nome>.go[+_load.go] por Aggregate, commands.go,
+// usecases.go, views.go, queries.go, projections.go — só emitidos quando o
+// módulo de fato declara a categoria); contracts/events.go com os
+// PublicEvent de TODOS os módulos (pacote compartilhado, quebra ciclos de
+// import — §design 3.4); um cmd/<service>/main.go por grupo de módulos
+// (prog.Services/ServiceOfModule — monólito implícito ⇒ um grupo default
+// único) com wiring in-memory e um esqueleto de servidor HTTP (rotas
+// chegam em E9.2). O resultado é ordenado por Path antes de devolver
+// (determinismo, NFR-13).
+func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTable, bag *diag.DiagnosticBag, opts Options) ([]File, error) {
+	if bag.HasErrors() {
+		return nil, ErrHasDiagnostics
+	}
+
+	var files []File
+	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "")})
+
+	runtimeFiles, err := generateRuntimeFiles()
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, runtimeFiles...)
+
+	moduleNames := make([]string, 0, len(prog.Modules))
+	for name := range prog.Modules {
+		moduleNames = append(moduleNames, name)
+	}
+	sort.Strings(moduleNames)
+
+	var allPublicEvents []*ast.EventDecl
+	modulesWithUseCases := make(map[string]bool, len(moduleNames))
+
+	for _, name := range moduleNames {
+		b := bucketModuleDecls(prog, name)
+		modFiles, hasUseCases, err := generateModuleFiles(b, name, model, tab)
+		if err != nil {
+			return nil, fmt.Errorf("codegen: módulo %s: %w", name, err)
+		}
+		files = append(files, modFiles...)
+		modulesWithUseCases[name] = hasUseCases
+		allPublicEvents = append(allPublicEvents, b.pubEvents...)
+	}
+
+	if len(allPublicEvents) > 0 {
+		content, err := EmitEvents("contracts", allPublicEvents)
+		if err != nil {
+			return nil, fmt.Errorf("codegen: contracts: %w", err)
+		}
+		files = append(files, File{Path: "contracts/events.go", Content: content})
+	}
+
+	for _, group := range buildCmdGroups(prog) {
+		f, err := generateCmdMainFile(prog, group, modulesWithUseCases)
+		if err != nil {
+			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
+		}
+		files = append(files, f)
+	}
+
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
+}
+
+// generateRuntimeFiles copia rtsrc.Sources() (verbatim, REQ-16) para
+// runtime/*.go, com os nomes de arquivo ordenados (rtsrc.Sources já devolve
+// um map — a ordenação aqui é o que garante determinismo, NFR-13).
+func generateRuntimeFiles() ([]File, error) {
+	srcs, err := rtsrc.Sources()
+	if err != nil {
+		return nil, fmt.Errorf("codegen: runtime: %w", err)
+	}
+	names := make([]string, 0, len(srcs))
+	for name := range srcs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	files := make([]File, 0, len(names))
+	for _, name := range names {
+		files = append(files, File{Path: path.Join("runtime", name), Content: srcs[name]})
+	}
+	return files, nil
+}
+
+// --- 1. Coleta e categorização das Decl de um módulo. ---
+
+// moduleBucket agrupa as Decl de um módulo por tipo concreto, na ORDEM DE
+// ORIGEM (arquivo — já ordenado por path — depois posição no arquivo): a
+// forma que generateModuleFiles consome para rotear cada categoria ao
+// emissor correspondente.
+type moduleBucket struct {
+	vos         []*ast.ValueObjectDecl
+	enums       []*ast.EnumDecl
+	errors      []*ast.ErrorTypeDecl
+	privEvents  []*ast.EventDecl
+	pubEvents   []*ast.EventDecl
+	aggregates  []*ast.AggregateDecl
+	commands    []*ast.CommandDecl
+	usecases    []*ast.UseCaseDecl
+	views       []*ast.ViewDecl
+	queries     []*ast.QueryDecl
+	projections []*ast.ProjectionDecl
+}
+
+// bucketModuleDecls percorre os arquivos de moduleName (prog.Files filtrados
+// por prog.ModuleOf, ORDENADOS por path — NFR-13) e roteia cada Decl por
+// tipo concreto. *ast.ModuleDecl/*ast.InterfaceDecl/*ast.TopologyDecl/
+// *ast.UpcastDecl e os construtos de Marco F+ (Policy/Worker/Saga/
+// Notification/Adapter/Foreign/Metric) não são emitidos por este
+// orquestrador (wiring/borda tratados à parte; F+ ainda não existe) — caem
+// no default, ignorados silenciosamente, junto de qualquer nó de erro (rede
+// de segurança defensiva sobre um programa já validado sem erros, REQ-14.4).
+func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
+	var paths []string
+	for p := range prog.Files {
+		if prog.ModuleOf(p) == moduleName {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+
+	var b moduleBucket
+	for _, p := range paths {
+		for _, d := range prog.Files[p].Decls {
+			switch n := d.(type) {
+			case *ast.ValueObjectDecl:
+				b.vos = append(b.vos, n)
+			case *ast.EnumDecl:
+				b.enums = append(b.enums, n)
+			case *ast.ErrorTypeDecl:
+				b.errors = append(b.errors, n)
+			case *ast.EventDecl:
+				if n.Public {
+					b.pubEvents = append(b.pubEvents, n)
+				} else {
+					b.privEvents = append(b.privEvents, n)
+				}
+			case *ast.AggregateDecl:
+				b.aggregates = append(b.aggregates, n)
+			case *ast.CommandDecl:
+				b.commands = append(b.commands, n)
+			case *ast.UseCaseDecl:
+				b.usecases = append(b.usecases, n)
+			case *ast.ViewDecl:
+				b.views = append(b.views, n)
+			case *ast.QueryDecl:
+				b.queries = append(b.queries, n)
+			case *ast.ProjectionDecl:
+				b.projections = append(b.projections, n)
+			}
+		}
+	}
+	return b
+}
+
+// --- 2. Emissão por módulo. ---
+
+// generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
+// por categoria não-vazia — ver a doc de Generate) e reporta se o módulo
+// declarou ao menos um UseCase (hasUseCases — o cmd/main.go do service dono
+// só chama "<pkg>.Wire(uow)" para módulos com essa marca, já que Wire só
+// existe quando EmitUseCases de fato roda).
+func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable) ([]File, bool, error) {
+	pkg := goname.PackageName(moduleName)
+	var files []File
+
+	reg := goname.NewVOOperatorRegistry()
+	for _, vo := range b.vos {
+		reg.Register(vo)
+	}
+	aggregates := make(map[string]*ast.AggregateDecl, len(b.aggregates))
+	for _, a := range b.aggregates {
+		aggregates[a.Name] = a
+	}
+
+	if len(b.vos) > 0 || len(b.enums) > 0 {
+		content, err := emitValueObjectsAndEnums(pkg, b.vos, b.enums)
+		if err != nil {
+			return nil, false, fmt.Errorf("value_objects.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "value_objects.go"), Content: content})
+	}
+
+	if len(b.errors) > 0 {
+		content, err := EmitErrors(pkg, b.errors)
+		if err != nil {
+			return nil, false, fmt.Errorf("errors.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "errors.go"), Content: content})
+	}
+
+	if len(b.privEvents) > 0 {
+		content, err := EmitEvents(pkg, b.privEvents)
+		if err != nil {
+			return nil, false, fmt.Errorf("events.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "events.go"), Content: content})
+	}
+
+	for _, agg := range b.aggregates {
+		snake := toSnakeCase(agg.Name)
+
+		aggContent, err := EmitAggregate(pkg, agg, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, false, fmt.Errorf("aggregate_%s.go: %w", snake, err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "aggregate_"+snake+".go"), Content: aggContent})
+
+		loadContent, err := EmitAggregateLoad(pkg, agg, model, tab, moduleName)
+		if err != nil {
+			return nil, false, fmt.Errorf("aggregate_%s_load.go: %w", snake, err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "aggregate_"+snake+"_load.go"), Content: loadContent})
+	}
+
+	if len(b.commands) > 0 {
+		content, err := EmitCommands(pkg, b.commands, model, tab, moduleName)
+		if err != nil {
+			return nil, false, fmt.Errorf("commands.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "commands.go"), Content: content})
+	}
+
+	hasUseCases := len(b.usecases) > 0
+	if hasUseCases {
+		repaired := make([]*ast.UseCaseDecl, len(b.usecases))
+		for i, uc := range b.usecases {
+			// Contorna o bug de gramática do parser sobre "load T(id)"
+			// seguido de dispatch de Handle na linha seguinte — ver a doc
+			// de usecase_repair.go. No-op sobre um Execute que não bate no
+			// padrão exato.
+			repaired[i] = repairLoadDispatchExecute(uc)
+		}
+		content, err := EmitUseCases(pkg, repaired, aggregates, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, false, fmt.Errorf("usecases.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "usecases.go"), Content: content})
+	}
+
+	if len(b.views) > 0 {
+		content, err := emitViews(pkg, b.views, model, tab, moduleName)
+		if err != nil {
+			return nil, false, fmt.Errorf("views.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "views.go"), Content: content})
+	}
+
+	if len(b.queries) > 0 {
+		content, err := EmitQueries(pkg, b.queries, aggregates, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, false, fmt.Errorf("queries.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "queries.go"), Content: content})
+	}
+
+	if len(b.projections) > 0 {
+		content, err := emitProjections(pkg, b.projections, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, false, fmt.Errorf("projections.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "projections.go"), Content: content})
+	}
+
+	return files, hasUseCases, nil
+}
+
+// emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
+// num único arquivo (value_objects.go, §design 3.4) — reusa os corpos
+// internos de EmitValueObject/EmitEnum (emitValueObjectDecl/emitEnumDecl,
+// decl_value.go/decl_enum.go) sobre um ÚNICO *emit.Emitter compartilhado, o
+// mesmo padrão que EmitEvents/EmitCommands/EmitUseCases já usam para
+// combinar várias Decl num arquivo (a API pública EmitValueObject/EmitEnum é
+// só-singular — não existe EmitValueObjects/EmitEnums; acessível aqui porque
+// project.go/codegen.go vivem no MESMO pacote codegen).
+func emitValueObjectsAndEnums(pkg string, vos []*ast.ValueObjectDecl, enums []*ast.EnumDecl) ([]byte, error) {
+	e := emit.New(pkg)
+	for i, vo := range vos {
+		if i > 0 {
+			e.Line("")
+		}
+		if err := emitValueObjectDecl(e, vo); err != nil {
+			return nil, err
+		}
+	}
+	for i, en := range enums {
+		if i > 0 || len(vos) > 0 {
+			e.Line("")
+		}
+		if err := emitEnumDecl(e, en); err != nil {
+			return nil, err
+		}
+	}
+	return e.Bytes()
+}
+
+// emitViews combina TODAS as View de um módulo num único arquivo
+// (views.go) — mesmo padrão de emitValueObjectsAndEnums, reusando
+// emitViewDecl (decl_view.go) sobre um Emitter compartilhado (EmitView, a
+// API pública, é só-singular).
+func emitViews(pkg string, views []*ast.ViewDecl, model *types.Model, tab *symbols.SymbolTable, module string) ([]byte, error) {
+	e := emit.New(pkg)
+	for i, v := range views {
+		if i > 0 {
+			e.Line("")
+		}
+		if err := emitViewDecl(e, v, model, tab, module); err != nil {
+			return nil, err
+		}
+	}
+	return e.Bytes()
+}
+
+// emitProjections combina TODAS as Projection de um módulo num único
+// arquivo (projections.go) — mesmo padrão, reusando emitProjectionDecl
+// (decl_projection.go; EmitProjection, a API pública, é só-singular).
+func emitProjections(pkg string, projections []*ast.ProjectionDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+	e := emit.New(pkg)
+	for i, p := range projections {
+		if i > 0 {
+			e.Line("")
+		}
+		if err := emitProjectionDecl(e, p, model, tab, module, reg); err != nil {
+			return nil, err
+		}
+	}
+	return e.Bytes()
+}
+
+// toSnakeCase converte um nome PascalCase (nome de declaração DomainScript)
+// para snake_case (nome de arquivo Go), inserindo "_" antes de cada letra
+// maiúscula que não seja a primeira: "WalletId" -> "wallet_id",
+// "TransactionType" -> "transaction_type" — a mesma convenção que os golden
+// tests de decl_*.go já adotam para nomear seus artefatos
+// (testdata/value_object_wallet_id.go.golden, testdata/enum_transaction_
+// type.go.golden, testdata/projection_invoice_with_holder.go.golden, ...).
+func toSnakeCase(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r - 'A' + 'a')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// --- 3. contracts/ e cmd/<service>/main.go. ---
+
+// cmdGroup é um grupo de módulos que compartilha um único cmd/<dirName>/
+// main.go: um service da topologia (prog.Services) ou, na ausência de
+// topologia (monólito implícito, o caso do wallet — prog.Services vazio),
+// um único grupo default reunindo todos os módulos sem Service (§design
+// 3.4/3.11).
+type cmdGroup struct {
+	dirName string
+	modules []string // nomes de módulo DomainScript, em ordem alfabética
+}
+
+// buildCmdGroups agrupa prog.Modules por .Service (REQ-14.5): módulos com o
+// mesmo Service (não-vazio) compartilham um grupo nomeado pelo Service;
+// TODOS os módulos sem Service (Service == "", inclusive quando a topologia
+// inteira está ausente, como no wallet) caem num único grupo default —
+// "monólito ⇒ um cmd/". A ordem de iteração é alfabética por nome de
+// Service (determinismo, NFR-13); dentro de um grupo, os módulos também
+// vêm ordenados (bucketModuleDecls/moduleNames em Generate já garantem isso
+// via prog.Modules ordenado).
+func buildCmdGroups(prog *program.Program) []cmdGroup {
+	byService := make(map[string][]string)
+	var moduleNames []string
+	for name := range prog.Modules {
+		moduleNames = append(moduleNames, name)
+	}
+	sort.Strings(moduleNames)
+	for _, name := range moduleNames {
+		svc := prog.ServiceOfModule(name)
+		byService[svc] = append(byService[svc], name)
+	}
+
+	var svcNames []string
+	for svc := range byService {
+		svcNames = append(svcNames, svc)
+	}
+	sort.Strings(svcNames)
+
+	groups := make([]cmdGroup, 0, len(svcNames))
+	for _, svc := range svcNames {
+		mods := byService[svc]
+		dir := svc
+		if dir == "" {
+			dir = defaultCmdDirName(mods)
+		} else {
+			dir = goname.PackageName(dir)
+		}
+		groups = append(groups, cmdGroup{dirName: dir, modules: mods})
+	}
+	return groups
+}
+
+// defaultCmdDirName nomeia o cmd/ do grupo default (módulos sem Service
+// declarado): o nome do único módulo do grupo, normalizado como pacote Go
+// (o caso do wallet: 1 módulo -> cmd/wallet/); "app" quando o monólito
+// implícito reúne mais de um módulo (nenhum nome de módulo se destaca como
+// "o" nome do service) — escolha documentada aqui, únicas vezes (§6 do
+// design pede uma heurística explícita).
+func defaultCmdDirName(modules []string) string {
+	if len(modules) == 1 {
+		return goname.PackageName(modules[0])
+	}
+	return "app"
+}
+
+// generateCmdMainFile emite cmd/<group.dirName>/main.go: importa runtime +
+// os pacotes de domínio dos módulos do grupo que declaram UseCase
+// (modulesWithUseCases — só esses têm Wire, ver decl_usecase.go),
+// instancia o event store e a unit of work in-memory, chama "<pkg>.Wire(uow)"
+// para cada um, e um esqueleto de servidor HTTP na porta do setting "port:"
+// da Interface HTTP do grupo (fallback 8080) — SEM registrar rotas ainda
+// (E9.2, §design 3.12).
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases map[string]bool) (File, error) {
+	e := emit.New("main")
+	runtimeAlias := e.Import(RuntimeImportPath)
+	fmtAlias := e.Import("fmt")
+	logAlias := e.Import("log")
+	httpAlias := e.Import("net/http")
+
+	type wireTarget struct {
+		alias string
+		pkg   string
+	}
+	var wireTargets []wireTarget
+	for _, m := range group.modules {
+		if !modulesWithUseCases[m] {
+			continue
+		}
+		pkg := goname.PackageName(m)
+		alias := e.Import(path.Join(domainModuleRoot, pkg))
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg})
+	}
+
+	port := httpPortGo(findGroupInterface(prog, group.modules))
+
+	e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
+	e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
+	e.Line("// geração, não editar à mão.")
+	e.Block("func main()", func() {
+		e.Line("store := %s.NewMemoryEventStore()", runtimeAlias)
+		e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
+		e.Line("")
+		if len(wireTargets) == 0 {
+			e.Line("_ = uow // nenhum módulo deste service declara UseCase ainda")
+		} else {
+			for _, wt := range wireTargets {
+				e.Line("%s.Wire(uow)", wt.alias)
+			}
+		}
+		e.Line("")
+		e.Line("port := %s", port)
+		e.Line("server := &%s.Server{Addr: %s.Sprintf(\":%%s\", port)}", httpAlias, fmtAlias)
+		e.Line("// TODO(E9.2): registrar rotas HTTP (net/http.ServeMux) a partir de interface.ds.")
+		e.Line("%s.Fatal(server.ListenAndServe())", logAlias)
+	})
+
+	content, err := e.Bytes()
+	if err != nil {
+		return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+	}
+	return File{Path: path.Join("cmd", group.dirName, "main.go"), Content: content}, nil
+}
+
+// findGroupInterface acha o *ast.InterfaceDecl HTTP de qualquer arquivo dos
+// módulos de group (percorrido em ordem de path — determinismo), ou nil se
+// nenhum módulo do grupo declara "Interface HTTP".
+func findGroupInterface(prog *program.Program, modules []string) *ast.InterfaceDecl {
+	inGroup := make(map[string]bool, len(modules))
+	for _, m := range modules {
+		inGroup[m] = true
+	}
+
+	var paths []string
+	for p := range prog.Files {
+		if inGroup[prog.ModuleOf(p)] {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+
+	for _, p := range paths {
+		for _, d := range prog.Files[p].Decls {
+			if id, ok := d.(*ast.InterfaceDecl); ok && id.Kind == "HTTP" {
+				return id
+			}
+		}
+	}
+	return nil
+}
+
+// httpPortGo devolve o literal Go (já entre aspas) da porta HTTP: o valor do
+// setting "port:" de iface quando é um literal INT/STRING (ex. "port: 8080"
+// -> "\"8080\""); "\"8080\"" (fallback documentado, §design 3.12) em
+// qualquer outro caso — iface nil (nenhuma Interface HTTP no grupo, o caso
+// do wallet), setting "port" ausente, ou um valor dinâmico (ex.
+// "port: env(\"HTTP_PORT\")") que esta task não resolve estaticamente
+// (decisão do prompt de E9.1: repassar a expressão como está exigiria um
+// lowering de config-expr que não existe aqui; usar o default é permitido
+// explicitamente).
+func httpPortGo(iface *ast.InterfaceDecl) string {
+	if iface != nil {
+		for _, entry := range iface.Settings {
+			if entry.Key != "port" {
+				continue
+			}
+			if lit, ok := entry.Value.(*ast.Literal); ok {
+				switch lit.Kind {
+				case token.INT, token.STRING:
+					return strconv.Quote(lit.Value)
+				}
+			}
+			break
+		}
+	}
+	return `"8080"`
 }
