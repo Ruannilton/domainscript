@@ -216,7 +216,7 @@
   explícita.
   **Commit:** `feat(codegen): ambiente de tipos local do lowering`
 
-- [ ] **E5.1** `lower/expr.go`: literais (INT/FLOAT/STRING/DURATION/SIZE/bool),
+- [x] **E5.1** `lower/expr.go`: literais (INT/FLOAT/STRING/DURATION/SIZE/bool),
   idents/receptores (via `TypeEnv`), `MemberExpr` (campo exportado vs método),
   construção de VO/Event/Command (`CallExpr` cujo `Fn` é tipo → `NewT`/literal de
   struct com campos nomeados), `BinaryExpr` (dispatch §4.2), `IndexExpr`, `RangeExpr`,

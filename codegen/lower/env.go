@@ -126,6 +126,25 @@ func (env *TypeEnv) typeOfName(name string) types.Type {
 	return types.ErrorType
 }
 
+// TypeOfName expõe typeOfName: o tipo do símbolo de nome name, procurado
+// primeiro no módulo do TypeEnv e, em fallback, globalmente (mesma regra de
+// Lookup local + Find cross-module de Checker.typeOfName). Devolve
+// types.ErrorType (nunca nil) quando o nome não resolve. Usado pelo lowering
+// (E5.1+) para descobrir se um *ast.Ident em CallExpr.Fn é um tipo declarado
+// (VO/Event/Command) e obter o types.Type correspondente.
+func (env *TypeEnv) TypeOfName(name string) types.Type {
+	return env.typeOfName(name)
+}
+
+// Model devolve o *types.Model subjacente ao TypeEnv. Usado pelo lowering
+// (E5.1+) para consultar model.Members(t) e para inspecionar os Fields
+// ORDENADOS (pela ordem de declaração) de *types.VOType/*types.ShapeType — ao
+// contrário de Members(), que é um mapa sem ordem — ao casar argumentos
+// posicionais de uma construção contra os campos na ordem certa.
+func (env *TypeEnv) Model() *types.Model {
+	return env.model
+}
+
 // seedIfKnown vincula name a t só quando t é um tipo conhecido (não nil, não
 // ErrorType) — espelha seed() de sema/rules_typecheck.go: um receptor/parâmetro
 // cujo tipo não se conhece simplesmente não entra no escopo, em vez de
