@@ -236,7 +236,7 @@
   else InactiveWallet` vira `return … , ErrInactiveWallet`.
   **Commit:** `feat(codegen): lowering de statements e controle de fluxo`
 
-- [ ] **E5.3** `lower/builtins.go` **(núcleo, sem dep externa):** `now()`/`uuid()`/
+- [x] **E5.3** `lower/builtins.go` **(núcleo, sem dep externa):** `now()`/`uuid()`/
   `random`/`random_str` → runtime; `load T(id)`→`repo.Load`, `list … [as V]`→query
   in-memory, `count`→`repo.Count`, `exists` (QueryExpr pós-fixo em `ensure x exists`)
   → checagem do `load`. **Ops de arquivo ficam para G1a** (dependem de `FileStorage`).

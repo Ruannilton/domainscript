@@ -358,3 +358,47 @@ func TestNowReturnsUTC(t *testing.T) {
 		t.Fatalf("esperava UTC, got %v", got.Location())
 	}
 }
+
+func TestRandomWithinInclusiveRange(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		got := Random(5, 10)
+		if got < 5 || got > 10 {
+			t.Fatalf("Random(5, 10) fora do intervalo [5,10]: %d", got)
+		}
+	}
+}
+
+func TestRandomSingleValueRangeDegenerate(t *testing.T) {
+	got := Random(7, 7)
+	if got != 7 {
+		t.Fatalf("Random(7, 7) = %d, want 7", got)
+	}
+}
+
+func TestRandomPanicsWhenMaxLessThanMin(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("esperava panic quando max < min")
+		}
+	}()
+	Random(10, 5)
+}
+
+func TestRandomStrLengthAndAlphanumericCharset(t *testing.T) {
+	s := RandomStr(16)
+	if len(s) != 16 {
+		t.Fatalf("RandomStr(16) tem tamanho %d, want 16", len(s))
+	}
+	for _, r := range s {
+		alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !alnum {
+			t.Fatalf("RandomStr produziu caractere fora do alfabeto alfanumérico: %q (em %q)", r, s)
+		}
+	}
+}
+
+func TestRandomStrZeroLengthIsEmpty(t *testing.T) {
+	if got := RandomStr(0); got != "" {
+		t.Fatalf("RandomStr(0) = %q, want \"\"", got)
+	}
+}

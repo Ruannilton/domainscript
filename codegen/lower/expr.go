@@ -31,6 +31,7 @@ type Lowerer struct {
 	reg          *goname.VOOperatorRegistry
 	runtimeAlias string            // alias do import do runtime vendorado (p/ construir runtime.NewDecimalFromInt etc. — não usado diretamente por esta task, ver nota REQ-22.5 sobre decimal no dispatch binário)
 	goNames      map[string]string // override: nome DS -> texto Go (ex. "event"->"ev")
+	builtins     *BuiltinLowerer   // E5.3 (builtins.go): now/uuid/random/random_str/load/list/count/exists. nil ⇒ essas formas continuam "não suportadas" (comportamento de E5.1/E5.2).
 }
 
 // NewLowerer cria um Lowerer sobre env (tipos), reg (dispatch de operador de
@@ -39,6 +40,16 @@ type Lowerer struct {
 // runtime.Decimal ou runtime.BusinessError a partir daqui).
 func NewLowerer(env *TypeEnv, reg *goname.VOOperatorRegistry, runtimeAlias string) *Lowerer {
 	return &Lowerer{env: env, reg: reg, runtimeAlias: runtimeAlias, goNames: make(map[string]string)}
+}
+
+// WithBuiltins anexa b (E5.3, builtins.go) ao Lowerer e devolve o próprio l
+// (encadeável: NewLowerer(...).WithBuiltins(b)). Opcional — sem chamar isto,
+// CallExpr de now()/uuid()/random(...)/random_str(...) e qualquer
+// *ast.QueryExpr seguem "não suportados", o mesmo comportamento de antes
+// desta task.
+func (l *Lowerer) WithBuiltins(b *BuiltinLowerer) *Lowerer {
+	l.builtins = b
+	return l
 }
 
 // BindGoName registra que o nome nu dsName resolve para o texto Go goExpr —
@@ -70,6 +81,8 @@ func (l *Lowerer) Expr(e ast.Expr) (string, error) {
 		return l.binary(n)
 	case *ast.IndexExpr:
 		return l.index(n)
+	case *ast.QueryExpr:
+		return l.queryExpr(n)
 	case *ast.RangeExpr:
 		return "", fmt.Errorf("codegen: RangeExpr só é válido dentro de um for (ex.: \"for i in 1..n\") — não tem forma de expressão Go isolada; tratado em nível de statement (lower/stmt.go, E5.2), não em Lowerer.Expr")
 	case *ast.LambdaExpr:
@@ -288,6 +301,15 @@ func (l *Lowerer) call(n *ast.CallExpr) (string, error) {
 		return "", fmt.Errorf("codegen: %q está vinculado como local/receptor — CallExpr sobre um nome sombreado não é construção de tipo, e chamada de função não é suportada em Lowerer.Expr nesta task", id.Name)
 	}
 
+	// Built-ins de FUNÇÃO (now/uuid/random/random_str, E5.3) são reconhecidas
+	// por NOME, não por tipo — "now" etc. não são símbolos declarados no
+	// programa. Checadas antes do switch de construção de tipo abaixo.
+	if l.builtins != nil {
+		if goExpr, handled, err := l.builtins.CallFunc(l, id.Name, n.Args); handled {
+			return goExpr, err
+		}
+	}
+
 	switch t := l.env.TypeOfName(id.Name).(type) {
 	case *types.VOType:
 		return l.constructVO(t, n.Args)
@@ -431,6 +453,22 @@ func (l *Lowerer) index(n *ast.IndexExpr) (string, error) {
 	return fmt.Sprintf("%s[%s]", xGo, idxGo), nil
 }
 
+// --- 7. QueryExpr (E5.3, builtins.go): load/list/count/exists/store/... ---
+
+// queryExpr delega para l.builtins a forma Go de um *ast.QueryExpr em
+// posição de expressão PURA (REQ-22.7(a)). Sem um BuiltinLowerer anexado
+// (WithBuiltins nunca chamado), toda QueryExpr é "não suportada" — mesmo
+// comportamento de antes de E5.3. Só "exists" cabe aqui de fato:
+// load/list/count devolvem (_, error) em Go e exigem hoisting em nível de
+// statement — l.builtins.QueryExprPure devolve o erro claro apontando para
+// isso quando alcançado nesta posição.
+func (l *Lowerer) queryExpr(n *ast.QueryExpr) (string, error) {
+	if l.builtins == nil {
+		return "", fmt.Errorf("codegen: QueryExpr (%s ...) não suportado sem BuiltinLowerer configurado — anexe um via Lowerer.WithBuiltins (E5.3)", n.Op)
+	}
+	return l.builtins.QueryExprPure(l, n)
+}
+
 // --- 8. LambdaExpr ---
 
 // Lambda traduz um LambdaExpr para uma closure Go, dado o tipo Go já
@@ -450,7 +488,7 @@ func (l *Lowerer) Lambda(le *ast.LambdaExpr, paramGoType string) (string, error)
 	if t := l.env.TypeOfName(paramGoType); !types.IsError(t) {
 		childEnv.Bind(le.Param, t)
 	}
-	child := &Lowerer{env: childEnv, reg: l.reg, runtimeAlias: l.runtimeAlias, goNames: l.goNames}
+	child := &Lowerer{env: childEnv, reg: l.reg, runtimeAlias: l.runtimeAlias, goNames: l.goNames, builtins: l.builtins}
 
 	bodyGo, err := child.Expr(le.Body)
 	if err != nil {

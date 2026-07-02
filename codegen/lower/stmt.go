@@ -290,16 +290,174 @@ func (sl *StmtLowerer) hoistSubtree(e ast.Expr, ctx StmtContext) (ast.Expr, []st
 		}
 		return rebuilt, hoisted, nil
 
+	case *ast.QueryExpr:
+		return sl.hoistQueryExpr(n, ctx)
+
 	default:
-		// Literal, Ident, RangeExpr, LambdaExpr, ListExpr, QueryExpr,
-		// MatchExpr — nenhuma dessas formas contém, dentro do escopo desta
-		// task, uma construção de VO em posição hoisted-relevante que
-		// Lowerer.Expr não trate sozinho no ponto de uso apropriado
-		// (RangeExpr só existe em nível de for — ForStmt trata; Lambda/
-		// Match/Query têm forma Go própria fora de Lowerer.Expr). Devolvida
-		// como está, sem reescrita.
+		// Literal, Ident, RangeExpr, LambdaExpr, ListExpr, MatchExpr —
+		// nenhuma dessas formas contém, dentro do escopo desta task, uma
+		// construção de VO em posição hoisted-relevante que Lowerer.Expr não
+		// trate sozinho no ponto de uso apropriado (RangeExpr só existe em
+		// nível de for — ForStmt trata; Lambda/Match têm forma Go própria
+		// fora de Lowerer.Expr). Devolvida como está, sem reescrita.
 		return e, nil, nil
 	}
+}
+
+// hoistQueryExpr trata *ast.QueryExpr dentro de hoistSubtree (E5.3,
+// builtins.go, REQ-22.7(a)): load/list/count SEMPRE precisam de hoisting — a
+// chamada Go que os substitui devolve (_, error), que não cabe em posição de
+// expressão pura (mesmo motivo de needsHoistVOConstruct/hoistVOConstruct,
+// agora para os seams de persistência do runtime em vez de New<VO>). exists
+// é uma expressão pura (boolean, nunca falha por si) — só desce
+// recursivamente no Target. store/call/delete (ops de arquivo, G1a) não são
+// reescritos aqui: devolvidos como estão, e Lowerer.Expr (via
+// BuiltinLowerer.QueryExprPure) emite o erro claro de fora-de-escopo se algum
+// dia forem alcançados nesta posição.
+func (sl *StmtLowerer) hoistQueryExpr(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	switch n.Op {
+	case "load":
+		return sl.hoistLoad(n, ctx)
+	case "list":
+		return sl.hoistList(n, ctx)
+	case "count":
+		return sl.hoistCount(n, ctx)
+	case "exists":
+		target, hoisted, err := sl.hoistSubtree(n.Target, ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ast.NewQueryExpr(n.Op, target, n.Binding, n.Clauses, n.Span()), hoisted, nil
+	default:
+		return n, nil, nil
+	}
+}
+
+// hoistLoad traduz "load T(id)" (dentro de hoistSubtree) para
+// "tmpN, err := Load<T>(<store>, <idGo>); if err != nil { <ctx.ExitOnError> }"
+// — a chamada assume a convenção de nome Load<T> (§design 3.7: reconstrução
+// de um Aggregate a partir do seam de persistência), cuja EXISTÊNCIA é E6.2
+// (ainda não implementada); esta task só gera a chamada. tmpN é vinculado no
+// TypeEnv ao tipo de T (via TypeEnv.InferAssignRHS, E5.0), para que um uso
+// subsequente (ex. "wallet.Deposit(...)") resolva corretamente.
+//
+// "load T(id) as V" (mapeamento de load para View, ex. o "GetWallet" real do
+// wallet: "return load Wallet(id) as WalletView") é Read Side — REQ-21, E8.1
+// — e falha explicitamente aqui em vez de gerar Go com o tipo errado
+// (NFR-14): não é responsabilidade desta task decidir a forma de mapeamento
+// para View.
+func (sl *StmtLowerer) hoistLoad(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	if sl.builtins == nil {
+		return nil, nil, fmt.Errorf("codegen: load ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
+	}
+	if hasQueryClause(n.Clauses, "as") {
+		return nil, nil, fmt.Errorf("codegen: load ... as V: mapeamento de load para View é Read Side (REQ-21, E8.1) — fora do escopo de builtins.go (E5.3); \"load T(id)\" sem \"as\" é suportado aqui")
+	}
+	call, ok := n.Target.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return nil, nil, fmt.Errorf("codegen: load ...: forma inesperada de Target (%T) — esperava \"load T(id)\"", n.Target)
+	}
+
+	t, err := sl.env.InferAssignRHS(n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codegen: load ...: %w", err)
+	}
+
+	idExpr, idHoisted, err := sl.hoistSubtree(call.Args[0].Value, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	idGo, err := sl.Expr(idExpr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tmp := sl.newTmp()
+	sl.bindTmp(tmp, t)
+	lines := append(idHoisted,
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.LoadCall(t.String(), idGo)),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// hoistList traduz "list T [where Cond] [as V]" para
+// "tmpN, err := <store>.List(<ctx>, <predicado-ou-nil>); if err != nil {
+// <ctx.ExitOnError> }" — API PROVISÓRIA (documentada em builtins.go,
+// BuiltinLowerer.ListCall): nenhum mecanismo de query real existe no runtime
+// ainda (isso é E8, Read Side); esta task só estabelece que a FORMA da
+// lowering existe. tmpN é vinculado ao tipo List<V> (ou List<T> sem "as"),
+// via TypeEnv.InferAssignRHS (E5.0), que já resolve essa forma.
+func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	if sl.builtins == nil {
+		return nil, nil, fmt.Errorf("codegen: list ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
+	}
+
+	t, err := sl.env.InferAssignRHS(n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codegen: list ...: %w", err)
+	}
+
+	predGo, hoisted, err := sl.hoistQueryPredicate(n, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tmp := sl.newTmp()
+	sl.bindTmp(tmp, t)
+	lines := append(hoisted,
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(predGo)),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// hoistCount traduz "count [where Cond]" para "tmpN, err := <store>.Count(
+// <ctx>, <predicado-ou-nil>); if err != nil { <ctx.ExitOnError> }" — mesma
+// ressalva de API provisória de hoistList (BuiltinLowerer.CountCall). tmpN é
+// vinculado a integer (TypeEnv.InferAssignRHS já resolve "count" assim,
+// independente do Target — env.go, inferQueryExpr).
+func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	if sl.builtins == nil {
+		return nil, nil, fmt.Errorf("codegen: count ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
+	}
+
+	t, err := sl.env.InferAssignRHS(n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codegen: count ...: %w", err)
+	}
+
+	predGo, hoisted, err := sl.hoistQueryPredicate(n, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tmp := sl.newTmp()
+	sl.bindTmp(tmp, t)
+	lines := append(hoisted,
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(predGo)),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// hoistQueryPredicate extrai e hoisteia (recursivamente) a cláusula "where"
+// de uma list/count, se houver — "nil" (texto Go literal) quando ausente.
+// Compartilhado por hoistList/hoistCount.
+func (sl *StmtLowerer) hoistQueryPredicate(n *ast.QueryExpr, ctx StmtContext) (string, []string, error) {
+	where, ok := queryClauseByKw(n.Clauses, "where")
+	if !ok {
+		return "nil", nil, nil
+	}
+	wExpr, hoisted, err := sl.hoistSubtree(where, ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	predGo, err := sl.Expr(wExpr)
+	if err != nil {
+		return "", nil, err
+	}
+	return predGo, hoisted, nil
 }
 
 // fallibleVOOperator reporta se n (já com os filhos hoisted) é um BinaryExpr
@@ -687,7 +845,7 @@ func (sl *StmtLowerer) forCollection(n *ast.ForStmt, label string, emitLabel boo
 // ctx/shared (não reinicia contagem de temporárias/labels) e loopDepth+1;
 // outerLabel é herdado (label), nunca recomputado pelo filho.
 func (sl *StmtLowerer) childForLoop(env *TypeEnv, label string) *StmtLowerer {
-	childLowerer := &Lowerer{env: env, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames}
+	childLowerer := &Lowerer{env: env, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins}
 	return &StmtLowerer{
 		Lowerer:    childLowerer,
 		e:          sl.e,

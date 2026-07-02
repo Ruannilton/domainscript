@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"math/big"
 	"time"
 )
 
@@ -25,4 +26,50 @@ func UUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
 
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// randomStrCharset is the alphabet random_str draws from — plain
+// alphanumeric (62 symbols), no ambiguity about escaping/encoding in
+// generated tokens/codes.
+const randomStrCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+// Random returns a cryptographically random integer in the inclusive range
+// [min, max] (the `random(min, max)` built-in, spec §2.6). Uses crypto/rand
+// rather than math/rand — the same choice as UUID above: no external
+// dependency either way, and crypto/rand avoids ever needing to reason about
+// seeding (math/rand's global source needs an explicit, deliberate seed to
+// not be trivially predictable across process restarts pre-Go 1.20, and a
+// per-call source would need its own seeding story); crypto/rand has none of
+// that and the extra cost is irrelevant here. Panics if max < min — a
+// generator/domain bug, not a runtime condition to recover from.
+func Random(min, max int64) int64 {
+	if max < min {
+		panic(fmt.Sprintf("runtime: Random(min=%d, max=%d): max < min", min, max))
+	}
+	span := new(big.Int).SetInt64(max - min + 1)
+	n, err := rand.Int(rand.Reader, span)
+	if err != nil {
+		panic("runtime: falha ao gerar número aleatório: " + err.Error())
+	}
+	return min + n.Int64()
+}
+
+// RandomStr returns a cryptographically random alphanumeric string
+// ([A-Za-z0-9]) of the given length (the `random_str(length)` built-in,
+// spec §2.6), built the same way as Random above (crypto/rand, one draw per
+// character). length <= 0 returns "".
+func RandomStr(length int64) string {
+	if length <= 0 {
+		return ""
+	}
+	charsetSize := big.NewInt(int64(len(randomStrCharset)))
+	out := make([]byte, length)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, charsetSize)
+		if err != nil {
+			panic("runtime: falha ao gerar string aleatória: " + err.Error())
+		}
+		out[i] = randomStrCharset[n.Int64()]
+	}
+	return string(out)
 }
