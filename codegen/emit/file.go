@@ -81,11 +81,22 @@ func (e *Emitter) Line(pattern string, args ...any) {
 
 // Block escreve "head {", executa body() com indentação +1, depois "}".
 func (e *Emitter) Block(head string, body func()) {
+	e.BlockSuffix(head, "", body)
+}
+
+// BlockSuffix escreve "head {", executa body() com indentação +1, depois
+// "}"+suffix na MESMA linha de fechamento — para um bloco que fecha dentro de
+// uma expressão maior em vez de terminar a statement (ex.: um literal de
+// função passado como argumento: "uow.Run(ctx, func(tx runtime.Tx) error {"
+// … "})", suffix=")" — E7.2, §design 3.8). Block (acima) é o caso comum
+// (suffix vazio); construtos futuros com a mesma necessidade (Policy/Worker,
+// Marco F) reusam BlockSuffix em vez de duplicar a lógica de indentação.
+func (e *Emitter) BlockSuffix(head, suffix string, body func()) {
 	e.writeLine(head + " {")
 	e.indent++
 	body()
 	e.indent--
-	e.writeLine("}")
+	e.writeLine("}" + suffix)
 }
 
 func (e *Emitter) writeLine(s string) {

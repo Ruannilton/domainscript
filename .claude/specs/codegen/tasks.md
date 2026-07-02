@@ -272,7 +272,7 @@
   campo (modelada no runtime). _(REQ-20.1, §design 3.5/3.8)_
   **Commit:** `feat(codegen): Commands`
 
-- [ ] **E7.2** `UseCase`→função `func Name(ctx, cmd T) error` que abre `uow.Run`,
+- [x] **E7.2** `UseCase`→função `func Name(ctx, cmd T) error` que abre `uow.Run`,
   executa o corpo (`load`/`ensure`/dispatch de Handle) e faz commit/rollback;
   `timeout` (`UseCaseDecl.Timeout`) → `context.WithTimeout`. O corpo semeia `cmd` e
   `caller` (receptores do front-end). _(REQ-20.2/20.3, §design 3.8)_ **Depende:** E6.

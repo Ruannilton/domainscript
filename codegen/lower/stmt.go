@@ -9,6 +9,7 @@ import (
 	"domainscript/astutil"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
+	"domainscript/symbols"
 	"domainscript/types"
 )
 
@@ -85,6 +86,12 @@ func (ctx StmtContext) ExitOnError(errExpr string) string {
 type stmtLowererShared struct {
 	tmpCounter   int
 	labelCounter int
+	// handleDispatchDeclared marca se "events, err" (o par de locais Go do
+	// dispatch de Handle, E7.2 — ver handleDispatchCall) já foi declarado
+	// (":=") neste corpo: a 1ª ocorrência declara, ocorrências seguintes (um
+	// UseCase que despacha mais de um Handle) reatribuem ("="), senão o Go
+	// gerado tentaria um ":=" sem nenhuma variável nova (erro de compilação).
+	handleDispatchDeclared bool
 }
 
 // StmtLowerer traduz ast.Stmt para linhas Go, emitindo no *emit.Emitter
@@ -104,12 +111,31 @@ type StmtLowerer struct {
 	shared     *stmtLowererShared
 	loopDepth  int
 	outerLabel string
+	// aggregates/txGoName habilitam o reconhecimento de dispatch de Handle
+	// (E7.2, §design 3.8, ver handleDispatchCall) — anexados via
+	// WithHandleDispatch. aggregates nil (o default) preserva o
+	// comportamento anterior a esta task: "X.Nome(...)" só reconhece método
+	// embutido (goname.GoBuiltinCall).
+	aggregates map[string]*ast.AggregateDecl
+	txGoName   string
 }
 
 // NewStmtLowerer cria um StmtLowerer raiz (loopDepth 0, sem label ativo, com
 // um contador de temporárias/labels próprio para o corpo inteiro).
 func NewStmtLowerer(l *Lowerer, e *emit.Emitter, ctx StmtContext) *StmtLowerer {
 	return &StmtLowerer{Lowerer: l, e: e, ctx: ctx, shared: &stmtLowererShared{}}
+}
+
+// WithHandleDispatch anexa aggregates (nome do Aggregate -> decl, construído
+// pelo CHAMADOR — ex. EmitUseCase, E7.2) e txGoName (o nome Go do local de
+// runtime.Tx corrente, ex. "tx") a sl, habilitando exprStmtCall a reconhecer
+// "receptor.Handle(args...)" como dispatch de Handle (ver handleDispatchCall)
+// em vez de tentar resolvê-lo como método embutido. Devolve o próprio sl
+// (encadeável: NewStmtLowerer(...).WithHandleDispatch(...)).
+func (sl *StmtLowerer) WithHandleDispatch(aggregates map[string]*ast.AggregateDecl, txGoName string) *StmtLowerer {
+	sl.aggregates = aggregates
+	sl.txGoName = txGoName
+	return sl
 }
 
 // Block lowereiza cada Stmt de b em sequência, emitindo linhas via sl.e. b
@@ -853,6 +879,8 @@ func (sl *StmtLowerer) childForLoop(env *TypeEnv, label string) *StmtLowerer {
 		shared:     sl.shared,
 		loopDepth:  sl.loopDepth + 1,
 		outerLabel: label,
+		aggregates: sl.aggregates,
+		txGoName:   sl.txGoName,
 	}
 }
 
@@ -975,13 +1003,104 @@ func (sl *StmtLowerer) assignCompound(target, value ast.Expr) error {
 	return nil
 }
 
-// exprStmt traduz um *ast.ExprStmt cujo X é uma chamada — hoje, só o pequeno
-// conjunto de métodos embutidos que goname.GoBuiltinCall conhece (ex.
-// AppendList.add, exercitado por Apply do wallet real: "state.entries.add(
-// StatementEntry(...))"). Chamada de método de domínio (dispatch de Handle,
-// ex. "wallet.Deposit(...)") e built-ins de Query (load/list/count/exists)
-// são E5.3/E6+ — fora do escopo desta task; Lowerer.Expr também não os
-// suporta hoje (call() só reconhece Fn=Ident como construção de tipo).
+// --- 6a. Dispatch de Handle de Aggregate (E7.2, §design 3.8). ---
+
+// handleDispatchCall reconhece "receptor.Handle(args...)" como dispatch de
+// Handle de Aggregate: quando mem.X infere (sl.inferType) para o shape de um
+// Aggregate CONHECIDO (uma entrada em sl.aggregates, anexado via
+// WithHandleDispatch) e mem.Name bate com o nome de um Handle desse
+// Aggregate, a chamada vira o padrão do §design 3.8 (o corpo de
+// PerformDeposit):
+//
+//	events, err := wallet.Deposit(caller, cmd.Amount, cmd.Description)
+//	if err != nil { return err }
+//	if err := tx.Append(string(wallet.id), events); err != nil { return err }
+//
+// "wallet.id" acessa o campo NÃO-exportado espelho de identidade
+// (decl_aggregate.go) — válido porque o UseCase gerado vive no MESMO pacote
+// Go do Aggregate (mesmo módulo DomainScript); "string(...)" converte para a
+// chave crua de stream exigida por Tx.Append (mesma convenção de
+// idToStreamKeyExpr, decl_aggregate_load.go — sempre segura mesmo quando o
+// id já é "string": conversão de string para string é um no-op válido em
+// Go). "events"/"err" são declarados (":=") na 1ª ocorrência do corpo e
+// reatribuídos ("=") em qualquer dispatch seguinte (sl.shared, compartilhado
+// entre todo o corpo — mesma técnica de contagem de tmpCounter/labelCounter).
+//
+// handled=false (sem erro) quando mem.X não resolve a um Aggregate conhecido
+// ou mem.Name não é um dos Handlers dele: o CHAMADOR (exprStmtCall) segue
+// para o dispatch normal de método embutido. handled=true com err!=nil é uma
+// falha de geração de verdade (ex. WithHandleDispatch nunca chamado) que o
+// chamador deve propagar.
+func (sl *StmtLowerer) handleDispatchCall(mem *ast.MemberExpr, call *ast.CallExpr, ctx StmtContext) ([]string, bool, error) {
+	if sl.aggregates == nil {
+		return nil, false, nil
+	}
+	shape, ok := sl.inferType(mem.X).(*types.ShapeType)
+	if !ok || shape.Kind != symbols.KindAggregate {
+		return nil, false, nil
+	}
+	aggDecl, ok := sl.aggregates[shape.Name]
+	if !ok {
+		return nil, false, nil
+	}
+	if findHandleDecl(aggDecl, mem.Name) == nil {
+		return nil, false, nil
+	}
+	if sl.txGoName == "" {
+		return nil, true, fmt.Errorf("codegen: dispatch de Handle %s.%s: nenhum runtime.Tx anexado — chame StmtLowerer.WithHandleDispatch (E7.2)", shape.Name, mem.Name)
+	}
+
+	recvGo, hoisted, err := sl.exprHoisted(mem.X, ctx)
+	if err != nil {
+		return nil, true, err
+	}
+
+	args := []string{sl.callerGoName()}
+	for _, a := range call.Args {
+		if a.Name != "" {
+			return nil, true, fmt.Errorf("codegen: dispatch de Handle %s.%s: argumento nomeado %q não suportado", shape.Name, mem.Name, a.Name)
+		}
+		argGo, argHoisted, err := sl.exprHoisted(a.Value, ctx)
+		if err != nil {
+			return nil, true, err
+		}
+		hoisted = append(hoisted, argHoisted...)
+		args = append(args, argGo)
+	}
+
+	op := ":="
+	if sl.shared.handleDispatchDeclared {
+		op = "="
+	}
+	sl.shared.handleDispatchDeclared = true
+
+	lines := append(hoisted,
+		fmt.Sprintf("events, err %s %s.%s(%s)", op, recvGo, mem.Name, strings.Join(args, ", ")),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+		fmt.Sprintf("if err := %s.Append(string(%s.id), events); err != nil { %s }", sl.txGoName, recvGo, ctx.ExitOnError("err")),
+	)
+	return lines, true, nil
+}
+
+// findHandleDecl acha, em decl.Handlers, o *ast.HandleDecl cujo Name casa com
+// name — espelha findAccessRule (decl_aggregate.go), agora dentro do pacote
+// lower (que não importa codegen, a direção de dependência do projeto é
+// sempre "para baixo").
+func findHandleDecl(decl *ast.AggregateDecl, name string) *ast.HandleDecl {
+	for _, h := range decl.Handlers {
+		if h != nil && h.Name == name {
+			return h
+		}
+	}
+	return nil
+}
+
+// exprStmt traduz um *ast.ExprStmt cujo X é uma chamada: método embutido
+// (goname.GoBuiltinCall, ex. AppendList.add, exercitado por Apply do wallet
+// real: "state.entries.add(StatementEntry(...))") ou dispatch de Handle de
+// Aggregate (E7.2, ex. "wallet.Deposit(...)" — ver handleDispatchCall).
+// Built-ins de Query (load/list/count/exists) são E5.3, tratados dentro do
+// mecanismo de hoisting (hoistQueryExpr), não aqui.
 func (sl *StmtLowerer) exprStmt(s *ast.ExprStmt) error {
 	call, ok := s.X.(*ast.CallExpr)
 	if !ok {
@@ -995,13 +1114,19 @@ func (sl *StmtLowerer) exprStmt(s *ast.ExprStmt) error {
 	return nil
 }
 
-// exprStmtCall traduz uma chamada de método embutido "X.method(args...)"
-// (Fn é um *ast.MemberExpr) para as linhas Go equivalentes, hoisting tanto o
-// receptor quanto os argumentos.
+// exprStmtCall traduz uma chamada "X.method(args...)" (Fn é um
+// *ast.MemberExpr) para as linhas Go equivalentes: primeiro tenta dispatch
+// de Handle (handleDispatchCall, E7.2 — só ativo quando WithHandleDispatch
+// foi chamado), senão cai para método embutido, hoisting tanto o receptor
+// quanto os argumentos em ambos os casos.
 func (sl *StmtLowerer) exprStmtCall(call *ast.CallExpr, ctx StmtContext) ([]string, error) {
 	mem, ok := call.Fn.(*ast.MemberExpr)
 	if !ok {
-		return nil, fmt.Errorf("codegen: ExprStmt de CallExpr com Fn %T não suportado nesta task (só método embutido sobre um MemberExpr, ex. state.entries.add(...); chamada de método de domínio/built-in de Query é E5.3/E6+)", call.Fn)
+		return nil, fmt.Errorf("codegen: ExprStmt de CallExpr com Fn %T não suportado nesta task (só método embutido sobre um MemberExpr, ex. state.entries.add(...), ou dispatch de Handle de Aggregate, ex. wallet.Deposit(...))", call.Fn)
+	}
+
+	if lines, handled, err := sl.handleDispatchCall(mem, call, ctx); handled {
+		return lines, err
 	}
 
 	recvGo, hoisted, err := sl.exprHoisted(mem.X, ctx)

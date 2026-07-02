@@ -1,0 +1,58 @@
+package wallet
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	time "time"
+)
+
+// uow é a unit of work do módulo (§design 3.8), compartilhada por todos os
+// UseCases deste pacote — só a declaração de pacote; a instância de verdade
+// vem do wiring (E9.1, ainda não implementado).
+var uow runtime.UnitOfWork
+
+// PerformDeposit é o UseCase PerformDeposit (§5.2): abre uma unit of work, executa
+// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.
+func PerformDeposit(ctx context.Context, cmd Deposit) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(5000000000))
+	defer cancel()
+	caller, _ := runtime.CallerFrom(ctx)
+	return uow.Run(ctx, func(tx runtime.Tx) error {
+		tmp1, err := LoadWallet(tx, cmd.WalletId)
+		if err != nil {
+			return err
+		}
+		wallet := tmp1
+		events, err := wallet.Deposit(caller, cmd.Amount, cmd.Description)
+		if err != nil {
+			return err
+		}
+		if err := tx.Append(string(wallet.id), events); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// PerformWithdrawal é o UseCase PerformWithdrawal (§5.2): abre uma unit of work, executa
+// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.
+func PerformWithdrawal(ctx context.Context, cmd Withdraw) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(5000000000))
+	defer cancel()
+	caller, _ := runtime.CallerFrom(ctx)
+	return uow.Run(ctx, func(tx runtime.Tx) error {
+		tmp1, err := LoadWallet(tx, cmd.WalletId)
+		if err != nil {
+			return err
+		}
+		wallet := tmp1
+		events, err := wallet.Withdraw(caller, cmd.Amount, cmd.Description)
+		if err != nil {
+			return err
+		}
+		if err := tx.Append(string(wallet.id), events); err != nil {
+			return err
+		}
+		return nil
+	})
+}
