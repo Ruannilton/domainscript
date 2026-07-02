@@ -1,0 +1,17 @@
+package wallet
+
+// Deposit é o Command Deposit (§5.1): walletId ref Wallet, amount Money, description TransactionDescription.
+// Idempotência não é campo — modelada no runtime (§14).
+type Deposit struct {
+	WalletId    WalletId               `json:"walletId"`
+	Amount      Money                  `json:"amount"`
+	Description TransactionDescription `json:"description"`
+}
+
+// Withdraw é o Command Withdraw (§5.1): walletId ref Wallet, amount Money, description TransactionDescription.
+// Idempotência não é campo — modelada no runtime (§14).
+type Withdraw struct {
+	WalletId    WalletId               `json:"walletId"`
+	Amount      Money                  `json:"amount"`
+	Description TransactionDescription `json:"description"`
+}

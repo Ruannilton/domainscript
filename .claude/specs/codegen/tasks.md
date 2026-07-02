@@ -267,7 +267,7 @@
 
 ### Fase E7 — Commands e UseCases
 
-- [ ] **E7.1** `Command`→struct DTO; campo `ref Aggregate` → tipo do `id` do state do
+- [x] **E7.1** `Command`→struct DTO; campo `ref Aggregate` → tipo do `id` do state do
   aggregate (design §3.8; `Deposit.walletId` → `WalletId`), idempotência **não** vira
   campo (modelada no runtime). _(REQ-20.1, §design 3.5/3.8)_
   **Commit:** `feat(codegen): Commands`
