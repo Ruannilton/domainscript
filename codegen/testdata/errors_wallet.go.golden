@@ -1,0 +1,17 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// ErrInactiveWallet é o Error InactiveWallet (§4.1): "A carteira está inativa.".
+var ErrInactiveWallet = runtime.BusinessError{Code: "InactiveWallet", Msg: "A carteira está inativa."}
+
+// ErrInsufficientBalance é o Error InsufficientBalance (§4.1): "Saldo insuficiente para a operação.".
+var ErrInsufficientBalance = runtime.BusinessError{Code: "InsufficientBalance", Msg: "Saldo insuficiente para a operação."}
+
+// ErrCurrencyMismatch é o Error CurrencyMismatch (§4.1): "As moedas da operação não coincidem.".
+var ErrCurrencyMismatch = runtime.BusinessError{Code: "CurrencyMismatch", Msg: "As moedas da operação não coincidem."}
+
+// ErrNegativeResult é o Error NegativeResult (§4.1): "O resultado da operação seria negativo.".
+var ErrNegativeResult = runtime.BusinessError{Code: "NegativeResult", Msg: "O resultado da operação seria negativo."}

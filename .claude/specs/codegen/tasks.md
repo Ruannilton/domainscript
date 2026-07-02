@@ -172,7 +172,7 @@
 
 ### Fase E4 — Errors e Events
 
-- [ ] **E4.1** `Error` → `var ErrX = runtime.BusinessError{Code, Msg}` (comparável,
+- [x] **E4.1** `Error` → `var ErrX = runtime.BusinessError{Code, Msg}` (comparável,
   `errors.Is`); `Code` derivado do nome, `Msg` do literal de `message` (`ErrorTypeDecl.
   Message` é `Expr`). _(REQ-18.1, §design 3.5)_
   **Conclusão (golden + smoke):** `ErrInactiveWallet`/`ErrInsufficientBalance`

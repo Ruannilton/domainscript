@@ -1,0 +1,8 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// ErrInactiveWallet é o Error InactiveWallet (§4.1): "A carteira está inativa.".
+var ErrInactiveWallet = runtime.BusinessError{Code: "InactiveWallet", Msg: "A carteira está inativa."}
