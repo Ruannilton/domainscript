@@ -1,0 +1,45 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// WalletCreated é o Event WalletCreated (§4.2): id WalletId, holder HolderName.
+type WalletCreated struct {
+	runtime.EventMeta
+	Id     WalletId   `json:"id"`
+	Holder HolderName `json:"holder"`
+}
+
+// EventType implementa runtime.Event.
+func (*WalletCreated) EventType() string { return "WalletCreated" }
+
+// DepositPerformed é o Event DepositPerformed (§4.2): id WalletId, amount Money, description TransactionDescription.
+type DepositPerformed struct {
+	runtime.EventMeta
+	Id          WalletId               `json:"id"`
+	Amount      Money                  `json:"amount"`
+	Description TransactionDescription `json:"description"`
+}
+
+// EventType implementa runtime.Event.
+func (*DepositPerformed) EventType() string { return "DepositPerformed" }
+
+// WithdrawalPerformed é o Event WithdrawalPerformed (§4.2): id WalletId, amount Money, description TransactionDescription.
+type WithdrawalPerformed struct {
+	runtime.EventMeta
+	Id          WalletId               `json:"id"`
+	Amount      Money                  `json:"amount"`
+	Description TransactionDescription `json:"description"`
+}
+
+// EventType implementa runtime.Event.
+func (*WithdrawalPerformed) EventType() string { return "WithdrawalPerformed" }
+
+// eventRegistry mapeia o nome estável do evento ao seu construtor Go, para
+// (de)serialização quando o tipo concreto não é conhecido estaticamente.
+var eventRegistry = map[string]func() runtime.Event{
+	"WalletCreated":       func() runtime.Event { return &WalletCreated{} },
+	"DepositPerformed":    func() runtime.Event { return &DepositPerformed{} },
+	"WithdrawalPerformed": func() runtime.Event { return &WithdrawalPerformed{} },
+}

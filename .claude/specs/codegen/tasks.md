@@ -179,7 +179,7 @@
   compilam; `errors.Is` distingue.
   **Commit:** `feat(codegen): Errors de negócio`
 
-- [ ] **E4.2** `Event` (privado, no pacote do módulo) / `PublicEvent` (no pacote
+- [x] **E4.2** `Event` (privado, no pacote do módulo) / `PublicEvent` (no pacote
   compartilhado **`contracts/`**, que quebra ciclos de import) → struct dos campos +
   metadata implícito (`timestamp`/`sequence`/`aggregateId`/`eventType`, via embed
   `runtime.EventMeta`, atribuído no `append`; a chave de stream é o **id do aggregate

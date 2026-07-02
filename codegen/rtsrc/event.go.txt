@@ -27,12 +27,12 @@ type EventMeta struct {
 	// AggregateID is the id of the aggregate stream this event belongs to —
 	// the key EventStore stores/loads by. It is metadata stamped on append,
 	// not necessarily any "id" field on the event's own payload.
-	AggregateID string
+	AggregateID string `json:"aggregateId"`
 	// Sequence is the 1-based position of this event within its aggregate
 	// stream, assigned by EventStore.Append.
-	Sequence int64
+	Sequence int64 `json:"sequence"`
 	// Timestamp is when EventStore.Append recorded the event, in UTC.
-	Timestamp time.Time
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // SetMeta replaces the metadata in place. It has a pointer receiver so it
