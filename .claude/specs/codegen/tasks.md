@@ -142,7 +142,7 @@
 
 ### Fase E3 — ValueObjects e Enums
 
-- [ ] **E3.1** VO wrapper e composto → tipo/struct + `NewX` que roda `Valid` e devolve
+- [x] **E3.1** VO wrapper e composto → tipo/struct + `NewX` que roda `Valid` e devolve
   `(X, error)`; **sem setters** (imutável). Fixar `decimal`→`runtime.Decimal`. Semear
   no corpo de `Valid` os receptores do front-end: `value` (valor embrulhado) e `ok`
   ("validação passa" → `NewX` sem erro); no composto, campos por nome nu. _(REQ-17.1/

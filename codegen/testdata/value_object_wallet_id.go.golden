@@ -1,0 +1,18 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// WalletId é um ValueObject que embrulha string (§2.2). Imutável; construa
+// sempre via NewWalletId para preservar a Regra de Ouro.
+type WalletId string
+
+// NewWalletId constrói um WalletId validado.
+func NewWalletId(value string) (WalletId, error) {
+	if !(len(value) > 0) {
+		var zero WalletId
+		return zero, runtime.BusinessError{Code: "InvalidWalletId", Msg: "WalletId: valor inválido"}
+	}
+	return WalletId(value), nil
+}

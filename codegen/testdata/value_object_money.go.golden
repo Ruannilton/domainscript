@@ -1,0 +1,21 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// Money é um ValueObject composto e imutável (§2.2): sem setters,
+// construa sempre via NewMoney para preservar a Regra de Ouro.
+type Money struct {
+	Amount   runtime.Decimal `json:"amount"`
+	Currency string          `json:"currency"`
+}
+
+// NewMoney constrói um Money validado.
+func NewMoney(amount runtime.Decimal, currency string) (Money, error) {
+	if !(amount.Cmp(runtime.NewDecimalFromInt(0)) >= 0) {
+		var zero Money
+		return zero, runtime.BusinessError{Code: "InvalidMoney", Msg: "Money: valor inválido"}
+	}
+	return Money{Amount: amount, Currency: currency}, nil
+}

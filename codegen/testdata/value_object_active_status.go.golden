@@ -1,0 +1,10 @@
+package wallet
+
+// ActiveStatus é um ValueObject que embrulha bool (§2.2). Imutável; construa
+// sempre via NewActiveStatus para preservar a Regra de Ouro.
+type ActiveStatus bool
+
+// NewActiveStatus constrói um ActiveStatus validado.
+func NewActiveStatus(value bool) (ActiveStatus, error) {
+	return ActiveStatus(value), nil
+}

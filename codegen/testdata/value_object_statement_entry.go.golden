@@ -1,0 +1,14 @@
+package wallet
+
+// StatementEntry é um ValueObject composto e imutável (§2.2): sem setters,
+// construa sempre via NewStatementEntry para preservar a Regra de Ouro.
+type StatementEntry struct {
+	Type        TransactionType        `json:"type"`
+	Amount      Money                  `json:"amount"`
+	Description TransactionDescription `json:"description"`
+}
+
+// NewStatementEntry constrói um StatementEntry validado.
+func NewStatementEntry(type_ TransactionType, amount Money, description TransactionDescription) (StatementEntry, error) {
+	return StatementEntry{Type: type_, Amount: amount, Description: description}, nil
+}
