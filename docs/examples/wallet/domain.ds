@@ -20,11 +20,31 @@ ValueObject ActiveStatus(boolean) {
     Valid { ok }
 }
 
-// ValueObject composto: o dinheiro carrega valor e moeda juntos.
+// ValueObject composto: o dinheiro carrega valor e moeda juntos, com operadores
+// que preservam a moeda (§2.2). Os operadores referem os campos por nome nu
+// (amount, currency) e o parâmetro `other` — a convenção de receptores de VO do
+// front-end (não `self`). Cada operador que compara moedas propaga um Error.
 ValueObject Money {
     amount decimal
     currency string
+
     Valid { amount >= 0 }
+
+    Operator +(other Money) -> Money {
+        ensure currency == other.currency else CurrencyMismatch
+        return Money(amount: amount + other.amount, currency: currency)
+    }
+
+    Operator -(other Money) -> Money {
+        ensure currency == other.currency else CurrencyMismatch
+        ensure amount >= other.amount else NegativeResult
+        return Money(amount: amount - other.amount, currency: currency)
+    }
+
+    Operator >=(other Money) -> boolean {
+        ensure currency == other.currency else CurrencyMismatch
+        return amount >= other.amount
+    }
 }
 
 // Uma linha do extrato — composta por outros tipos de domínio.
@@ -46,6 +66,8 @@ Enum TransactionType : string {
 
 Error InactiveWallet     { message "A carteira está inativa." }
 Error InsufficientBalance { message "Saldo insuficiente para a operação." }
+Error CurrencyMismatch   { message "As moedas da operação não coincidem." }
+Error NegativeResult     { message "O resultado da operação seria negativo." }
 
 // --- Events: o que de fato aconteceu, no passado (§4.2) ---
 
