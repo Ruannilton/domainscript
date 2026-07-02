@@ -9,8 +9,8 @@ import (
 )
 
 // vobody.go traduz o pequeno subconjunto de expressões que aparece em corpos
-// de ValueObject (hoje só Valid; Operator chega em E3.2) para Go (§design
-// 3.6, REQ-22.5/22.6, escopado — não é a lowering geral REQ-22, que é E5+).
+// de ValueObject (Valid — E3.1 — e Operator — E3.2) para Go (§design 3.6,
+// REQ-22.5/22.6, escopado — não é a lowering geral REQ-22, que é E5+).
 
 // voName é o que um nome nu resolve dentro de um corpo de VO: a expressão Go
 // correspondente (parâmetro do construtor, já escapado por Ident) e o nome do
@@ -77,6 +77,16 @@ var decimalCompareOps = map[token.Kind]bool{
 	token.GE:  true,
 }
 
+// decimalArithOps mapeia o token.Kind de um operador aritmético para o
+// método de runtime.Decimal correspondente (§design 4.2, ramo decimal
+// aritmético) — necessário a partir de E3.2 para corpos de Operator: "amount
+// + other.amount" vira "m.Amount.Add(other.Amount)". runtime.Decimal só
+// expõe Add/Sub (codegen/rtsrc/decimal.go.txt) — Mul/Div não são suportados.
+var decimalArithOps = map[token.Kind]string{
+	token.PLUS:  "Add",
+	token.MINUS: "Sub",
+}
+
 // lowerVOCondition traduz recursivamente uma expressão de corpo de VO (hoje,
 // só o que aparece em Valid) para a string Go correspondente. O chamador é
 // responsável por reconhecer o sentinela "ok" como condição inteira ANTES de
@@ -101,9 +111,28 @@ func lowerVOCondition(scope voScope, e ast.Expr) (string, error) {
 	case *ast.BinaryExpr:
 		return lowerVOBinary(scope, ex)
 
+	case *ast.MemberExpr:
+		return lowerVOFieldAccess(scope, ex)
+
 	default:
 		return "", fmt.Errorf("codegen: forma de expressão não suportada em corpo de VO: %T", e)
 	}
+}
+
+// lowerVOFieldAccess traduz um acesso a campo puro X.name (ex.: "other.currency"
+// dentro de um Operator, onde "other" é um parâmetro cujo tipo é o próprio VO
+// composto) — distinto de lowerVOCall, que trata MemberExpr só quando é o Fn
+// de uma chamada de método embutido. Regra (E3.2): se X lowerizar para uma
+// expressão Go via lowerVOCondition, o acesso vira "<X-lowerizado>.<campo
+// exportado>" — os campos do composto já são exportados (E3.1). Não valida
+// se o campo existe de fato: o programa já foi validado pelo front-end
+// (pré-condição REQ-14.1), o gerador confia nisso.
+func lowerVOFieldAccess(scope voScope, e *ast.MemberExpr) (string, error) {
+	xGo, err := lowerVOCondition(scope, e.X)
+	if err != nil {
+		return "", err
+	}
+	return xGo + "." + ExportField(e.Name), nil
 }
 
 // lowerVOLiteral traduz um *ast.Literal para o literal Go correspondente.
@@ -193,15 +222,22 @@ func operandDSType(scope voScope, e ast.Expr) (string, bool) {
 }
 
 // lowerVOBinary implementa o dispatch de §design 4.2 restrito ao que aparece
-// em Valid de VO: se um dos operandos é decimal, vira comparação via Cmp;
-// senão, operador Go nativo direto.
+// em corpos de VO (Valid e, desde E3.2, Operator): se um dos operandos é
+// decimal, vira comparação via Cmp ou aritmética via Add/Sub (Money.Add soma
+// "amount" e "other.amount"); senão, operador Go nativo direto.
 func lowerVOBinary(scope voScope, e *ast.BinaryExpr) (string, error) {
 	leftType, leftKnown := operandDSType(scope, e.Left)
 	rightType, rightKnown := operandDSType(scope, e.Right)
 	isDecimal := (leftKnown && leftType == "decimal") || (rightKnown && rightType == "decimal")
 
 	if isDecimal {
-		return lowerVODecimalCompare(scope, e)
+		if decimalCompareOps[e.Op] {
+			return lowerVODecimalCompare(scope, e)
+		}
+		if method, ok := decimalArithOps[e.Op]; ok {
+			return lowerVODecimalArith(scope, e, method)
+		}
+		return "", fmt.Errorf("codegen: operador %s não suportado sobre decimal em corpo de VO (só comparação via Cmp ou +/- via Add/Sub)", e.Op)
 	}
 
 	left, err := lowerVOCondition(scope, e.Left)
@@ -239,10 +275,28 @@ func lowerVODecimalCompare(scope voScope, e *ast.BinaryExpr) (string, error) {
 	return fmt.Sprintf("%s.Cmp(%s) %s 0", left, right, opGo), nil
 }
 
-// lowerDecimalOperand traduz um operando de uma comparação decimal para uma
-// expressão Go do tipo runtime.Decimal: um Ident vinculado já é Decimal
-// (devolvido como está); um literal INT vira
-// runtime.NewDecimalFromInt(N).
+// lowerVODecimalArith traduz uma operação aritmética (+/-) onde ao menos um
+// operando é decimal para "left.<Method>(right)" (§design 4.2, ex.:
+// Money.Add faz "m.Amount.Add(other.Amount)").
+func lowerVODecimalArith(scope voScope, e *ast.BinaryExpr, method string) (string, error) {
+	left, err := lowerDecimalOperand(scope, e.Left)
+	if err != nil {
+		return "", err
+	}
+	right, err := lowerDecimalOperand(scope, e.Right)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s.%s(%s)", left, method, right), nil
+}
+
+// lowerDecimalOperand traduz um operando de uma expressão decimal (comparação
+// ou aritmética) para uma expressão Go do tipo runtime.Decimal: um Ident
+// vinculado já é Decimal (devolvido como está); um literal INT vira
+// runtime.NewDecimalFromInt(N); qualquer outra forma (ex. "other.amount" — um
+// acesso a campo puro sobre um parâmetro VO, E3.2) delega para
+// lowerVOCondition — se o programa é válido (pré-condição REQ-14.1), o
+// resultado já é uma expressão Go do tipo runtime.Decimal.
 func lowerDecimalOperand(scope voScope, e ast.Expr) (string, error) {
 	switch ex := e.(type) {
 	case *ast.Ident:
@@ -252,13 +306,11 @@ func lowerDecimalOperand(scope voScope, e ast.Expr) (string, error) {
 		}
 		return n.goExpr, nil
 	case *ast.Literal:
-		switch ex.Kind {
-		case token.INT:
+		if ex.Kind == token.INT {
 			return fmt.Sprintf("%s.NewDecimalFromInt(%s)", scope.runtimeAlias, ex.Value), nil
-		default:
-			return "", fmt.Errorf("codegen: literal %s não suportado em comparação decimal de corpo de VO", ex.Kind)
 		}
+		return lowerVOCondition(scope, e)
 	default:
-		return "", fmt.Errorf("codegen: forma de operando decimal não suportada em corpo de VO: %T", e)
+		return lowerVOCondition(scope, e)
 	}
 }

@@ -153,7 +153,7 @@
   0`.
   **Commit:** `feat(codegen): ValueObject wrapper e composto`
 
-- [ ] **E3.2** `Operator` de VO → método (`Add`/`Sub`/`Gte`/…), corpo via lowering
+- [x] **E3.2** `Operator` de VO → método (`Add`/`Sub`/`Gte`/…), corpo via lowering
   mínimo (`ensure … else Error`/`return`/aritmética sobre `value`+campos nus). VO
   `==`/`!=` **sem** operador declarado → comparação Go nativa; aritmético/relacional
   sem operador → erro de geração (§design 4.2). _(REQ-17.3, REQ-22.1/5/9, §design

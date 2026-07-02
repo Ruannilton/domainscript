@@ -19,3 +19,44 @@ func NewMoney(amount runtime.Decimal, currency string) (Money, error) {
 	}
 	return Money{Amount: amount, Currency: currency}, nil
 }
+
+// Add é o Operator + de Money (§2.2), gerado a partir do corpo declarado.
+func (m Money) Add(other Money) (Money, error) {
+	if !(m.Currency == other.Currency) {
+		var zero Money
+		return zero, ErrCurrencyMismatch
+	}
+	result, err := NewMoney(m.Amount.Add(other.Amount), m.Currency)
+	if err != nil {
+		var zero Money
+		return zero, err
+	}
+	return result, nil
+}
+
+// Sub é o Operator - de Money (§2.2), gerado a partir do corpo declarado.
+func (m Money) Sub(other Money) (Money, error) {
+	if !(m.Currency == other.Currency) {
+		var zero Money
+		return zero, ErrCurrencyMismatch
+	}
+	if !(m.Amount.Cmp(other.Amount) >= 0) {
+		var zero Money
+		return zero, ErrNegativeResult
+	}
+	result, err := NewMoney(m.Amount.Sub(other.Amount), m.Currency)
+	if err != nil {
+		var zero Money
+		return zero, err
+	}
+	return result, nil
+}
+
+// Gte é o Operator >= de Money (§2.2), gerado a partir do corpo declarado.
+func (m Money) Gte(other Money) (bool, error) {
+	if !(m.Currency == other.Currency) {
+		var zero bool
+		return zero, ErrCurrencyMismatch
+	}
+	return m.Amount.Cmp(other.Amount) >= 0, nil
+}

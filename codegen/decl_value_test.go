@@ -32,11 +32,24 @@ const transactionTypeStub = `package wallet
 type TransactionType string
 `
 
-// walletVOBehaviorTest é o teste Go comportamental do E3.1 (padrão de
+// walletVOOperatorErrorsStub substitui, só para este smoke/teste, o Go que o
+// emissor de Error (E4.1, ainda não implementado) produziria para os Errors
+// CurrencyMismatch/NegativeResult referenciados pelo `else` dos Operators de
+// Money (§design 3.5). Necessário só para o smoke compile: Money.Add/Sub
+// referenciam ErrCurrencyMismatch/ErrNegativeResult por nome.
+const walletVOOperatorErrorsStub = `package wallet
+
+import "domainscript/generated/runtime"
+
+var ErrCurrencyMismatch = runtime.BusinessError{Code: "CurrencyMismatch", Msg: "CurrencyMismatch: valor inválido"}
+var ErrNegativeResult = runtime.BusinessError{Code: "NegativeResult", Msg: "NegativeResult: valor inválido"}
+`
+
+// walletVOBehaviorTest é o teste Go comportamental do E3.1/E3.2 (padrão de
 // codegen/rtsrc/runtime_test.go.txt): roda dentro do projeto isolado gerado
 // no smoke e prova, sobre o Go de fato gerado (não uma reimplementação), que
-// Valid tem efeito em runtime — a Regra de Ouro sobrevivendo à geração
-// (NFR-15).
+// Valid e os Operators de VO têm efeito em runtime — a Regra de Ouro
+// sobrevivendo à geração (NFR-15).
 const walletVOBehaviorTest = `package wallet
 
 import (
@@ -136,6 +149,170 @@ func TestNewWalletIdBusinessErrorCodeIsStable(t *testing.T) {
 	}
 	if be.Code != "InvalidWalletId" {
 		t.Fatalf("Code = %q, want %q", be.Code, "InvalidWalletId")
+	}
+}
+
+func TestMoneyAddSumsEqualCurrencies(t *testing.T) {
+	a, err := runtime.ParseDecimal("10.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runtime.ParseDecimal("5.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := NewMoney(a, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := NewMoney(b, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := m1.Add(m2)
+	if err != nil {
+		t.Fatalf("Money.Add com moedas iguais não deveria falhar: %v", err)
+	}
+	want, err := runtime.ParseDecimal("15.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Amount.Cmp(want) != 0 {
+		t.Fatalf("Amount incorreto: got %s, want %s", sum.Amount, want)
+	}
+	if sum.Currency != "BRL" {
+		t.Fatalf("Currency incorreto: got %q, want %q", sum.Currency, "BRL")
+	}
+}
+
+func TestMoneyAddDifferentCurrenciesFails(t *testing.T) {
+	a, err := runtime.ParseDecimal("10.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runtime.ParseDecimal("5.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := NewMoney(a, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := NewMoney(b, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m1.Add(m2); !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("esperava ErrCurrencyMismatch, got %v", err)
+	}
+}
+
+func TestMoneySubNegativeResultFails(t *testing.T) {
+	a, err := runtime.ParseDecimal("5.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runtime.ParseDecimal("10.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := NewMoney(a, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := NewMoney(b, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m1.Sub(m2); !errors.Is(err, ErrNegativeResult) {
+		t.Fatalf("esperava ErrNegativeResult, got %v", err)
+	}
+}
+
+func TestMoneySubNonNegativeResultSucceeds(t *testing.T) {
+	a, err := runtime.ParseDecimal("10.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runtime.ParseDecimal("4.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := NewMoney(a, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := NewMoney(b, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := m1.Sub(m2)
+	if err != nil {
+		t.Fatalf("Money.Sub com resultado não-negativo não deveria falhar: %v", err)
+	}
+	want, err := runtime.ParseDecimal("6.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Amount.Cmp(want) != 0 {
+		t.Fatalf("Amount incorreto: got %s, want %s", diff.Amount, want)
+	}
+}
+
+func TestMoneyGteComparesCorrectly(t *testing.T) {
+	a, err := runtime.ParseDecimal("10.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runtime.ParseDecimal("4.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	big, err := NewMoney(a, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	small, err := NewMoney(b, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ge, err := big.Gte(small)
+	if err != nil {
+		t.Fatalf("Money.Gte não deveria falhar: %v", err)
+	}
+	if !ge {
+		t.Fatal("esperava big.Gte(small) == true")
+	}
+
+	ge, err = small.Gte(big)
+	if err != nil {
+		t.Fatalf("Money.Gte não deveria falhar: %v", err)
+	}
+	if ge {
+		t.Fatal("esperava small.Gte(big) == false")
+	}
+}
+
+func TestMoneyGteCurrencyMismatchFails(t *testing.T) {
+	a, err := runtime.ParseDecimal("10.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := runtime.ParseDecimal("4.00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := NewMoney(a, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := NewMoney(b, "USD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m1.Gte(m2); !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("esperava ErrCurrencyMismatch, got %v", err)
 	}
 }
 `
@@ -248,6 +425,7 @@ func voSmokeFiles(t *testing.T) map[string][]byte {
 		files[filepath.Join("wallet", spec.file)] = got
 	}
 	files[filepath.Join("wallet", "transaction_type_stub.go")] = []byte(transactionTypeStub)
+	files[filepath.Join("wallet", "operator_errors_stub.go")] = []byte(walletVOOperatorErrorsStub)
 
 	return files
 }

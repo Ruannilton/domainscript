@@ -108,6 +108,9 @@ func emitValueObjectWrapper(e *emit.Emitter, decl *ast.ValueObjectDecl) error {
 		}
 		e.Line("return %s(value), nil", decl.Name)
 	})
+	if err := emitOperators(e, runtimeAlias, decl); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -195,5 +198,8 @@ func emitValueObjectComposite(e *emit.Emitter, decl *ast.ValueObjectDecl) error 
 		}
 		e.Line("return %s{%s}, nil", decl.Name, strings.Join(assigns, ", "))
 	})
+	if err := emitOperators(e, runtimeAlias, decl); err != nil {
+		return err
+	}
 	return nil
 }
