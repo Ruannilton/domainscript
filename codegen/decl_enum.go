@@ -7,6 +7,7 @@ import (
 	"domainscript/ast"
 	"domainscript/astutil"
 	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
 	"domainscript/token"
 )
 
@@ -40,7 +41,7 @@ func EmitEnum(pkg string, decl *ast.EnumDecl) ([]byte, error) {
 }
 
 // enumConst é a forma Go já resolvida de um EnumMember: o nome da const
-// (codegen.EnumConstName) e o literal Go do seu valor (lowerVOLiteral).
+// (goname.EnumConstName) e o literal Go do seu valor (lowerVOLiteral).
 type enumConst struct {
 	name    string
 	valueGo string
@@ -50,7 +51,7 @@ func emitEnumDecl(e *emit.Emitter, decl *ast.EnumDecl) error {
 	if decl.Base == nil {
 		return fmt.Errorf("codegen: Enum %s sem tipo base", decl.Name)
 	}
-	goBase, ok := GoPrimitive(decl.Base.Name)
+	goBase, ok := goname.GoPrimitive(decl.Base.Name)
 	if !ok {
 		return fmt.Errorf("codegen: Enum %s: tipo base %q não mapeável para Go (só primitivos, §design 3.3)", decl.Name, decl.Base.Name)
 	}
@@ -65,7 +66,7 @@ func emitEnumDecl(e *emit.Emitter, decl *ast.EnumDecl) error {
 		if err != nil {
 			return fmt.Errorf("codegen: Enum %s: membro %s: %w", decl.Name, mem.Name, err)
 		}
-		consts = append(consts, enumConst{name: EnumConstName(decl.Name, mem.Name), valueGo: valueGo})
+		consts = append(consts, enumConst{name: goname.EnumConstName(decl.Name, mem.Name), valueGo: valueGo})
 	}
 
 	e.Line("// %s é o Enum %s (§2.3): conjunto fechado de valores nomeados.", decl.Name, decl.Name)
@@ -195,7 +196,7 @@ func isWildcardArm(arm ast.MatchStmtArm) bool {
 
 // lowerCoerceSubject traduz o sujeito do match de um coerce: `value` em si
 // (o parâmetro v de ParseX) ou `value.<método embutido>()` (via a tabela de
-// codegen.GoBuiltinCall, ex. value.uppercase() → strings.ToUpper(v)).
+// goname.GoBuiltinCall, ex. value.uppercase() → strings.ToUpper(v)).
 // Qualquer outra forma é erro de geração — não é a lowering geral de
 // expressão (E5.1 futuro).
 func lowerCoerceSubject(e *emit.Emitter, decl *ast.EnumDecl, subject ast.Expr) (string, error) {
@@ -215,8 +216,8 @@ func lowerCoerceSubject(e *emit.Emitter, decl *ast.EnumDecl, subject ast.Expr) (
 		return "", fmt.Errorf("sujeito não suportado (%T); esperava value.<método>()", call.Fn)
 	}
 
-	bm := BuiltinMethod{Receiver: decl.Base.Name, Method: mem.Name}
-	goExpr, ok := GoBuiltinCall("v", bm, nil)
+	bm := goname.BuiltinMethod{Receiver: decl.Base.Name, Method: mem.Name}
+	goExpr, ok := goname.GoBuiltinCall("v", bm, nil)
 	if !ok {
 		return "", fmt.Errorf("método embutido desconhecido em sujeito de coerce: value.%s()", mem.Name)
 	}
@@ -250,7 +251,7 @@ func emitCoerceArm(e *emit.Emitter, decl *ast.EnumDecl, members map[string]bool,
 		return err
 	}
 	e.Line("case %s:", strings.Join(caseLits, ", "))
-	e.Line("return %s, nil", EnumConstName(decl.Name, memberName))
+	e.Line("return %s, nil", goname.EnumConstName(decl.Name, memberName))
 	return nil
 }
 

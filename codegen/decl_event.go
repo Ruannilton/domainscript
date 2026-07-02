@@ -6,6 +6,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
 )
 
 // decl_event.go emite o Go de um EventDecl (E4.2, REQ-18.2/18.3, §design
@@ -62,7 +63,7 @@ func EmitEvents(pkg string, decls []*ast.EventDecl) ([]byte, error) {
 }
 
 // eventFieldInfo é a forma Go já resolvida de um campo de Event: o tipo Go
-// do campo e o nome exportado do campo do struct (codegen.ExportField).
+// do campo e o nome exportado do campo do struct (goname.ExportField).
 type eventFieldInfo struct {
 	field      *ast.Field
 	goType     string
@@ -74,14 +75,14 @@ type eventFieldInfo struct {
 func emitEventDecl(e *emit.Emitter, runtimeAlias string, decl *ast.EventDecl) error {
 	infos := make([]eventFieldInfo, 0, len(decl.Fields))
 	for _, f := range decl.Fields {
-		goType, err := GoFieldType(f.Type)
+		goType, err := goname.GoFieldType(f.Type)
 		if err != nil {
 			return fmt.Errorf("codegen: Event %s: campo %s: %w", decl.Name, f.Name, err)
 		}
 		infos = append(infos, eventFieldInfo{
 			field:      f,
 			goType:     goType,
-			exportName: ExportField(f.Name),
+			exportName: goname.ExportField(f.Name),
 		})
 	}
 
@@ -93,7 +94,7 @@ func emitEventDecl(e *emit.Emitter, runtimeAlias string, decl *ast.EventDecl) er
 	e.Block(fmt.Sprintf("type %s struct", decl.Name), func() {
 		e.Line("%s.EventMeta", runtimeAlias)
 		for _, fi := range infos {
-			e.Line("%s %s %s", fi.exportName, fi.goType, JSONTag(fi.field.Name))
+			e.Line("%s %s %s", fi.exportName, fi.goType, goname.JSONTag(fi.field.Name))
 		}
 	})
 	e.Line("")

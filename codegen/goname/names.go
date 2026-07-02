@@ -1,4 +1,9 @@
-package codegen
+// Package goname mapeia identificadores, tipos e dispatch de operadores
+// DomainScript para suas formas Go idiomáticas (§design codegen 3.3/3.6) — é
+// uma FOLHA (só importa ast/token/stdlib) para que tanto codegen quanto
+// codegen/lower possam reusá-la sem ciclo (design.md §2: codegen → lower,
+// nunca o contrário).
+package goname
 
 import (
 	"fmt"

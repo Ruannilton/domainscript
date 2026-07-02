@@ -6,6 +6,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
 )
 
 // RuntimeImportPath é o caminho de import do pacote runtime vendorado
@@ -73,7 +74,7 @@ func validationError(runtimeAlias, name string) string {
 // emitValueObjectWrapper gera "type X Base" + "func NewX(value Base) (X, error)"
 // para a forma wrapper (ValueObject Email(string)).
 func emitValueObjectWrapper(e *emit.Emitter, decl *ast.ValueObjectDecl) error {
-	goType, err := GoFieldType(decl.Base)
+	goType, err := goname.GoFieldType(decl.Base)
 	if err != nil {
 		return fmt.Errorf("codegen: ValueObject %s: %w", decl.Name, err)
 	}
@@ -116,7 +117,7 @@ func emitValueObjectWrapper(e *emit.Emitter, decl *ast.ValueObjectDecl) error {
 
 // voFieldInfo é a forma Go já resolvida de um campo de VO composto: o tipo Go
 // do campo, o nome do parâmetro do construtor (nu, escapado de keyword Go —
-// codegen.Ident) e o nome exportado do campo do struct (codegen.ExportField).
+// goname.Ident) e o nome exportado do campo do struct (goname.ExportField).
 type voFieldInfo struct {
 	field      *ast.Field
 	goType     string
@@ -129,15 +130,15 @@ type voFieldInfo struct {
 func emitValueObjectComposite(e *emit.Emitter, decl *ast.ValueObjectDecl) error {
 	infos := make([]voFieldInfo, 0, len(decl.Fields))
 	for _, f := range decl.Fields {
-		goType, err := GoFieldType(f.Type)
+		goType, err := goname.GoFieldType(f.Type)
 		if err != nil {
 			return fmt.Errorf("codegen: ValueObject %s: campo %s: %w", decl.Name, f.Name, err)
 		}
 		infos = append(infos, voFieldInfo{
 			field:      f,
 			goType:     goType,
-			paramName:  Ident(f.Name),
-			exportName: ExportField(f.Name),
+			paramName:  goname.Ident(f.Name),
+			exportName: goname.ExportField(f.Name),
 		})
 	}
 
@@ -174,7 +175,7 @@ func emitValueObjectComposite(e *emit.Emitter, decl *ast.ValueObjectDecl) error 
 	e.Line("// construa sempre via New%s para preservar a Regra de Ouro.", decl.Name)
 	e.Block(fmt.Sprintf("type %s struct", decl.Name), func() {
 		for _, fi := range infos {
-			e.Line("%s %s %s", fi.exportName, fi.goType, JSONTag(fi.field.Name))
+			e.Line("%s %s %s", fi.exportName, fi.goType, goname.JSONTag(fi.field.Name))
 		}
 	})
 	e.Line("")

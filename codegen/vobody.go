@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"domainscript/ast"
+	"domainscript/codegen/goname"
 	"domainscript/token"
 )
 
@@ -46,26 +47,7 @@ func (s voScope) bind(name, goExpr, dsType string) {
 	s.names[name] = voName{goExpr: goExpr, dsType: dsType}
 }
 
-// nativeBinaryOps mapeia o token.Kind de um operador binário para o operador
-// Go nativo correspondente — usado tanto no ramo "primitivos" do dispatch
-// quanto (o subconjunto comparável) no ramo decimal, onde compara o int
-// devolvido por Cmp contra 0.
-var nativeBinaryOps = map[token.Kind]string{
-	token.EQ:    "==",
-	token.NEQ:   "!=",
-	token.LT:    "<",
-	token.GT:    ">",
-	token.LE:    "<=",
-	token.GE:    ">=",
-	token.PLUS:  "+",
-	token.MINUS: "-",
-	token.STAR:  "*",
-	token.SLASH: "/",
-	token.AND:   "&&",
-	token.OR:    "||",
-}
-
-// decimalCompareOps é o subconjunto de nativeBinaryOps válido sobre
+// decimalCompareOps é o subconjunto de goname.NativeBinaryOp válido sobre
 // runtime.Decimal: só comparação (via Cmp), nunca aritmética nativa (§design
 // 4.2 — "left.Cmp(right) <op0> 0").
 var decimalCompareOps = map[token.Kind]bool{
@@ -132,7 +114,7 @@ func lowerVOFieldAccess(scope voScope, e *ast.MemberExpr) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return xGo + "." + ExportField(e.Name), nil
+	return xGo + "." + goname.ExportField(e.Name), nil
 }
 
 // lowerVOLiteral traduz um *ast.Literal para o literal Go correspondente.
@@ -152,7 +134,7 @@ func lowerVOLiteral(l *ast.Literal) (string, error) {
 }
 
 // lowerVOCall traduz uma chamada X.method(args...) para o par (tipo-receptor,
-// método) da tabela de built-ins de codegen.GoBuiltinCall. Só reconhece essa
+// método) da tabela de built-ins de goname.GoBuiltinCall. Só reconhece essa
 // forma (Fn é um *ast.MemberExpr, sem argumentos nomeados) — qualquer outra
 // forma de CallExpr é erro de geração nesta task.
 func lowerVOCall(scope voScope, e *ast.CallExpr) (string, error) {
@@ -182,8 +164,8 @@ func lowerVOCall(scope voScope, e *ast.CallExpr) (string, error) {
 		args = append(args, av)
 	}
 
-	bm := BuiltinMethod{Receiver: recvShape, Method: mem.Name}
-	goExpr, ok := GoBuiltinCall(recvGo, bm, args)
+	bm := goname.BuiltinMethod{Receiver: recvShape, Method: mem.Name}
+	goExpr, ok := goname.GoBuiltinCall(recvGo, bm, args)
 	if !ok {
 		return "", fmt.Errorf("codegen: método embutido desconhecido em corpo de VO: %s.%s", recvShape, mem.Name)
 	}
@@ -191,7 +173,7 @@ func lowerVOCall(scope voScope, e *ast.CallExpr) (string, error) {
 }
 
 // voReceiverShape devolve o "shape" de tipo (§design 3.6, mesmo sentido de
-// BuiltinMethod.Receiver) do receptor de uma chamada de método embutido.
+// goname.BuiltinMethod.Receiver) do receptor de uma chamada de método embutido.
 // Só reconhece um *ast.Ident vinculado no escopo — o único caso que aparece
 // em Valid de VO (ex. "value" num wrapper string).
 func voReceiverShape(scope voScope, e ast.Expr) (string, error) {
@@ -248,7 +230,7 @@ func lowerVOBinary(scope voScope, e *ast.BinaryExpr) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	opGo, ok := nativeBinaryOps[e.Op]
+	opGo, ok := goname.NativeBinaryOp(e.Op)
 	if !ok {
 		return "", fmt.Errorf("codegen: operador %s não suportado em corpo de VO", e.Op)
 	}
@@ -271,7 +253,7 @@ func lowerVODecimalCompare(scope voScope, e *ast.BinaryExpr) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	opGo := nativeBinaryOps[e.Op]
+	opGo, _ := goname.NativeBinaryOp(e.Op)
 	return fmt.Sprintf("%s.Cmp(%s) %s 0", left, right, opGo), nil
 }
 

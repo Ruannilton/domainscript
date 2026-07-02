@@ -1,11 +1,41 @@
-package codegen_test
+package goname_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
-	"domainscript/codegen"
+	"domainscript/ast"
+	"domainscript/codegen/goname"
+	"domainscript/driver"
 	"domainscript/token"
 )
+
+// parseWalletVOs parseia o domain.ds real do wallet (docs/examples/wallet) e
+// indexa seus ValueObjectDecl por nome — as fixtures desta task são o
+// programa de verdade, não ASTs sintéticas. Cópia local do helper homônimo em
+// codegen/decl_value_test.go: aquele vive no pacote codegen_test, este no
+// pacote goname_test — pacotes de teste externos distintos não compartilham
+// símbolos não exportados entre si.
+func parseWalletVOs(t *testing.T) map[string]*ast.ValueObjectDecl {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "docs", "examples", "wallet", "domain.ds"))
+	if err != nil {
+		t.Fatalf("não consegui ler o domain.ds do wallet: %v", err)
+	}
+	file, bag := driver.CheckSource(string(src))
+	if bag.HasErrors() {
+		t.Fatalf("wallet/domain.ds tem diagnósticos de erro (fixture deveria ser válida):\n%s", bag.Render())
+	}
+
+	vos := make(map[string]*ast.ValueObjectDecl)
+	for _, d := range file.Decls {
+		if vo, ok := d.(*ast.ValueObjectDecl); ok {
+			vos[vo.Name] = vo
+		}
+	}
+	return vos
+}
 
 // TestLowerVOBinaryDispatchVOOperatorDeclared cobre o ramo (a) de §design
 // 4.2: Money declara Operator >= (Gte); dispatch sobre dois operandos Money
@@ -17,10 +47,10 @@ func TestLowerVOBinaryDispatchVOOperatorDeclared(t *testing.T) {
 		t.Fatal("ValueObject Money não encontrado em wallet/domain.ds")
 	}
 
-	reg := codegen.NewVOOperatorRegistry()
+	reg := goname.NewVOOperatorRegistry()
 	reg.Register(money)
 
-	got, err := codegen.LowerVOBinaryDispatch(reg, token.GE, "m.Amount", "Money", "other.Amount", "Money")
+	got, err := goname.LowerVOBinaryDispatch(reg, token.GE, "m.Amount", "Money", "other.Amount", "Money")
 	if err != nil {
 		t.Fatalf("LowerVOBinaryDispatch: erro inesperado: %v", err)
 	}
@@ -44,10 +74,10 @@ func TestLowerVOBinaryDispatchVOEqualityWithoutOperatorIsNative(t *testing.T) {
 		t.Fatalf("pré-condição do teste: ActiveStatus não deveria declarar Operators, tem %d", len(activeStatus.Operators))
 	}
 
-	reg := codegen.NewVOOperatorRegistry()
+	reg := goname.NewVOOperatorRegistry()
 	reg.Register(activeStatus)
 
-	got, err := codegen.LowerVOBinaryDispatch(reg, token.EQ, "state.Active", "ActiveStatus", "ActiveStatus(true)", "ActiveStatus")
+	got, err := goname.LowerVOBinaryDispatch(reg, token.EQ, "state.Active", "ActiveStatus", "ActiveStatus(true)", "ActiveStatus")
 	if err != nil {
 		t.Fatalf("LowerVOBinaryDispatch: erro inesperado: %v", err)
 	}
@@ -62,9 +92,9 @@ func TestLowerVOBinaryDispatchVOEqualityWithoutOperatorIsNative(t *testing.T) {
 // não tem método para um operador aritmético — erro de geração, não Go
 // inventado.
 func TestLowerVOBinaryDispatchVOArithmeticWithoutOperatorIsError(t *testing.T) {
-	reg := codegen.NewVOOperatorRegistry()
+	reg := goname.NewVOOperatorRegistry()
 
-	_, err := codegen.LowerVOBinaryDispatch(reg, token.PLUS, "a", "Widget", "b", "Widget")
+	_, err := goname.LowerVOBinaryDispatch(reg, token.PLUS, "a", "Widget", "b", "Widget")
 	if err == nil {
 		t.Fatal("esperava erro de geração: Widget não declara Operator + e não é ==/!=")
 	}
@@ -74,9 +104,9 @@ func TestLowerVOBinaryDispatchVOArithmeticWithoutOperatorIsError(t *testing.T) {
 // (b): dois primitivos dispensam completamente o registry — nem Register é
 // chamado.
 func TestLowerVOBinaryDispatchPrimitivesAreNativeWithoutRegistry(t *testing.T) {
-	reg := codegen.NewVOOperatorRegistry()
+	reg := goname.NewVOOperatorRegistry()
 
-	got, err := codegen.LowerVOBinaryDispatch(reg, token.EQ, "a", "string", "b", "string")
+	got, err := goname.LowerVOBinaryDispatch(reg, token.EQ, "a", "string", "b", "string")
 	if err != nil {
 		t.Fatalf("LowerVOBinaryDispatch: erro inesperado: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
 	"domainscript/token"
 )
 
@@ -276,10 +277,10 @@ func EmitUpcast(pkg string, decl *ast.UpcastDecl, currentFields []*ast.Field, vo
 // UpcastFuncName constrói o nome Go da função de upcast (convenção desta
 // task): "Upcast" + Event + FromVer capitalizado + "To" + ToVer capitalizado.
 // Ex.: UpcastFuncName({Event: "TransferSent", FromVer: "v1", ToVer: "v2"}) →
-// "UpcastTransferSentV1ToV2". ExportField já capitaliza só a 1ª letra, que é
-// exatamente "v1" → "V1".
+// "UpcastTransferSentV1ToV2". goname.ExportField já capitaliza só a 1ª letra,
+// que é exatamente "v1" → "V1".
 func UpcastFuncName(decl *ast.UpcastDecl) string {
-	return fmt.Sprintf("Upcast%s%sTo%s", decl.Event, ExportField(decl.FromVer), ExportField(decl.ToVer))
+	return fmt.Sprintf("Upcast%s%sTo%s", decl.Event, goname.ExportField(decl.FromVer), goname.ExportField(decl.ToVer))
 }
 
 // upcastNeedsRuntimeImport faz uma pré-varredura do corpo do Upcast: só
@@ -340,7 +341,7 @@ func computeUpcastAssign(scope voScope, vosByName map[string]*ast.ValueObjectDec
 	if _, ok := currentByName[targetIdent.Name]; !ok {
 		return upcastAssign{}, fmt.Errorf("atribui o campo %q, que não existe na forma atual do Event (currentFields)", targetIdent.Name)
 	}
-	exportName := ExportField(targetIdent.Name)
+	exportName := goname.ExportField(targetIdent.Name)
 
 	if call, ok := st.Value.(*ast.CallExpr); ok {
 		if _, isMethodCall := call.Fn.(*ast.MemberExpr); !isMethodCall {
@@ -351,7 +352,7 @@ func computeUpcastAssign(scope voScope, vosByName map[string]*ast.ValueObjectDec
 			return upcastAssign{
 				targetExport: exportName,
 				isConstruct:  true,
-				localVar:     Ident(targetIdent.Name),
+				localVar:     goname.Ident(targetIdent.Name),
 				typeName:     typeName,
 				argsGo:       args,
 			}, nil

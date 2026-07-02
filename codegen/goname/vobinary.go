@@ -1,4 +1,4 @@
-package codegen
+package goname
 
 import (
 	"fmt"
@@ -13,6 +13,31 @@ import (
 // método de Operator, operador Go nativo, ou erro de geração. Não é ainda a
 // lowering geral de BinaryExpr (isso é E5.1); aqui só o dispatch em si,
 // testável isoladamente e reutilizado por quem fizer essa lowering.
+
+// nativeBinaryOps mapeia o token.Kind de um operador binário para o operador
+// Go nativo correspondente — usado tanto no dispatch de binário de VO (acima)
+// quanto pelo lowering de corpo de VO (codegen/vobody.go, via NativeBinaryOp).
+var nativeBinaryOps = map[token.Kind]string{
+	token.EQ:    "==",
+	token.NEQ:   "!=",
+	token.LT:    "<",
+	token.GT:    ">",
+	token.LE:    "<=",
+	token.GE:    ">=",
+	token.PLUS:  "+",
+	token.MINUS: "-",
+	token.STAR:  "*",
+	token.SLASH: "/",
+	token.AND:   "&&",
+	token.OR:    "||",
+}
+
+// NativeBinaryOp mapeia o token.Kind de um operador binário para o operador Go
+// nativo correspondente (§design 4.2). ok é false para um Kind fora da tabela.
+func NativeBinaryOp(op token.Kind) (string, bool) {
+	s, ok := nativeBinaryOps[op]
+	return s, ok
+}
 
 // VOOperatorRegistry indexa, por nome de ValueObject, o conjunto de símbolos
 // de Operator declarados (ex. "Money" -> {"+", "-", ">="}) — construído
@@ -66,7 +91,7 @@ func (r *VOOperatorRegistry) HasOperator(voName, op string) bool {
 //     gera a lowering geral ao redor decide como propagar isso — esta função
 //     só devolve a EXPRESSÃO, não statements).
 //   - leftType é "" (desconhecido, tratado como nativo por default) ou um
-//     primitivo conhecido (via codegen.GoPrimitive) → "leftGo <opGo> rightGo"
+//     primitivo conhecido (via GoPrimitive) → "leftGo <opGo> rightGo"
 //     (operador Go nativo).
 //   - leftType é um VO sem o operador declarado, e o operador é "==" ou "!="
 //     → "leftGo == rightGo" / "leftGo != rightGo" (VOs são comparáveis

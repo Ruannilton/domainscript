@@ -310,9 +310,9 @@ func TestEmitEventsBehavior(t *testing.T) {
 }
 
 // TestEmitEventRejectsUnmappableFieldType prova que um EventDecl com um
-// campo cujo TypeRef não é resolvível (GoFieldType falha) devolve um erro de
-// geração claro, nunca panic (o front-end garante tipos válidos, mas o
-// gerador se defende de AST construída à mão/sintética).
+// campo cujo TypeRef não é resolvível (goname.GoFieldType falha) devolve um
+// erro de geração claro, nunca panic (o front-end garante tipos válidos, mas
+// o gerador se defende de AST construída à mão/sintética).
 func TestEmitEventRejectsUnmappableFieldType(t *testing.T) {
 	badField := ast.NewField("bad", nil, false, false, nil, ast.Span{})
 	bad := ast.NewEventDecl("Bad", false, []*ast.Field{badField}, ast.Span{})

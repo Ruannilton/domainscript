@@ -6,6 +6,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
 )
 
 // decl_operator.go emite o método Go de cada Operator de ValueObject
@@ -32,15 +33,15 @@ func emitOperators(e *emit.Emitter, runtimeAlias string, decl *ast.ValueObjectDe
 
 // emitOperator gera "func (<recv> <VOName>) <Método>(<params...>) (<Return>, error) { ... }"
 // para um único Operator (§design catálogo 3.5): a assinatura vem de
-// codegen.OperatorMethod (nome do método) e codegen.GoFieldType (tipo de
+// goname.OperatorMethod (nome do método) e goname.GoFieldType (tipo de
 // retorno); o corpo é uma sequência de ensure/return lowerizada por
 // lowerOperatorStmt.
 func emitOperator(e *emit.Emitter, runtimeAlias string, vo *ast.ValueObjectDecl, decl *ast.OperatorDecl) error {
-	method, ok := OperatorMethod(decl.Op)
+	method, ok := goname.OperatorMethod(decl.Op)
 	if !ok {
 		return fmt.Errorf("codegen: ValueObject %s: Operator %q: símbolo de operador não reconhecido", vo.Name, decl.Op)
 	}
-	goReturn, err := GoFieldType(decl.Return)
+	goReturn, err := goname.GoFieldType(decl.Return)
 	if err != nil {
 		return fmt.Errorf("codegen: ValueObject %s: Operator %s: tipo de retorno: %w", vo.Name, decl.Op, err)
 	}
@@ -54,11 +55,11 @@ func emitOperator(e *emit.Emitter, runtimeAlias string, vo *ast.ValueObjectDecl,
 
 	params := make([]string, len(decl.Params))
 	for i, p := range decl.Params {
-		paramType, err := GoFieldType(p.Type)
+		paramType, err := goname.GoFieldType(p.Type)
 		if err != nil {
 			return fmt.Errorf("codegen: ValueObject %s: Operator %s: parâmetro %s: %w", vo.Name, decl.Op, p.Name, err)
 		}
-		paramName := Ident(p.Name)
+		paramName := goname.Ident(p.Name)
 		scope.bind(p.Name, paramName, p.Type.Name)
 		params[i] = fmt.Sprintf("%s %s", paramName, paramType)
 	}
@@ -89,7 +90,7 @@ func emitOperator(e *emit.Emitter, runtimeAlias string, vo *ast.ValueObjectDecl,
 func operatorReceiverName(vo *ast.ValueObjectDecl, params []*ast.Field) string {
 	cand := strings.ToLower(vo.Name[:1])
 	for _, p := range params {
-		if Ident(p.Name) == cand {
+		if goname.Ident(p.Name) == cand {
 			return "recv"
 		}
 	}
@@ -108,7 +109,7 @@ func bindOperatorReceiver(scope voScope, vo *ast.ValueObjectDecl, recv string) e
 		scope.bind("value", recv, vo.Base.Name)
 	case len(vo.Fields) > 0:
 		for _, f := range vo.Fields {
-			scope.bind(f.Name, recv+"."+ExportField(f.Name), f.Type.Name)
+			scope.bind(f.Name, recv+"."+goname.ExportField(f.Name), f.Type.Name)
 		}
 	default:
 		return fmt.Errorf("ValueObject %s não é wrapper (Base) nem composto (Fields)", vo.Name)
@@ -170,7 +171,7 @@ func operatorEnsureErrorName(els ast.Stmt) (string, error) {
 
 // lowerOperatorReturn traduz "return Value" conforme o TypeRef de retorno do
 // Operator (§design catálogo, decisão desta task):
-//   - Return primitivo (codegen.GoPrimitive, ex. "boolean") → "return
+//   - Return primitivo (goname.GoPrimitive, ex. "boolean") → "return
 //     <Value lowerizado>, nil".
 //   - Return é o próprio VO sendo definido (auto-construção, ex. Money dentro
 //     de Operator de Money) e Value é "VOName(campo: expr, …)" → traduz para
@@ -182,7 +183,7 @@ func lowerOperatorReturn(e *emit.Emitter, scope voScope, vo *ast.ValueObjectDecl
 		return fmt.Errorf("return sem valor não suportado em corpo de Operator")
 	}
 
-	if _, ok := GoPrimitive(retType.Name); ok {
+	if _, ok := goname.GoPrimitive(retType.Name); ok {
 		valGo, err := lowerVOCondition(scope, s.Value)
 		if err != nil {
 			return err

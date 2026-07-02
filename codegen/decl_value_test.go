@@ -22,7 +22,7 @@ const smokeGoMod = "module domainscript/generated\n\ngo 1.22\n"
 // transactionTypeStub substitui, só para este smoke/teste, o Go que o
 // gerador de Enum (E3.3, ainda não implementado) produziria para "Enum
 // TransactionType : string { ... }". StatementEntry referencia
-// TransactionType por identidade (codegen.GoFieldType) — precisa do tipo
+// TransactionType por identidade (goname.GoFieldType) — precisa do tipo
 // existir no pacote para compilar.
 const transactionTypeStub = `package wallet
 
