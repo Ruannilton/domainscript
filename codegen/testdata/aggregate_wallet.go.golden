@@ -1,0 +1,94 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// walletState é o struct dos campos declarados no bloco state de Wallet (§4.5).
+// Inclui TODOS os campos, incluindo "id" — self/state dentro de Handle/Apply
+// tipam self e state de forma idêntica (sema/rules_typecheck.go), e este emissor
+// reflete isso: state.Id é o único caminho de leitura, mesmo dentro do Aggregate.
+type walletState struct {
+	Id      WalletId                           `json:"id"`
+	Balance Money                              `json:"balance"`
+	Active  ActiveStatus                       `json:"active"`
+	Holder  HolderName                         `json:"holder"`
+	Entries runtime.AppendList[StatementEntry] `json:"entries"`
+}
+
+// Wallet é o Aggregate Wallet (§4.5): a fronteira de consistência.
+type Wallet struct {
+	// id espelha state.Id (ver doc do pacote): só para infraestrutura
+	// (chave de stream/endereçamento). Corpos de Handle/Apply NUNCA o leem
+	// diretamente — sempre via state.Id. Sincronizado em E6.2.
+	id      WalletId
+	version int
+	state   walletState
+}
+
+// Deposit é o Handle Deposit do Aggregate Wallet (§4.5): checa access, executa o corpo
+// e devolve os eventos emitidos.
+func (w *Wallet) Deposit(caller runtime.Caller, amount Money, description TransactionDescription) ([]runtime.Event, error) {
+	if !(caller.Authenticated()) {
+		return nil, runtime.ErrForbidden
+	}
+	var events []runtime.Event
+	if !(w.state.Active == ActiveStatus(true)) {
+		return nil, ErrInactiveWallet
+	}
+	events = append(events, &DepositPerformed{Id: w.state.Id, Amount: amount, Description: description})
+	return events, nil
+}
+
+// Withdraw é o Handle Withdraw do Aggregate Wallet (§4.5): checa access, executa o corpo
+// e devolve os eventos emitidos.
+func (w *Wallet) Withdraw(caller runtime.Caller, amount Money, description TransactionDescription) ([]runtime.Event, error) {
+	if !(WalletId(caller.ID()) == w.state.Id) {
+		return nil, runtime.ErrForbidden
+	}
+	var events []runtime.Event
+	if !(w.state.Active == ActiveStatus(true)) {
+		return nil, ErrInactiveWallet
+	}
+	tmp1, err := w.state.Balance.Gte(amount)
+	if err != nil {
+		return nil, err
+	}
+	if !(tmp1) {
+		return nil, ErrInsufficientBalance
+	}
+	events = append(events, &WithdrawalPerformed{Id: w.state.Id, Amount: amount, Description: description})
+	return events, nil
+}
+
+// applyDepositPerformed aplica o evento DepositPerformed ao state do Aggregate Wallet (§4.5): infalível
+// por construção (o Handle que emitiu já validou antes de emitir).
+func (w *Wallet) applyDepositPerformed(ev DepositPerformed) {
+	state := &w.state
+	tmp1, err := state.Balance.Add(ev.Amount)
+	if err != nil {
+		panic(err)
+	}
+	state.Balance = tmp1
+	tmp2, err := NewStatementEntry(TransactionTypeDeposit, ev.Amount, ev.Description)
+	if err != nil {
+		panic(err)
+	}
+	state.Entries.Add(tmp2)
+}
+
+// applyWithdrawalPerformed aplica o evento WithdrawalPerformed ao state do Aggregate Wallet (§4.5): infalível
+// por construção (o Handle que emitiu já validou antes de emitir).
+func (w *Wallet) applyWithdrawalPerformed(ev WithdrawalPerformed) {
+	state := &w.state
+	tmp1, err := state.Balance.Sub(ev.Amount)
+	if err != nil {
+		panic(err)
+	}
+	state.Balance = tmp1
+	tmp2, err := NewStatementEntry(TransactionTypeWithdrawal, ev.Amount, ev.Description)
+	if err != nil {
+		panic(err)
+	}
+	state.Entries.Add(tmp2)
+}

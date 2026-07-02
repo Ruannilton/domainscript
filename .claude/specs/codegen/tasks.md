@@ -245,7 +245,7 @@
 
 ### Fase E6 — Aggregates
 
-- [ ] **E6.1** `state`→struct (`walletState`); tipo do aggregate (`id`+`version`+
+- [x] **E6.1** `state`→struct (`walletState`); tipo do aggregate (`id`+`version`+
   `state`); cada `Handle`→método `(w *Wallet) Name(caller runtime.Caller, params…)
   ([]runtime.Event, error)` que (1) checa o `access` correspondente (`AccessRule.
   Condition` lowerizada sobre `caller`/`self`, senão `runtime.ErrForbidden`), (2)

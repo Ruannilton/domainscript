@@ -6,8 +6,9 @@ import (
 	"testing"
 
 	"domainscript/ast"
-	"domainscript/driver"
+	"domainscript/diag"
 	"domainscript/program"
+	"domainscript/sema"
 	"domainscript/types"
 )
 
@@ -24,9 +25,23 @@ var walletExampleDir = filepath.Join("..", "..", "docs", "examples", "wallet")
 // diretório), monta o types.Model sobre a SymbolTable resolvida e devolve o
 // Program (para achar declarações concretas) junto com um TypeEnv raiz para o
 // módulo Wallet.
+//
+// Monta o programa via program.Build + sema.CheckProgram diretamente (em vez
+// de driver.CheckProject) DE PROPÓSITO: driver importa codegen (driver/
+// generate.go, GenerateProject), e codegen importa codegen/lower (E6.1+) — se
+// os testes DESTE pacote (internos, "package lower") importassem driver,
+// formaria um ciclo de import só ao compilar o binário de teste (lower_test
+// precisaria de driver, que precisa de codegen, que precisa de lower de
+// volta). program e sema não importam codegen, então este caminho fica livre
+// do ciclo — mesma direção de dependência "para baixo" de §design 2.
 func buildWalletEnv(t *testing.T) (*program.Program, *TypeEnv) {
 	t.Helper()
-	prog, bag := driver.CheckProject(walletExampleDir)
+	bag := diag.New()
+	prog, err := program.Build(walletExampleDir, bag)
+	if err != nil {
+		t.Fatalf("program.Build(%q): %v", walletExampleDir, err)
+	}
+	sema.CheckProgram(prog, bag)
 	if bag.HasErrors() {
 		t.Fatalf("wallet não deveria ter diagnósticos de erro (fixture deveria ser válida):\n%s", bag.Render())
 	}
