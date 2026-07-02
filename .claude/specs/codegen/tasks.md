@@ -49,7 +49,7 @@
 
 ### Fase E0 — Setup do gerador e prep do exemplo
 
-- [ ] **E0.1** Scaffold dos pacotes: `codegen/`, `codegen/emit/`, `codegen/lower/`,
+- [x] **E0.1** Scaffold dos pacotes: `codegen/`, `codegen/emit/`, `codegen/lower/`,
   `codegen/rtsrc/`, cada um com `doc.go`. Adicionar `driver.GenerateProject(dir, out,
   opts)` (stub que só chama `CheckProject` e recusa se `HasErrors`, imprimindo o bag)
   e reestruturar `cmd/dsc` para **subcomandos**: `dsc check <path>` (comportamento
@@ -71,7 +71,7 @@
   (um arquivo Go fixo) — golden compara, smoke compila.
   **Commit:** `test(codegen): helpers de golden test e smoke compile`
 
-- [x] **E0.3** **Prep do exemplo wallet (pré-requisito do smoke do Marco E).** ✅ FEITO
+- [ ] **E0.3** **Prep do exemplo wallet (pré-requisito do smoke do Marco E).** ✅ FEITO
   (commit pendente). Declarados em `Money` os operadores que o domínio já usa mas não
   definia — `Operator +`, `Operator -`, `Operator >=` (spec §2.2) — pois `Apply` faz
   `state.balance +/- event.amount` e `Handle Withdraw` faz `ensure state.balance >=
