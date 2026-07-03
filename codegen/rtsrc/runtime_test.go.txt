@@ -228,6 +228,25 @@ func TestDispatcherPublishSkipsUnsubscribedType(t *testing.T) {
 	}
 }
 
+func TestOutboxSubscribeForwardsToDispatcher(t *testing.T) {
+	d := NewDispatcher()
+	o := NewOutbox(d)
+	called := false
+	o.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		called = true
+		return nil
+	})
+	// A entrega de verdade (F5) ainda não existe: o seam de Marco F1 só
+	// encaminha para o Dispatcher que embrulha — Publish no Dispatcher já
+	// chama o handler registrado via Outbox.Subscribe.
+	if err := d.Publish(context.Background(), &testEvent{Msg: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("esperava que o handler inscrito via Outbox fosse chamado através do Dispatcher que ele embrulha")
+	}
+}
+
 func TestUnitOfWorkRunAppendsOnSuccess(t *testing.T) {
 	store := NewMemoryEventStore()
 	uow := NewUnitOfWork(store)

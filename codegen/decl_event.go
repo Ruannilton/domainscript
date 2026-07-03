@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
 	"domainscript/ast"
@@ -29,20 +30,49 @@ import (
 // nos testes daquela task). Events sem nenhuma delas continuam exatamente
 // como antes (sem custo extra).
 //
-// O roteamento de pacote de fato para PublicEvent (pacote compartilhado
-// contracts/, §design 3.4) é wiring de projeto (E9.1); aqui pkg só decide o
-// nome do pacote Go do arquivo emitido, como em EmitValueObject/EmitError.
+// --- PublicEvent: o tipo de VERDADE mora no módulo declarante, não em
+// contracts/ (decisão desta task, F1, revista — ver o histórico do commit) ---
+//
+// A primeira tentativa desta task gerou o STRUCT do PublicEvent diretamente
+// em contracts/events.go — mas um PublicEvent cujos campos usam ValueObjects
+// do módulo de origem (o caso real do shop: "PublicEvent OrderPlaced { id
+// OrderId, customer CustomerName, total Money }", todos VOs de Orders) faria
+// contracts/ importar orders/ (para os TIPOS dos campos) — e orders/ precisa
+// importar contracts/ de volta para o Apply/emit/replay do seu PRÓPRIO
+// Aggregate referenciarem o tipo do evento que ele mesmo declara (§design
+// 3.4/3.7). Import cycle.
+//
+// A correção: o STRUCT completo (EventMeta embutido, campos, EventType(),
+// (de)serialização) continua sendo emitido no pacote do módulo que declara o
+// PublicEvent — TRATADO IGUAL a um Event privado (mesma emitEventDecl, sem
+// nenhuma qualificação cross-pacote: os VOs dos seus campos estão no MESMO
+// pacote). contracts/events.go vira, por PublicEvent, um ALIAS DE TIPO Go
+// ("type OrderPlaced = orders.OrderPlaced", note o "=": identidade de tipo,
+// não um novo tipo) — um "índice" que deixa um consumidor cross-module (ex.
+// Policy NotifyShipping, decl_policy.go) referenciar "contracts.OrderPlaced"
+// sem precisar saber qual módulo de fato o declara, SEM criar um import na
+// direção contrária: só contracts/ -> <módulo>, nunca o inverso. Como é
+// alias (não um tipo novo), TODOS os métodos (EventType(), SetMeta,
+// UnmarshalJSON/Redact quando existirem) promovem automaticamente — nenhuma
+// duplicação de código, nenhum registry próprio de contracts/ necessário
+// (eventRegistry do módulo de origem já cobre a (de)serialização).
 
 // EmitEvent gera o Go de um único EventDecl: o struct (com runtime.EventMeta
 // embutido), EventType(), e um registry de 1 entrada — a mesma forma de
-// EmitEvents, para manter o contrato uniforme entre as duas funções.
+// EmitEvents, para manter o contrato uniforme entre as duas funções. Serve
+// tanto Event privado quanto PublicEvent: os dois viram um struct REAL no
+// pacote do módulo declarante (ver a doc do arquivo) — a única diferença é o
+// comentário de doc gerado ("Event"/"PublicEvent").
 func EmitEvent(pkg string, decl *ast.EventDecl) ([]byte, error) {
 	return EmitEvents(pkg, []*ast.EventDecl{decl})
 }
 
 // EmitEvents gera o Go de vários EventDecl num único arquivo, com um
 // registry compartilhado (nome → construtor) — como um módulo real tem
-// vários Events (o wallet declara 3).
+// vários Events (o wallet declara 3). Privados e públicos juntos: ver a doc
+// do arquivo — codegen.go passa TODOS os Events (privEvents+pubEvents) de um
+// módulo aqui; o roteamento para contracts/ (alias por PublicEvent) é
+// EmitPublicEvents, separado.
 func EmitEvents(pkg string, decls []*ast.EventDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -58,6 +88,38 @@ func EmitEvents(pkg string, decls []*ast.EventDecl) ([]byte, error) {
 
 	e.Line("")
 	emitEventRegistry(e, runtimeAlias, decls)
+
+	return e.Bytes()
+}
+
+// EmitPublicEvents gera contracts/events.go: um ALIAS DE TIPO Go por
+// PublicEvent do programa, apontando para o tipo de verdade no pacote do
+// módulo que o declara (ver a doc do arquivo sobre por que não é um struct
+// próprio — evita o import cycle contracts↔módulo). moduleOf devolve o
+// módulo DomainScript que declarou cada decl (chave: decl.Name — nomes de
+// PublicEvent são globalmente únicos, REQ-4.3 barra duplicata via o nível
+// público da SymbolTable); um decl ausente de moduleOf é bug de geração (o
+// chamador, codegen.go, sempre popula moduleOf a partir do mesmo laço que
+// coleta decls).
+func EmitPublicEvents(decls []*ast.EventDecl, moduleOf map[string]string) ([]byte, error) {
+	e := emit.New("contracts")
+
+	for i, decl := range decls {
+		if i > 0 {
+			e.Line("")
+		}
+		module, ok := moduleOf[decl.Name]
+		if !ok {
+			return nil, fmt.Errorf("codegen: contracts: PublicEvent %s sem módulo de origem conhecido (bug de geração)", decl.Name)
+		}
+		originAlias := e.Import(path.Join(domainModuleRoot, goname.PackageName(module)))
+		qualifiedRef := goname.QualifiedRef(originAlias, decl.Name)
+
+		e.Line("// %s é o PublicEvent %s (§4.2): alias de tipo para %s — o tipo de", decl.Name, decl.Name, qualifiedRef)
+		e.Line("// verdade mora no pacote do módulo que o declara, não aqui (evita o import")
+		e.Line("// cycle que um struct próprio criaria — ver a doc de decl_event.go).")
+		e.Line("type %s = %s", decl.Name, qualifiedRef)
+	}
 
 	return e.Bytes()
 }

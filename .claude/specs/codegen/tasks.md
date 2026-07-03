@@ -345,7 +345,7 @@
 > Passa a exercitar `docs/examples/shop`: `Policy NotifyShipping` cross-service
 > (canal `queue` Orders→Shipping). Fila/dispatcher/outbox e IO entram aqui.
 
-- [ ] **F1** `Policy`→subscriber no `runtime.Dispatcher` para o tipo do evento de `on`
+- [x] **F1** `Policy`→subscriber no `runtime.Dispatcher` para o tipo do evento de `on`
   (`PolicyDecl.On`), com a garantia de `delivery` (`BestEffort`→in-process;
   `AtLeastOnce`→via outbox). Corpo via lowering (`event`/`caller` semeados). _(REQ-23.1/
   23.5, §design 3.10)_

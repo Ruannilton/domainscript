@@ -1,0 +1,46 @@
+package runtime
+
+import "context"
+
+// Outbox is the delivery seam for Policies declared with "delivery
+// AtLeastOnce" (Marco F1, REQ-23.1) — as opposed to Dispatcher, which is
+// explicitly documented as in-process/best-effort (see dispatcher.go.txt).
+// Subscribe has the exact same shape as Dispatcher.Subscribe on purpose: a
+// generated Policy handler registers on whichever seam its `delivery`
+// clause calls for without changing its own signature.
+//
+// Marco F5 ("outbox e canais de entrega de eventos") replaces the
+// implementation below with a real durable/retried one (backed by the event
+// store or a dedicated outbox table) behind this SAME interface — generated
+// code that calls Outbox.Subscribe today does not change when that lands.
+type Outbox interface {
+	// Subscribe registers handler to run for every event whose EventType()
+	// equals eventType, with the AtLeastOnce delivery guarantee (durable and
+	// retried once Marco F5 lands; in-process/best-effort until then — see
+	// the interface doc above).
+	Subscribe(eventType string, handler func(ctx context.Context, ev Event) error)
+}
+
+// memoryOutbox is the Marco F1 stopgap Outbox: it only forwards Subscribe to
+// the Dispatcher it wraps. It is NOT durable yet — a process crash between
+// Publish and handler execution loses the delivery, exactly like Dispatcher.
+// This exists so AtLeastOnce Policies are registrable and their generated
+// code compiles ahead of Marco F5's real implementation, without pretending
+// to a durability guarantee the runtime doesn't have yet (documented
+// deliberately, see the interface doc above).
+type memoryOutbox struct {
+	d Dispatcher
+}
+
+// NewOutbox creates the Marco F1 Outbox over d. Every AtLeastOnce Policy
+// subscribes through this seam instead of Dispatcher directly, so swapping
+// in the real Marco F5 implementation later is a change to this
+// constructor/type only — no generated code changes.
+func NewOutbox(d Dispatcher) Outbox {
+	return &memoryOutbox{d: d}
+}
+
+// Subscribe implements Outbox.
+func (o *memoryOutbox) Subscribe(eventType string, handler func(ctx context.Context, ev Event) error) {
+	o.d.Subscribe(eventType, handler)
+}

@@ -1,0 +1,30 @@
+package shipping
+
+import (
+	context "context"
+	contracts "domainscript/generated/contracts"
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+)
+
+// NotifyShipping é a Policy NotifyShipping (§7): reage ao Event OrderPlaced, entrega AtLeastOnce (via runtime.Outbox).
+// Assinatura igual a runtime.Dispatcher/Outbox.Subscribe — registrada DIRETO
+// como handler pelo wiring do módulo (Wire, abaixo).
+func NotifyShipping(ctx context.Context, ev runtime.Event) error {
+	event, ok := ev.(*contracts.OrderPlaced)
+	if !ok {
+		return fmt.Errorf("policy NotifyShipping: evento inesperado %T (esperava *contracts.OrderPlaced)", ev)
+	}
+	caller, _ := runtime.CallerFrom(ctx)
+	_ = caller
+	_ = event
+	return nil
+}
+
+// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox —
+// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,
+// §design 3.11).
+func Wire(d runtime.Dispatcher) {
+	o := runtime.NewOutbox(d)
+	o.Subscribe("OrderPlaced", NotifyShipping)
+}
