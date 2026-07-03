@@ -1,0 +1,21 @@
+package reactions
+
+import (
+	context "context"
+	payment_gateway "domainscript/generated/adapters/payment_gateway"
+)
+
+// callPaymentRequestForeign chama payment_gateway.ProcessPayment (§9.3 Nível 2 — FFI), com marshalling dos campos
+// mapeados (paymentId, amount). payment_gateway.ProcessPayment é código HAND-WRITTEN esperado em "adapters/payment_gateway"
+// — NUNCA gerado/sobrescrito por "dsc gen" (ver a doc do arquivo); a
+// assinatura esperada é "func ProcessPayment(ctx context.Context, ...) error"
+// (um parâmetro marshalado por entrada de map, na ordem declarada).
+func callPaymentRequestForeign(ctx context.Context, n PaymentRequest) error {
+	return payment_gateway.ProcessPayment(ctx, string(n.PaymentId), n.Amount)
+}
+
+// CallPaymentRequest é a chamada SÍNCRONA do Adapter PaymentRequest (REQ-25.3): o erro É
+// propagado ao chamador.
+func CallPaymentRequest(ctx context.Context, n PaymentRequest) error {
+	return callPaymentRequestForeign(ctx, n)
+}

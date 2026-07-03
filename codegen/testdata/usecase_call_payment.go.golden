@@ -1,0 +1,31 @@
+package reactions
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	slog "log/slog"
+)
+
+// uow é a unit of work do módulo (§design 3.8), compartilhada por todos os
+// UseCases deste pacote — só a declaração de pacote; a instância de verdade
+// vem do wiring (E9.1, Wire abaixo).
+var uow runtime.UnitOfWork
+
+// Wire injeta a unit of work usada pelos UseCases deste pacote — chamada por
+// cmd/<service>/main.go na inicialização (wiring in-memory, §design 3.11).
+func Wire(u runtime.UnitOfWork) {
+	uow = u
+}
+
+// Pay é o UseCase Pay (§5.2): abre uma unit of work, executa
+// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.
+func Pay(ctx context.Context, cmd MakePayment) error {
+	caller, _ := runtime.CallerFrom(ctx)
+	return uow.Run(ctx, func(tx runtime.Tx) error {
+		slog.Info("pagamento solicitado", "caller", caller.ID())
+		if err := CallPaymentRequest(ctx, PaymentRequest{PaymentId: cmd.PaymentId, Amount: 100}); err != nil {
+			return err
+		}
+		return nil
+	})
+}

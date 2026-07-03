@@ -368,7 +368,7 @@
   compila; teste de compensação executa `down` em ordem reversa.
   **Commit:** `feat(codegen): Sagas e compensação`
 
-- [ ] **F4** `Notification`→contrato de saída; `Adapter` HTTP declarativo→cliente
+- [x] **F4** `Notification`→contrato de saída; `Adapter` HTTP declarativo→cliente
   `net/http` (método/URL/headers/body de `AdapterDecl`, `env(...)` do ambiente);
   `Adapter` FFI + bloco `Foreign`→chamada a `adapters/` com marshalling; distinguir
   `notify` (async) de `call` (sync). _(REQ-25, §design 3.13)_

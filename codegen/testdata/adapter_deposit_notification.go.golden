@@ -1,0 +1,47 @@
+package reactions
+
+import (
+	bytes "bytes"
+	context "context"
+	json "encoding/json"
+	fmt "fmt"
+	slog "log/slog"
+	http "net/http"
+	os "os"
+)
+
+// sendDepositNotification realiza a chamada HTTP declarada pelo Adapter DepositNotification (§9.3 Nível 1 —
+// HTTP declarativo): método/URL/headers/body mapeados a partir da
+// Notification DepositNotification.
+func sendDepositNotification(ctx context.Context, n DepositNotification) error {
+	payload := map[string]any{"to": n.To, "amount": n.Amount}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("SENDGRID_URL"), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", os.Getenv("SENDGRID_KEY"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("adapter DepositNotification: status HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// NotifyDepositNotification dispara o Adapter DepositNotification de forma ASSÍNCRONA (REQ-25.3,
+// fire-and-forget): falhas são logadas, NUNCA propagadas ao chamador. A
+// fila/outbox de verdade (dispatch desacoplado do caller) é Marco F5 — este
+// seam já roda a chamada de forma síncrona por trás da cortina, só sem
+// devolver erro ao chamador (o contrato que o Marco F5 precisa preservar).
+func NotifyDepositNotification(ctx context.Context, n DepositNotification) {
+	if err := sendDepositNotification(ctx, n); err != nil {
+		slog.Default().ErrorContext(ctx, "notify falhou", "notification", "DepositNotification", "error", err)
+	}
+}

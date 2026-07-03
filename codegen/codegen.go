@@ -170,31 +170,34 @@ func generateRuntimeFiles() ([]File, error) {
 // forma que generateModuleFiles consome para rotear cada categoria ao
 // emissor correspondente.
 type moduleBucket struct {
-	vos         []*ast.ValueObjectDecl
-	enums       []*ast.EnumDecl
-	errors      []*ast.ErrorTypeDecl
-	privEvents  []*ast.EventDecl
-	pubEvents   []*ast.EventDecl
-	aggregates  []*ast.AggregateDecl
-	commands    []*ast.CommandDecl
-	usecases    []*ast.UseCaseDecl
-	views       []*ast.ViewDecl
-	queries     []*ast.QueryDecl
-	projections []*ast.ProjectionDecl
-	policies    []*ast.PolicyDecl
-	workers     []*ast.WorkerDecl
-	sagas       []*ast.SagaDecl
+	vos           []*ast.ValueObjectDecl
+	enums         []*ast.EnumDecl
+	errors        []*ast.ErrorTypeDecl
+	privEvents    []*ast.EventDecl
+	pubEvents     []*ast.EventDecl
+	aggregates    []*ast.AggregateDecl
+	commands      []*ast.CommandDecl
+	usecases      []*ast.UseCaseDecl
+	views         []*ast.ViewDecl
+	queries       []*ast.QueryDecl
+	projections   []*ast.ProjectionDecl
+	policies      []*ast.PolicyDecl
+	workers       []*ast.WorkerDecl
+	sagas         []*ast.SagaDecl
+	notifications []*ast.NotificationDecl
+	adapters      []*ast.AdapterDecl
+	foreigns      []*ast.ForeignDecl
 }
 
 // bucketModuleDecls percorre os arquivos de moduleName (prog.Files filtrados
 // por prog.ModuleOf, ORDENADOS por path — NFR-13) e roteia cada Decl por
 // tipo concreto. *ast.ModuleDecl/*ast.InterfaceDecl/*ast.TopologyDecl/
 // *ast.UpcastDecl e os construtos de Marco F+ que AINDA não têm emissor
-// (Notification/Adapter/Foreign/Metric — Policy ganhou o dela em F1, Worker
-// em F2, Saga em F3) não são emitidos por este orquestrador (wiring/borda
-// tratados à parte) — caem no default, ignorados silenciosamente, junto de
-// qualquer nó de erro (rede de segurança defensiva sobre um programa já
-// validado sem erros, REQ-14.4).
+// (Metric — Policy ganhou o dela em F1, Worker em F2, Saga em F3,
+// Notification/Adapter/Foreign em F4) não são emitidos por este orquestrador
+// (wiring/borda tratados à parte) — caem no default, ignorados
+// silenciosamente, junto de qualquer nó de erro (rede de segurança
+// defensiva sobre um programa já validado sem erros, REQ-14.4).
 func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 	var paths []string
 	for p := range prog.Files {
@@ -238,6 +241,12 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 				b.workers = append(b.workers, n)
 			case *ast.SagaDecl:
 				b.sagas = append(b.sagas, n)
+			case *ast.NotificationDecl:
+				b.notifications = append(b.notifications, n)
+			case *ast.AdapterDecl:
+				b.adapters = append(b.adapters, n)
+			case *ast.ForeignDecl:
+				b.foreigns = append(b.foreigns, n)
 			}
 		}
 	}
@@ -289,6 +298,17 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	aggregates := make(map[string]*ast.AggregateDecl, len(b.aggregates))
 	for _, a := range b.aggregates {
 		aggregates[a.Name] = a
+	}
+	// adapterByName indexa os Adapter do módulo por nome (F4, REQ-25.3) — o
+	// registry que StmtLowerer.WithNotifyAdapters consulta para reconhecer
+	// "Xxx(...)" como notify/call de uma Notification (ver decl_io.go/
+	// lower/stmt.go). Notification/Adapter compartilham nome por design
+	// (§9.1/9.3, resolver.go:isNotificationAdapterPair) — indexar por
+	// AdapterDecl.Name aqui é suficiente e não depende da SymbolTable (que só
+	// guarda UM dos dois símbolos, ver a doc de decl_io.go).
+	adapterByName := make(map[string]*ast.AdapterDecl, len(b.adapters))
+	for _, a := range b.adapters {
+		adapterByName[a.Name] = a
 	}
 
 	if len(b.vos) > 0 || len(b.enums) > 0 {
@@ -356,7 +376,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 			// padrão exato.
 			repaired[i] = repairLoadDispatchExecute(uc)
 		}
-		content, err := EmitUseCases(pkg, repaired, aggregates, model, tab, moduleName, reg)
+		content, err := EmitUseCases(pkg, repaired, aggregates, model, tab, moduleName, reg, adapterByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("usecases.go: %w", err)
 		}
@@ -388,7 +408,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	}
 
 	if hasPolicies {
-		content, err := EmitPolicies(pkg, b.policies, model, tab, moduleName, reg)
+		content, err := EmitPolicies(pkg, b.policies, model, tab, moduleName, reg, adapterByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
 		}
@@ -401,6 +421,26 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 			return nil, moduleMarks{}, fmt.Errorf("workers.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "workers.go"), Content: content})
+	}
+
+	if len(b.notifications) > 0 || len(b.adapters) > 0 {
+		notifByName := make(map[string]*ast.NotificationDecl, len(b.notifications))
+		for _, n := range b.notifications {
+			notifByName[n.Name] = n
+		}
+		content, err := emitNotificationsAndAdapters(pkg, b.notifications, b.adapters, notifByName, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("notifications.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "notifications.go"), Content: content})
+	}
+
+	if len(b.foreigns) > 0 {
+		content, err := emitForeigns(pkg, b.foreigns)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("foreign.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "foreign.go"), Content: content})
 	}
 
 	if len(b.sagas) > 0 {

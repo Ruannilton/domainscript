@@ -1,0 +1,11 @@
+package crypto
+
+import (
+	crypto "domainscript/generated/internal/crypto"
+)
+
+// ComputeMerkleRoot chama crypto.ComputeMerkleRoot (§9.4 Foreign geral) — função hand-written esperada
+// em adapters/, nunca gerada/sobrescrita por "dsc gen".
+func ComputeMerkleRoot(items [][]byte) ([]byte, error) {
+	return crypto.ComputeMerkleRoot(items)
+}

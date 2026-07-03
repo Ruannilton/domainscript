@@ -68,7 +68,7 @@ func emitShippingPolicies(t *testing.T) []byte {
 	model := types.NewModel(prog.Symbols)
 	policy := findPolicyDecl(t, prog, "NotifyShipping")
 
-	got, err := codegen.EmitPolicies("shipping", []*ast.PolicyDecl{policy}, model, prog.Symbols, "Shipping", goname.NewVOOperatorRegistry())
+	got, err := codegen.EmitPolicies("shipping", []*ast.PolicyDecl{policy}, model, prog.Symbols, "Shipping", goname.NewVOOperatorRegistry(), nil)
 	if err != nil {
 		t.Fatalf("EmitPolicies: erro inesperado: %v", err)
 	}

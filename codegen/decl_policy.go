@@ -117,15 +117,21 @@ func policyIsAtLeastOnce(decl *ast.PolicyDecl) bool {
 
 // EmitPolicy gera o Go de um único PolicyDecl — a mesma forma de
 // EmitPolicies, mantendo o contrato uniforme entre as duas funções (mesmo
-// padrão de EmitUseCase/EmitUseCases).
-func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
-	return EmitPolicies(pkg, []*ast.PolicyDecl{decl}, model, tab, module, reg)
+// padrão de EmitUseCase/EmitUseCases). adapters (F4, REQ-25.3) é o registry
+// de Notification/Adapter do módulo — nil preserva o comportamento anterior
+// a F4 (nenhum notify/call reconhecido no corpo).
+func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+	return EmitPolicies(pkg, []*ast.PolicyDecl{decl}, model, tab, module, reg, adapters)
 }
 
 // EmitPolicies gera o Go de várias PolicyDecl num único arquivo
 // (policies.go), com "func Wire(d runtime.Dispatcher)" compartilhado (ver a
 // doc do arquivo) — como um módulo real pode declarar mais de uma Policy.
-func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+// adapters (F4) é repassado a cada corpo via StmtLowerer.WithNotifyAdapters
+// (ver emitPolicyDecl) — habilita "DepositNotification(...)" dentro de
+// execute a reconhecer notify (Mode async)/call (Mode sync) do Adapter
+// parceiro (§9.1/9.3, REQ-25.3).
+func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -134,7 +140,7 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitPolicyDecl(e, decl, model, tab, module, reg, ctxAlias, runtimeAlias); err != nil {
+		if err := emitPolicyDecl(e, decl, model, tab, module, reg, adapters, ctxAlias, runtimeAlias); err != nil {
 			return nil, fmt.Errorf("codegen: Policy %s: %w", decl.Name, err)
 		}
 	}
@@ -149,7 +155,7 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 // EXATA de runtime.Dispatcher/Outbox.Subscribe, type assertion pro tipo
 // concreto do evento, extração de caller, e o corpo via lowering (ver a doc
 // do arquivo).
-func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string) error {
+func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string) error {
 	evt, err := resolvePolicyEvent(e, tab, module, decl.On)
 	if err != nil {
 		return err
@@ -199,7 +205,7 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 		e.Line("_ = event")
 
 		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
-		sl := lower.NewStmtLowerer(l, e, stmtCtx)
+		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithNotifyAdapters(adapters, "ctx")
 		if bodyErr = sl.Block(decl.Execute); bodyErr != nil {
 			return
 		}

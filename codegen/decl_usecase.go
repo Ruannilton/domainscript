@@ -89,17 +89,22 @@ func emitUOWWireFunc(e *emit.Emitter, runtimeAlias string) {
 
 // EmitUseCase gera o Go de um único UseCaseDecl — a mesma forma de
 // EmitUseCases, mantendo o contrato uniforme entre as duas funções (mesmo
-// padrão de EmitCommand/EmitCommands, EmitEvent/EmitEvents).
-func EmitUseCase(pkg string, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
-	return EmitUseCases(pkg, []*ast.UseCaseDecl{decl}, aggregates, model, tab, module, reg)
+// padrão de EmitCommand/EmitCommands, EmitEvent/EmitEvents). adapters (F4,
+// REQ-25.3) é o registry de Notification/Adapter do módulo — nil preserva o
+// comportamento anterior a F4 (nenhum notify/call reconhecido no corpo).
+func EmitUseCase(pkg string, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+	return EmitUseCases(pkg, []*ast.UseCaseDecl{decl}, aggregates, model, tab, module, reg, adapters)
 }
 
 // EmitUseCases gera o Go de vários UseCaseDecl num único arquivo,
 // compartilhando a declaração de pacote "var uow runtime.UnitOfWork" (ver a
 // doc do arquivo, decisão 3) — declarada uma única vez, mesmo quando decls
 // tem mais de um UseCase (o wallet real declara 2: PerformDeposit,
-// PerformWithdrawal).
-func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+// PerformWithdrawal). adapters (F4) é repassado a cada corpo via
+// StmtLowerer.WithNotifyAdapters (ver emitUseCaseDecl) — habilita
+// "PaymentRequest(...)" dentro de execute a reconhecer notify (Mode
+// async)/call (Mode sync) do Adapter parceiro (§9.1/9.3, REQ-25.3).
+func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -112,7 +117,7 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 
 	for _, decl := range decls {
 		e.Line("")
-		if err := emitUseCaseDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias); err != nil {
+		if err := emitUseCaseDecl(e, decl, aggregates, model, tab, module, reg, adapters, ctxAlias, runtimeAlias); err != nil {
 			return nil, err
 		}
 	}
@@ -122,7 +127,7 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 
 // emitUseCaseDecl emite a função de um único UseCaseDecl (ver a doc do
 // arquivo para as decisões de timeout/caller/uow).
-func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string) error {
+func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string) error {
 	env := lower.New(model, tab, module)
 	env.SeedUseCaseExecute(decl.Handles)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
@@ -153,7 +158,7 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 		e.Line("caller, _ := %s.CallerFrom(ctx)", runtimeAlias)
 
 		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
-		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithHandleDispatch(aggregates, "tx")
+		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithHandleDispatch(aggregates, "tx").WithNotifyAdapters(adapters, "ctx")
 
 		e.BlockSuffix(fmt.Sprintf("return uow.Run(ctx, func(tx %s.Tx) error", runtimeAlias), ")", func() {
 			if bodyErr = sl.Block(decl.Execute); bodyErr != nil {

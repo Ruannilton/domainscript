@@ -147,7 +147,7 @@ func emitWalletUseCases(t *testing.T) []byte {
 	aggregates := map[string]*ast.AggregateDecl{"Wallet": agg}
 	decls := reconstructedWalletUseCases(t)
 
-	got, err := codegen.EmitUseCases("wallet", decls, aggregates, model, prog.Symbols, "Wallet", reg)
+	got, err := codegen.EmitUseCases("wallet", decls, aggregates, model, prog.Symbols, "Wallet", reg, nil)
 	if err != nil {
 		t.Fatalf("EmitUseCases: erro inesperado: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestEmitUseCaseGoldenSingle(t *testing.T) {
 	aggregates := map[string]*ast.AggregateDecl{"Wallet": agg}
 	decls := reconstructedWalletUseCases(t)
 
-	got, err := codegen.EmitUseCase("wallet", decls[0], aggregates, model, prog.Symbols, "Wallet", reg)
+	got, err := codegen.EmitUseCase("wallet", decls[0], aggregates, model, prog.Symbols, "Wallet", reg, nil)
 	if err != nil {
 		t.Fatalf("EmitUseCase(PerformDeposit): erro inesperado: %v", err)
 	}
@@ -476,7 +476,7 @@ func meterSmokeFiles(t *testing.T) map[string][]byte {
 	files[filepath.Join("meter", "commands.go")] = cmdGo
 
 	aggregates := map[string]*ast.AggregateDecl{"Meter": agg}
-	ucGo, err := codegen.EmitUseCase("meter", meterUseCaseDecl(), aggregates, model, prog.Symbols, "Meter", reg)
+	ucGo, err := codegen.EmitUseCase("meter", meterUseCaseDecl(), aggregates, model, prog.Symbols, "Meter", reg, nil)
 	if err != nil {
 		t.Fatalf("EmitUseCase(PerformRecordReading): erro inesperado: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestEmitUseCaseUnknownAggregateFallsThroughToBuiltinError(t *testing.T) {
 	execute := handDispatchExecuteBlock("wallet", "Wallet", "walletId", "Deposit", "amount", "description")
 	uc := ast.NewUseCaseDecl("PerformDeposit", "Deposit", nil, nil, "", execute, ast.Span{})
 
-	if _, err := codegen.EmitUseCase("wallet", uc, map[string]*ast.AggregateDecl{}, model, prog.Symbols, "Wallet", goname.NewVOOperatorRegistry()); err == nil {
+	if _, err := codegen.EmitUseCase("wallet", uc, map[string]*ast.AggregateDecl{}, model, prog.Symbols, "Wallet", goname.NewVOOperatorRegistry(), nil); err == nil {
 		t.Fatal("esperava erro de geração: Aggregate desconhecido não deveria virar dispatch de Handle nem método embutido")
 	}
 }

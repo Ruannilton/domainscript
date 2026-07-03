@@ -1,0 +1,29 @@
+package reactions
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+)
+
+// SendDepositNotification é a Policy SendDepositNotification (§7): reage ao Event OrderPlaced, entrega BestEffort (in-process, runtime.Dispatcher).
+// Assinatura igual a runtime.Dispatcher/Outbox.Subscribe — registrada DIRETO
+// como handler pelo wiring do módulo (Wire, abaixo).
+func SendDepositNotification(ctx context.Context, ev runtime.Event) error {
+	event, ok := ev.(*OrderPlaced)
+	if !ok {
+		return fmt.Errorf("policy SendDepositNotification: evento inesperado %T (esperava *OrderPlaced)", ev)
+	}
+	caller, _ := runtime.CallerFrom(ctx)
+	_ = caller
+	_ = event
+	NotifyDepositNotification(ctx, DepositNotification{To: "customer@example.com", Amount: 42})
+	return nil
+}
+
+// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox —
+// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,
+// §design 3.11).
+func Wire(d runtime.Dispatcher) {
+	d.Subscribe("OrderPlaced", SendDepositNotification)
+}

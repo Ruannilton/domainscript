@@ -1,0 +1,8 @@
+package reactions
+
+// DepositNotification é a Notification DepositNotification (§9.1): contrato de saída — to string, amount integer.
+// Sem Adapter correspondente seria erro de compilação (sema já garante isso).
+type DepositNotification struct {
+	To     string `json:"to"`
+	Amount int64  `json:"amount"`
+}

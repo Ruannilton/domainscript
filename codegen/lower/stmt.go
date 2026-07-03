@@ -118,6 +118,14 @@ type StmtLowerer struct {
 	// embutido (goname.GoBuiltinCall).
 	aggregates map[string]*ast.AggregateDecl
 	txGoName   string
+	// notifyAdapters/ctxGoName habilitam o reconhecimento de notify/call de
+	// Notification/Adapter (F4, REQ-25.3, ver notifyOrCallStmt) — anexados
+	// via WithNotifyAdapters. notifyAdapters nil (o default) preserva o
+	// comportamento anterior a esta task: "Xxx(...)" nomeando uma
+	// Notification em posição de ExprStmt cai no erro "não suportado" já
+	// existente (nenhum caminho de F1/F2/F3 reconhecia essa forma).
+	notifyAdapters map[string]*ast.AdapterDecl
+	ctxGoName      string
 }
 
 // NewStmtLowerer cria um StmtLowerer raiz (loopDepth 0, sem label ativo, com
@@ -135,6 +143,20 @@ func NewStmtLowerer(l *Lowerer, e *emit.Emitter, ctx StmtContext) *StmtLowerer {
 func (sl *StmtLowerer) WithHandleDispatch(aggregates map[string]*ast.AggregateDecl, txGoName string) *StmtLowerer {
 	sl.aggregates = aggregates
 	sl.txGoName = txGoName
+	return sl
+}
+
+// WithNotifyAdapters anexa adapters (nome de Notification/Adapter -> o
+// *ast.AdapterDecl parceiro, mesmo nome — construído pelo CHAMADOR a partir
+// dos Adapter de um módulo, ex. codegen.go/decl_policy.go/decl_usecase.go) e
+// ctxGoName (o nome Go do parâmetro context.Context corrente, ex. "ctx") a
+// sl, habilitando exprStmt a reconhecer "Xxx(args...)" como notify/call de
+// Notification/Adapter (F4, REQ-25.3, ver notifyOrCallStmt) em vez de cair
+// no dispatch normal de ExprStmt. Devolve o próprio sl (encadeável, mesmo
+// padrão de WithHandleDispatch/WithBuiltins).
+func (sl *StmtLowerer) WithNotifyAdapters(adapters map[string]*ast.AdapterDecl, ctxGoName string) *StmtLowerer {
+	sl.notifyAdapters = adapters
+	sl.ctxGoName = ctxGoName
 	return sl
 }
 
@@ -1106,12 +1128,75 @@ func (sl *StmtLowerer) exprStmt(s *ast.ExprStmt) error {
 	if !ok {
 		return fmt.Errorf("codegen: ExprStmt de %T não suportado por StmtLowerer (E5.2)", s.X)
 	}
+	if lines, handled, err := sl.notifyOrCallStmt(call); handled {
+		if err != nil {
+			return err
+		}
+		sl.emitLines(lines)
+		return nil
+	}
 	lines, err := sl.exprStmtCall(call, sl.ctx)
 	if err != nil {
 		return err
 	}
 	sl.emitLines(lines)
 	return nil
+}
+
+// notifyOrCallStmt reconhece "Xxx(args...)" como ExprStmt onde Xxx nomeia uma
+// Notification cujo Adapter parceiro (mesmo nome, §9.1/9.3) foi anexado via
+// WithNotifyAdapters (F4, REQ-25.3): constrói o valor da Notification
+// (Lowerer.Expr já cobre isso — CallExpr sobre um *types.ShapeType é
+// "construção de struct", E5.1; hoisting via exprHoisted cobre campos
+// aninhados falíveis, o mesmo mecanismo de emitStmt para Event) e despacha
+// via Call<Nome> (Mode "sync": erro propagado ao chamador, o mesmo mecanismo
+// de "ensure ... else Error" — ctx.ExitOnError) ou Notify<Nome> (qualquer
+// outro Mode, o único caso real do front-end é "async": fire-and-forget, sem
+// linha de checagem de erro nenhuma — a própria FORMA do Go gerado já
+// distingue notify de call, REQ-25.3).
+//
+// handled=false (sem erro) quando não há registry anexado, call.Fn não é um
+// Ident, o nome está sombreado por um local (mesma regra de
+// needsHoistVOConstruct), ou não resolve a uma Notification conhecida —
+// nesses casos o CHAMADOR (exprStmt) segue para o dispatch normal de
+// ExprStmt. handled=true com err!=nil é uma falha de geração de verdade (ex.
+// WithNotifyAdapters nunca chamado com um ctxGoName) que o chamador deve
+// propagar.
+func (sl *StmtLowerer) notifyOrCallStmt(call *ast.CallExpr) ([]string, bool, error) {
+	if sl.notifyAdapters == nil {
+		return nil, false, nil
+	}
+	id, ok := call.Fn.(*ast.Ident)
+	if !ok {
+		return nil, false, nil
+	}
+	if _, shadowed := sl.env.LookupType(id.Name); shadowed {
+		return nil, false, nil
+	}
+	shape, ok := sl.env.TypeOfName(id.Name).(*types.ShapeType)
+	if !ok || shape.Kind != symbols.KindNotification {
+		return nil, false, nil
+	}
+	adapter, ok := sl.notifyAdapters[id.Name]
+	if !ok {
+		return nil, false, nil
+	}
+	if sl.ctxGoName == "" {
+		return nil, true, fmt.Errorf("codegen: %s(...): nenhum nome de contexto Go anexado — chame StmtLowerer.WithNotifyAdapters(adapters, ctxGoName) (F4)", id.Name)
+	}
+
+	notifGo, hoisted, err := sl.exprHoisted(call, sl.ctx)
+	if err != nil {
+		return nil, true, fmt.Errorf("codegen: %s(...): %w", id.Name, err)
+	}
+
+	lines := append([]string{}, hoisted...)
+	if adapter.Mode == "sync" {
+		lines = append(lines, fmt.Sprintf("if err := Call%s(%s, %s); err != nil { %s }", adapter.Name, sl.ctxGoName, notifGo, sl.ctx.ExitOnError("err")))
+	} else {
+		lines = append(lines, fmt.Sprintf("Notify%s(%s, %s)", adapter.Name, sl.ctxGoName, notifGo))
+	}
+	return lines, true, nil
 }
 
 // exprStmtCall traduz uma chamada "X.method(args...)" (Fn é um
