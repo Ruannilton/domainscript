@@ -1,0 +1,167 @@
+package reservations
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	slog "log/slog"
+	sync "sync"
+	time "time"
+)
+
+// ProcessExpiredReservations é o Worker ProcessExpiredReservations (§8): roda a cada intervalo (schedule every).
+func ProcessExpiredReservations(ctx context.Context) {
+	sem := runtime.NewSemaphore(2)
+	limiter := runtime.NewRateLimiter(20)
+	retry := runtime.RetryPolicy{Attempts: 3, Backoff: runtime.BackoffExponential}
+	ticker := time.NewTicker(time.Duration(50000000))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := limiter.Wait(ctx); err != nil {
+			return
+		}
+		if err := sem.Acquire(ctx); err != nil {
+			return
+		}
+		go func() {
+			defer sem.Release()
+			execCtx, cancel := context.WithTimeout(ctx, time.Duration(300000000000))
+			defer cancel()
+			err := retry.Run(execCtx, func() error {
+				return processExpiredReservationsTick(execCtx)
+			})
+			if err != nil {
+				slog.Error("worker: tentativas esgotadas", "worker", "ProcessExpiredReservations", "error", err)
+			}
+		}()
+	}
+}
+
+// processExpiredReservationsTick executa o corpo do Worker ProcessExpiredReservations (§8) uma vez.
+func processExpiredReservationsTick(ctx context.Context) error {
+	slog.Info("worker tick")
+	return nil
+}
+
+// DailySettlement é o Worker DailySettlement (§8): roda conforme a agenda cron (schedule cron).
+func DailySettlement(ctx context.Context) {
+	sem := runtime.NewSemaphore(1)
+	limiter := runtime.NewRateLimiter(0)
+	retry := runtime.RetryPolicy{Attempts: 1, Backoff: runtime.BackoffFixed}
+	sched, err := runtime.ParseCron("0 2 * * *")
+	if err != nil {
+		slog.Error("worker: cron inválido", "worker", "DailySettlement", "error", err)
+		return
+	}
+	for {
+		next := sched.Next(time.Now())
+		timer := time.NewTimer(time.Until(next))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if err := limiter.Wait(ctx); err != nil {
+			return
+		}
+		if err := sem.Acquire(ctx); err != nil {
+			return
+		}
+		go func() {
+			defer sem.Release()
+			err := retry.Run(ctx, func() error {
+				return dailySettlementTick(ctx)
+			})
+			if err != nil {
+				slog.Error("worker: tentativas esgotadas", "worker", "DailySettlement", "error", err)
+			}
+		}()
+	}
+}
+
+// dailySettlementTick executa o corpo do Worker DailySettlement (§8) uma vez.
+func dailySettlementTick(ctx context.Context) error {
+	return nil
+}
+
+// processQueueItemsSource é a fonte de itens do Worker ProcessQueueItems (§8, schedule continuous) — por
+// padrão vazia (nunca panica, só ociosa) até algo real substituir (uma fila
+// de verdade, Marco F5); ver a doc de emitContinuous (decl_worker.go).
+var processQueueItemsSource runtime.Source[QueueItem] = runtime.NewSliceSource[QueueItem](nil)
+
+// ProcessQueueItems é o Worker ProcessQueueItems (§8): consome processQueueItemsSource continuamente.
+func ProcessQueueItems(ctx context.Context) {
+	limiter := runtime.NewRateLimiter(50)
+	retry := runtime.RetryPolicy{Attempts: 1, Backoff: runtime.BackoffFixed}
+	items := make(chan QueueItem, 5)
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for q := range items {
+				err := retry.Run(ctx, func() error {
+					return processQueueItemsExecute(ctx, q)
+				})
+				if err != nil {
+					slog.Error("worker: tentativas esgotadas", "worker", "ProcessQueueItems", "error", err)
+				}
+			}
+		}()
+	}
+	func() {
+		defer close(items)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			q, ok, err := processQueueItemsSource.Next(ctx)
+			if err != nil {
+				slog.Error("worker: erro ao ler da fonte", "worker", "ProcessQueueItems", "error", err)
+				continue
+			}
+			if !ok {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+				continue
+			}
+			if !(q.Status == QueueItemStatusPending) {
+				continue
+			}
+			if err := limiter.Wait(ctx); err != nil {
+				return
+			}
+			select {
+			case items <- q:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+// processQueueItemsExecute executa o corpo do Worker ProcessQueueItems (§8) uma vez.
+func processQueueItemsExecute(ctx context.Context, item QueueItem) error {
+	slog.Info("processing item")
+	return nil
+}
+
+// StartWorkers inicia, cada um na sua goroutine, todos os Workers deste
+// pacote — chamada por cmd/<service>/main.go na inicialização (wiring
+// in-memory, §design 3.11). Roda até ctx ser cancelado.
+func StartWorkers(ctx context.Context) {
+	go ProcessExpiredReservations(ctx)
+	go DailySettlement(ctx)
+	go ProcessQueueItems(ctx)
+}

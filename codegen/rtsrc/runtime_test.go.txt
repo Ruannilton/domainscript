@@ -467,3 +467,233 @@ func TestRandomStrZeroLengthIsEmpty(t *testing.T) {
 		t.Fatalf("RandomStr(0) = %q, want \"\"", got)
 	}
 }
+
+// --- Worker seam (Marco F2): Semaphore/RateLimiter/RetryPolicy/Source/Cron. ---
+
+func TestSemaphoreAcquireBlocksAtLimitThenReleaseFrees(t *testing.T) {
+	sem := NewSemaphore(1)
+	ctx := context.Background()
+	if err := sem.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	acquired := make(chan struct{})
+	go func() {
+		if err := sem.Acquire(ctx); err != nil {
+			return
+		}
+		close(acquired)
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("Acquire deveria bloquear enquanto o único slot está em uso")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	sem.Release()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("Acquire deveria destravar depois de Release")
+	}
+}
+
+func TestSemaphoreAcquireRespectsCtxCancellation(t *testing.T) {
+	sem := NewSemaphore(1)
+	if err := sem.Acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sem.Acquire(ctx); err == nil {
+		t.Fatal("esperava erro de Acquire sobre um ctx já cancelado")
+	}
+}
+
+func TestNewSemaphoreClampsBelowOne(t *testing.T) {
+	sem := NewSemaphore(0)
+	ctx := context.Background()
+	if err := sem.Acquire(ctx); err != nil {
+		t.Fatalf("esperava concurrency 0 tratada como 1, Acquire falhou: %v", err)
+	}
+}
+
+func TestRateLimiterZeroOrNegativeDisablesLimiting(t *testing.T) {
+	limiter := NewRateLimiter(0)
+	ctx := context.Background()
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		if err := limiter.Wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if time.Since(start) > 20*time.Millisecond {
+		t.Fatal("maxRate <= 0 deveria desabilitar o rate limiting (Wait não deveria esperar)")
+	}
+}
+
+func TestRateLimiterSpacesCallsByInterval(t *testing.T) {
+	// 100/s => 10ms de intervalo mínimo entre chamadas.
+	limiter := NewRateLimiter(100)
+	ctx := context.Background()
+
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		if err := limiter.Wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	elapsed := time.Since(start)
+	// 3 chamadas => pelo menos 2 intervalos de 10ms (a 1ª nunca espera).
+	if elapsed < 18*time.Millisecond {
+		t.Fatalf("esperava pelo menos ~20ms de espaçamento entre 3 chamadas a 100/s, levou %s", elapsed)
+	}
+}
+
+func TestRetryPolicyRunSucceedsOnFirstAttemptWithoutDelay(t *testing.T) {
+	calls := 0
+	policy := RetryPolicy{Attempts: 3, BaseDelay: time.Millisecond}
+	err := policy.Run(context.Background(), func() error {
+		calls++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("esperava 1 chamada quando a 1ª já sucede, got %d", calls)
+	}
+}
+
+func TestRetryPolicyRunRetriesUntilSuccess(t *testing.T) {
+	calls := 0
+	policy := RetryPolicy{Attempts: 3, BaseDelay: time.Millisecond}
+	err := policy.Run(context.Background(), func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("falha temporária")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("esperava 3 tentativas até suceder, got %d", calls)
+	}
+}
+
+func TestRetryPolicyRunReturnsLastErrorWhenExhausted(t *testing.T) {
+	calls := 0
+	sentinel := errors.New("sempre falha")
+	policy := RetryPolicy{Attempts: 2, BaseDelay: time.Millisecond}
+	err := policy.Run(context.Background(), func() error {
+		calls++
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("esperava propagar o último erro, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("esperava exatamente Attempts=2 chamadas, got %d", calls)
+	}
+}
+
+func TestRetryPolicyRunZeroAttemptsTriesOnce(t *testing.T) {
+	calls := 0
+	policy := RetryPolicy{} // Attempts zero-value -> tratado como 1
+	_ = policy.Run(context.Background(), func() error {
+		calls++
+		return errors.New("falha")
+	})
+	if calls != 1 {
+		t.Fatalf("esperava 1 tentativa com Attempts=0 (zero value), got %d", calls)
+	}
+}
+
+func TestRetryPolicyRunRespectsCtxCancellationDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	policy := RetryPolicy{Attempts: 5, BaseDelay: time.Hour} // backoff bem maior que o teste pode esperar
+	calls := 0
+	done := make(chan error, 1)
+	go func() {
+		done <- policy.Run(ctx, func() error {
+			calls++
+			return errors.New("falha")
+		})
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("esperava context.Canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run deveria retornar assim que ctx é cancelado durante o backoff")
+	}
+	if calls != 1 {
+		t.Fatalf("esperava 1 tentativa antes do cancelamento durante o backoff, got %d", calls)
+	}
+}
+
+func TestSliceSourceNextReturnsItemsInOrderThenFalse(t *testing.T) {
+	src := NewSliceSource([]string{"a", "b"})
+	ctx := context.Background()
+
+	v, ok, err := src.Next(ctx)
+	if err != nil || !ok || v != "a" {
+		t.Fatalf("1º Next() = (%q, %v, %v), want (\"a\", true, nil)", v, ok, err)
+	}
+	v, ok, err = src.Next(ctx)
+	if err != nil || !ok || v != "b" {
+		t.Fatalf("2º Next() = (%q, %v, %v), want (\"b\", true, nil)", v, ok, err)
+	}
+	v, ok, err = src.Next(ctx)
+	if err != nil || ok || v != "" {
+		t.Fatalf("3º Next() (esgotado) = (%q, %v, %v), want (\"\", false, nil)", v, ok, err)
+	}
+}
+
+func TestParseCronRejectsMalformedSpec(t *testing.T) {
+	for _, spec := range []string{"", "* * * *", "0 2 * * * *", "60 * * * *", "* 24 * * *", "* * * * 7"} {
+		if _, err := ParseCron(spec); err == nil {
+			t.Fatalf("ParseCron(%q) deveria falhar", spec)
+		}
+	}
+}
+
+func TestParseCronAcceptsWildcardsAndExactValues(t *testing.T) {
+	if _, err := ParseCron("0 2 * * *"); err != nil {
+		t.Fatalf("ParseCron(\"0 2 * * *\"): %v", err)
+	}
+}
+
+func TestCronScheduleNextFindsDailyTimeAtOrAfterFrom(t *testing.T) {
+	sched, err := ParseCron("30 2 * * *") // 02:30 todo dia
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC) // depois das 02:30 de hoje
+	next := sched.Next(from)
+	want := time.Date(2026, 7, 4, 2, 30, 0, 0, time.UTC) // então cai no dia seguinte
+	if !next.Equal(want) {
+		t.Fatalf("Next(%v) = %v, want %v", from, next, want)
+	}
+}
+
+func TestCronScheduleNextSameDayWhenTimeStillAhead(t *testing.T) {
+	sched, err := ParseCron("0 2 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 7, 3, 1, 0, 0, 0, time.UTC) // antes das 02:00 de hoje
+	next := sched.Next(from)
+	want := time.Date(2026, 7, 3, 2, 0, 0, 0, time.UTC)
+	if !next.Equal(want) {
+		t.Fatalf("Next(%v) = %v, want %v", from, next, want)
+	}
+}

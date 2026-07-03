@@ -102,18 +102,20 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	publicEventModule := make(map[string]string) // nome do PublicEvent -> módulo de origem (EmitPublicEvents, F1)
 	modulesWithUseCases := make(map[string]bool, len(moduleNames))
 	modulesWithPolicies := make(map[string]bool, len(moduleNames))
+	modulesWithWorkers := make(map[string]bool, len(moduleNames))
 	buckets := make(map[string]moduleBucket, len(moduleNames))
 
 	for _, name := range moduleNames {
 		b := bucketModuleDecls(prog, name)
 		buckets[name] = b
-		modFiles, hasUseCases, hasPolicies, err := generateModuleFiles(b, name, model, tab)
+		modFiles, marks, err := generateModuleFiles(b, name, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: módulo %s: %w", name, err)
 		}
 		files = append(files, modFiles...)
-		modulesWithUseCases[name] = hasUseCases
-		modulesWithPolicies[name] = hasPolicies
+		modulesWithUseCases[name] = marks.hasUseCases
+		modulesWithPolicies[name] = marks.hasPolicies
+		modulesWithWorkers[name] = marks.hasWorkers
 		allPublicEvents = append(allPublicEvents, b.pubEvents...)
 		for _, ev := range b.pubEvents {
 			publicEventModule[ev.Name] = name
@@ -129,7 +131,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range buildCmdGroups(prog) {
-		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, buckets, model, tab)
+		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -180,15 +182,16 @@ type moduleBucket struct {
 	queries     []*ast.QueryDecl
 	projections []*ast.ProjectionDecl
 	policies    []*ast.PolicyDecl
+	workers     []*ast.WorkerDecl
 }
 
 // bucketModuleDecls percorre os arquivos de moduleName (prog.Files filtrados
 // por prog.ModuleOf, ORDENADOS por path — NFR-13) e roteia cada Decl por
 // tipo concreto. *ast.ModuleDecl/*ast.InterfaceDecl/*ast.TopologyDecl/
 // *ast.UpcastDecl e os construtos de Marco F+ que AINDA não têm emissor
-// (Worker/Saga/Notification/Adapter/Foreign/Metric — Policy ganhou o dela em
-// F1) não são emitidos por este orquestrador (wiring/borda tratados à
-// parte) — caem no default, ignorados silenciosamente, junto de qualquer nó
+// (Saga/Notification/Adapter/Foreign/Metric — Policy ganhou o dela em F1,
+// Worker em F2) não são emitidos por este orquestrador (wiring/borda tratados
+// à parte) — caem no default, ignorados silenciosamente, junto de qualquer nó
 // de erro (rede de segurança defensiva sobre um programa já validado sem
 // erros, REQ-14.4).
 func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
@@ -230,6 +233,8 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 				b.projections = append(b.projections, n)
 			case *ast.PolicyDecl:
 				b.policies = append(b.policies, n)
+			case *ast.WorkerDecl:
+				b.workers = append(b.workers, n)
 			}
 		}
 	}
@@ -238,28 +243,40 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 
 // --- 2. Emissão por módulo. ---
 
+// moduleMarks reporta quais categorias "com wiring próprio" um módulo
+// declarou — UseCase (hasUseCases), Policy (hasPolicies) e Worker
+// (hasWorkers) — para generateCmdMainFile decidir o que chamar de
+// cmd/<service>/main.go: "<pkg>.Wire(...)" só existe quando EmitUseCases/
+// EmitPolicies de fato roda; "<pkg>.StartWorkers(ctx)" só existe quando
+// EmitWorkers roda (ver a doc de decl_worker.go sobre por que Worker NÃO
+// soma mais um "func Wire" ao invés de ganhar seu próprio nome).
+type moduleMarks struct {
+	hasUseCases, hasPolicies, hasWorkers bool
+}
+
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
-// por categoria não-vazia — ver a doc de Generate) e reporta se o módulo
-// declarou ao menos um UseCase (hasUseCases) e/ou ao menos uma Policy
-// (hasPolicies) — o cmd/main.go do service dono só chama "<pkg>.Wire(...)"
-// para módulos com alguma das duas marcas, já que Wire só existe quando
-// EmitUseCases/EmitPolicies de fato roda (ver generateCmdMainFile).
+// por categoria não-vazia — ver a doc de Generate) e devolve as moduleMarks
+// da categorização (ver a doc de moduleMarks).
 //
-// Um módulo com AMBAS as marcas é recusado com um erro de geração claro: tanto
-// emitUOWWireFunc (decl_usecase.go) quanto emitPolicyWireFunc (decl_policy.go)
-// emitem "func Wire(...)" — coexistindo no mesmo pacote Go, colidiriam (erro
-// de compilação). Nem o wallet nem o shop (as duas fixtures reais de hoje)
-// combinam UseCase e Policy no mesmo módulo; combinar as duas infra numa
-// única Wire fica para quando um exemplo real precisar disso (ver a doc de
-// decl_policy.go).
-func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable) ([]File, bool, bool, error) {
+// Um módulo com UseCase E Policy é recusado com um erro de geração claro:
+// tanto emitUOWWireFunc (decl_usecase.go) quanto emitPolicyWireFunc
+// (decl_policy.go) emitem "func Wire(...)" — coexistindo no mesmo pacote Go,
+// colidiriam (erro de compilação). Nem o wallet nem o shop (as duas fixtures
+// reais de hoje) combinam UseCase e Policy no mesmo módulo; combinar as duas
+// infra numa única Wire fica para quando um exemplo real precisar disso (ver
+// a doc de decl_policy.go). Worker NÃO reproduz essa colisão mesmo quando
+// coexiste com UseCase e/ou Policy no mesmo módulo: seu ponto de entrada é
+// "StartWorkers", um nome próprio que nunca colide com "Wire" (ver a doc de
+// decl_worker.go) — por isso não há guarda equivalente para Worker aqui.
+func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable) ([]File, moduleMarks, error) {
 	pkg := goname.PackageName(moduleName)
 	var files []File
 
 	hasUseCases := len(b.usecases) > 0
 	hasPolicies := len(b.policies) > 0
+	hasWorkers := len(b.workers) > 0
 	if hasUseCases && hasPolicies {
-		return nil, false, false, fmt.Errorf("módulo %s: UseCase e Policy no mesmo módulo ainda não têm wiring combinado suportado (cada um gera seu próprio Wire — colidiriam); ver a doc de decl_policy.go", moduleName)
+		return nil, moduleMarks{}, fmt.Errorf("módulo %s: UseCase e Policy no mesmo módulo ainda não têm wiring combinado suportado (cada um gera seu próprio Wire — colidiriam); ver a doc de decl_policy.go", moduleName)
 	}
 
 	reg := goname.NewVOOperatorRegistry()
@@ -274,7 +291,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if len(b.vos) > 0 || len(b.enums) > 0 {
 		content, err := emitValueObjectsAndEnums(pkg, b.vos, b.enums)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("value_objects.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("value_objects.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "value_objects.go"), Content: content})
 	}
@@ -282,7 +299,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if len(b.errors) > 0 {
 		content, err := EmitErrors(pkg, b.errors)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("errors.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("errors.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "errors.go"), Content: content})
 	}
@@ -298,7 +315,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		allModuleEvents = append(allModuleEvents, b.pubEvents...)
 		content, err := EmitEvents(pkg, allModuleEvents)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("events.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("events.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "events.go"), Content: content})
 	}
@@ -308,13 +325,13 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 
 		aggContent, err := EmitAggregate(pkg, agg, model, tab, moduleName, reg)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("aggregate_%s.go: %w", snake, err)
+			return nil, moduleMarks{}, fmt.Errorf("aggregate_%s.go: %w", snake, err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "aggregate_"+snake+".go"), Content: aggContent})
 
 		loadContent, err := EmitAggregateLoad(pkg, agg, model, tab, moduleName)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("aggregate_%s_load.go: %w", snake, err)
+			return nil, moduleMarks{}, fmt.Errorf("aggregate_%s_load.go: %w", snake, err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "aggregate_"+snake+"_load.go"), Content: loadContent})
 	}
@@ -322,7 +339,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if len(b.commands) > 0 {
 		content, err := EmitCommands(pkg, b.commands, model, tab, moduleName)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("commands.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("commands.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "commands.go"), Content: content})
 	}
@@ -338,7 +355,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		}
 		content, err := EmitUseCases(pkg, repaired, aggregates, model, tab, moduleName, reg)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("usecases.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("usecases.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "usecases.go"), Content: content})
 	}
@@ -346,7 +363,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if len(b.views) > 0 {
 		content, err := emitViews(pkg, b.views, model, tab, moduleName)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("views.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("views.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "views.go"), Content: content})
 	}
@@ -354,7 +371,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if len(b.queries) > 0 {
 		content, err := EmitQueries(pkg, b.queries, aggregates, model, tab, moduleName, reg)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("queries.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("queries.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "queries.go"), Content: content})
 	}
@@ -362,7 +379,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if len(b.projections) > 0 {
 		content, err := emitProjections(pkg, b.projections, model, tab, moduleName, reg)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("projections.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("projections.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "projections.go"), Content: content})
 	}
@@ -370,12 +387,20 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	if hasPolicies {
 		content, err := EmitPolicies(pkg, b.policies, model, tab, moduleName, reg)
 		if err != nil {
-			return nil, false, false, fmt.Errorf("policies.go: %w", err)
+			return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "policies.go"), Content: content})
 	}
 
-	return files, hasUseCases, hasPolicies, nil
+	if hasWorkers {
+		content, err := EmitWorkers(pkg, b.workers, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("workers.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "workers.go"), Content: content})
+	}
+
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -528,13 +553,16 @@ func defaultCmdDirName(modules []string) string {
 }
 
 // generateCmdMainFile emite cmd/<group.dirName>/main.go: importa runtime +
-// os pacotes de domínio dos módulos do grupo que declaram UseCase e/ou
-// Policy (modulesWithUseCases/modulesWithPolicies — só esses têm Wire, ver
-// decl_usecase.go/decl_policy.go), instancia o event store, a unit of work e
-// (só quando algum módulo do grupo tem Policy — F1) o dispatcher in-memory,
-// chama "<pkg>.Wire(...)" com os argumentos que a marca de cada módulo pede
-// (uow, dispatcher, ou os dois — nunca os dois no MESMO módulo hoje, ver a
-// doc de generateModuleFiles), e sobe um servidor HTTP na porta do setting
+// os pacotes de domínio dos módulos do grupo que declaram UseCase, Policy
+// e/ou Worker (modulesWithUseCases/modulesWithPolicies/modulesWithWorkers —
+// UseCase/Policy têm Wire, ver decl_usecase.go/decl_policy.go; Worker tem
+// StartWorkers, ver decl_worker.go), instancia o event store, a unit of work
+// e (só quando algum módulo do grupo tem Policy — F1) o dispatcher
+// in-memory, chama "<pkg>.Wire(...)" com os argumentos que a marca de cada
+// módulo pede (uow, dispatcher, ou os dois — nunca os dois no MESMO módulo
+// hoje, ver a doc de generateModuleFiles) e, à parte (nome próprio, nunca
+// dentro de Wire — ver a doc de decl_worker.go), "<pkg>.StartWorkers(ctx)"
+// para cada módulo com Worker, e sobe um servidor HTTP na porta do setting
 // "port:" da Interface HTTP do grupo (fallback 8080) cujo Handler é
 // newMux(store) — uma função de PACOTE separada (não inline em func main())
 // que constrói o *http.ServeMux e registra cada ast.Route dessa Interface
@@ -543,8 +571,8 @@ func defaultCmdDirName(modules []string) string {
 // exercitá-lo via httptest sem subir um socket de verdade — main() vira só o
 // glue de processo (wiring + ListenAndServe). Um grupo sem Interface HTTP
 // (findGroupInterface devolve nil) ainda sobe um servidor, só que com o mux
-// vazio (grupos só-worker, Marco F+).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies map[string]bool, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
+// vazio (grupos só-worker).
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers map[string]bool, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -556,24 +584,34 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		pkg         string
 		hasUseCases bool
 		hasPolicies bool
+		hasWorkers  bool
 	}
 	var wireTargets []wireTarget
 	needsDispatcher := false
 	anyUseCases := false
+	anyWorkers := false
 	for _, m := range group.modules {
-		hu, hp := modulesWithUseCases[m], modulesWithPolicies[m]
-		if !hu && !hp {
+		hu, hp, hw := modulesWithUseCases[m], modulesWithPolicies[m], modulesWithWorkers[m]
+		if !hu && !hp && !hw {
 			continue
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, hasUseCases: hu, hasPolicies: hp})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw})
 		if hp {
 			needsDispatcher = true
 		}
 		if hu {
 			anyUseCases = true
 		}
+		if hw {
+			anyWorkers = true
+		}
+	}
+
+	var ctxAlias string
+	if anyWorkers {
+		ctxAlias = e.Import("context")
 	}
 
 	iface := findGroupInterface(prog, group.modules)
@@ -588,9 +626,12 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		if needsDispatcher {
 			e.Line("dispatcher := %s.NewDispatcher()", runtimeAlias)
 		}
+		if anyWorkers {
+			e.Line("workerCtx := %s.Background()", ctxAlias)
+		}
 		e.Line("")
 		if len(wireTargets) == 0 {
-			e.Line("_ = uow // nenhum módulo deste service declara UseCase/Policy ainda")
+			e.Line("_ = uow // nenhum módulo deste service declara UseCase/Policy/Worker ainda")
 		} else {
 			for _, wt := range wireTargets {
 				var args []string
@@ -600,10 +641,15 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				if wt.hasPolicies {
 					args = append(args, "dispatcher")
 				}
-				e.Line("%s.Wire(%s)", wt.alias, strings.Join(args, ", "))
+				if wt.hasUseCases || wt.hasPolicies {
+					e.Line("%s.Wire(%s)", wt.alias, strings.Join(args, ", "))
+				}
+				if wt.hasWorkers {
+					e.Line("%s.StartWorkers(workerCtx)", wt.alias)
+				}
 			}
 			if !anyUseCases {
-				e.Line("_ = uow // nenhum módulo deste service declara UseCase (só Policy)")
+				e.Line("_ = uow // nenhum módulo deste service declara UseCase")
 			}
 		}
 		e.Line("")

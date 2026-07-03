@@ -323,29 +323,6 @@ func (p *parser) parseCommand() ast.Decl {
 	return ast.NewCommandDecl(name, fields, p.spanFrom(start))
 }
 
-// skipBraceBlock consome um bloco "{ ... }" balanceado sem interpretá-lo, usado
-// para blocos de configuração aninhados ainda não modelados (ex.: onError). A
-// modelagem completa de objetos aninhados chega na Fase 5.
-func (p *parser) skipBraceBlock() {
-	if !p.at(token.LBRACE) {
-		return
-	}
-	depth := 0
-	for !p.atEnd() {
-		switch p.cur().Kind {
-		case token.LBRACE:
-			depth++
-		case token.RBRACE:
-			depth--
-			if depth == 0 {
-				p.advance()
-				return
-			}
-		}
-		p.advance()
-	}
-}
-
 // parseWorker parseia "Worker Name { schedule/settings/scope/source/execute }" (§8).
 func (p *parser) parseWorker() ast.Decl {
 	start := p.cur().Pos
@@ -378,8 +355,13 @@ func (p *parser) parseWorker() ast.Decl {
 			p.advance()
 			settings = append(settings, ast.ConfigEntry{Key: "timeout", Value: p.parseExpr()})
 		case p.atIdentLit("onError"):
-			p.advance()
-			p.skipBraceBlock()
+			// "onError { retry: { attempts: 3, backoff: "exponential" } }" —
+			// mesma forma "Key { Object }" que parseConfigEntry (parse_config.go)
+			// já reconhece para sub-blocos sem dois-pontos (ex.: Telemetry.traces).
+			// Guardado em Settings como um ConfigEntry aninhado em vez de
+			// descartado: o gerador (codegen, Marco F2) precisa do retry/backoff
+			// declarado ali (REQ-23.3).
+			settings = append(settings, p.parseConfigEntry())
 		case p.atIdentLit("source"):
 			p.advance()
 			source = p.parseBlock()

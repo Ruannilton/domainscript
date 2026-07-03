@@ -353,7 +353,7 @@
   e compila.
   **Commit:** `feat(codegen): Policies e dispatcher`
 
-- [ ] **F2** `Worker`→job agendado por `WorkerDecl.Schedule` (`every`→ticker,
+- [x] **F2** `Worker`→job agendado por `WorkerDecl.Schedule` (`every`→ticker,
   `cron`→agenda do runtime, `continuous`→loop consumindo `Source`), com
   `concurrency`/`batchSize`/`maxRate` (de `Settings`), `ExecuteParam` como item da
   fonte, e `onError.retry`→backoff. _(REQ-23.2/23.3, §design 3.10)_ *(Fixture; sem

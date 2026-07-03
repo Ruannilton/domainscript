@@ -1,0 +1,304 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// worker.go.txt is the scheduling seam behind a generated Worker (Marco F2,
+// REQ-23.2/23.3, §design codegen 3.10): the mechanisms a Worker's schedule
+// (every/cron/continuous) and Settings (concurrency/batchSize/maxRate/
+// onError.retry) compile down to. The generated Worker function owns the
+// orchestration (which loop shape, when to call which of these) — this file
+// only provides the reusable, independently testable building blocks, the
+// same split as Dispatcher/Outbox (dispatcher.go.txt/outbox.go.txt) versus
+// the Policy handler that wires them.
+
+// --- Semaphore: bounds concurrent in-flight Worker executions. ---
+
+// Semaphore bounds how many goroutines run at once — the mechanism behind a
+// Worker's `concurrency` setting.
+type Semaphore struct {
+	slots chan struct{}
+}
+
+// NewSemaphore creates a Semaphore allowing up to n concurrent holders. n < 1
+// is clamped to 1: a Worker always processes at least one tick/item at a
+// time — concurrency 0 would make every Acquire block forever.
+func NewSemaphore(n int) *Semaphore {
+	if n < 1 {
+		n = 1
+	}
+	return &Semaphore{slots: make(chan struct{}, n)}
+}
+
+// Acquire blocks until a slot is free or ctx is done.
+func (s *Semaphore) Acquire(ctx context.Context) error {
+	select {
+	case s.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Release frees a slot acquired via Acquire.
+func (s *Semaphore) Release() {
+	<-s.slots
+}
+
+// --- RateLimiter: bounds how often a Worker pulls/processes work. ---
+
+// RateLimiter enforces a fixed minimum interval between successive Wait
+// calls — the mechanism behind a Worker's `maxRate` setting. It is
+// deliberately a simple fixed-interval limiter, not a token bucket with
+// burst capacity: the front-end grammar's `maxRate` (spec §8) is always a
+// plain count with no burst clause, so a bucket's extra complexity has
+// nothing to model yet.
+type RateLimiter struct {
+	interval time.Duration
+
+	mu   sync.Mutex
+	next time.Time
+}
+
+// NewRateLimiter creates a RateLimiter allowing at most perSecond calls to
+// Wait per second. perSecond <= 0 disables limiting (Wait always returns
+// immediately) — the case where a Worker has no `maxRate` setting.
+func NewRateLimiter(perSecond int64) *RateLimiter {
+	if perSecond <= 0 {
+		return &RateLimiter{}
+	}
+	return &RateLimiter{interval: time.Second / time.Duration(perSecond)}
+}
+
+// Wait blocks until it is that caller's turn under the configured rate, or
+// ctx is done.
+func (r *RateLimiter) Wait(ctx context.Context) error {
+	if r.interval <= 0 {
+		return nil
+	}
+
+	r.mu.Lock()
+	now := time.Now()
+	start := r.next
+	if start.Before(now) {
+		start = now
+	}
+	r.next = start.Add(r.interval)
+	r.mu.Unlock()
+
+	wait := time.Until(start)
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// --- RetryPolicy: onError.retry -> backoff. ---
+
+// BackoffKind selects how RetryPolicy.Run spaces out retries.
+type BackoffKind int
+
+const (
+	// BackoffFixed retries after the same delay every time. It is also the
+	// fallback for any `backoff` literal the front-end accepted (parser
+	// grammar, spec §8) that this runtime does not recognize — the most
+	// conservative choice, never a generation error over a program the
+	// front-end already validated.
+	BackoffFixed BackoffKind = iota
+	// BackoffExponential doubles the delay after every failed attempt (1x,
+	// 2x, 4x, ... the base delay).
+	BackoffExponential
+)
+
+// RetryPolicy is the mechanism behind a Worker's `onError { retry { attempts,
+// backoff } }` setting (REQ-23.3).
+type RetryPolicy struct {
+	// Attempts is the total number of tries (the first try plus retries).
+	// <= 1 means "try once, never retry" — the zero value, and the default
+	// for a Worker without an `onError` clause.
+	Attempts int
+	// Backoff selects the delay strategy between attempts.
+	Backoff BackoffKind
+	// BaseDelay is the delay unit Backoff scales from. <= 0 uses a
+	// reasonable default (100ms) — the front-end's `onError.retry` clause
+	// (spec §8) has no field for it today.
+	BaseDelay time.Duration
+}
+
+// Run calls fn, retrying according to p until it succeeds, ctx is done, or
+// attempts are exhausted — whichever comes first. Returns the last error
+// when every attempt fails (nil ctx.Err() takes precedence when ctx ends the
+// wait between attempts).
+func (p RetryPolicy) Run(ctx context.Context, fn func() error) error {
+	attempts := p.Attempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	base := p.BaseDelay
+	if base <= 0 {
+		base = 100 * time.Millisecond
+	}
+
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if i == attempts-1 {
+			break
+		}
+		delay := base
+		if p.Backoff == BackoffExponential {
+			delay = base * time.Duration(int64(1)<<uint(i))
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
+// --- Source: the pull seam a `continuous` Worker consumes from. ---
+
+// Source is what a `continuous` Worker's `source` block reads items from
+// (WorkerDecl.Source). Next returns the next available item; ok=false with a
+// nil error means "no item ready right now" — NOT an error — the generated
+// loop treats that as "idle, back off briefly and try again", never as a
+// fatal condition.
+type Source[T any] interface {
+	Next(ctx context.Context) (item T, ok bool, err error)
+}
+
+// SliceSource is an in-memory Source over a fixed slice, consumed once in
+// order, then ok=false forever. It is the default a generated `continuous`
+// Worker wires itself to (safe: it never panics, just idles) until something
+// replaces it with a real backing (a queue channel, Marco F5) — enough to
+// wire a `continuous` Worker in tests/fixtures today. Safe for concurrent
+// use.
+type SliceSource[T any] struct {
+	mu    sync.Mutex
+	items []T
+	pos   int
+}
+
+// NewSliceSource creates a SliceSource over items (not copied — do not
+// mutate items concurrently from outside once passed in).
+func NewSliceSource[T any](items []T) *SliceSource[T] {
+	return &SliceSource[T]{items: items}
+}
+
+// Next implements Source: returns items in order, then ok=false forever.
+func (s *SliceSource[T]) Next(ctx context.Context) (T, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var zero T
+	if s.pos >= len(s.items) {
+		return zero, false, nil
+	}
+	v := s.items[s.pos]
+	s.pos++
+	return v, true, nil
+}
+
+// --- Cron: a deliberately minimal 5-field schedule. ---
+//
+// ParseCron/CronSchedule cover exactly the `cron` schedule mode's spec
+// example (spec §8: `schedule cron "0 2 * * *"`) and nothing more: each of
+// the 5 standard fields (minute hour day-of-month month day-of-week) is
+// either "*" or a single non-negative integer literal — no lists ("1,2"),
+// ranges ("1-5") or steps ("*/5"). Extending this is future work for
+// whenever a real example needs one of those forms; anything outside this
+// scope is a clear parse error here, never silently ignored.
+
+// cronField is one of the 5 fields of a CronSchedule: either "any value"
+// (the "*" wildcard) or a single exact value.
+type cronField struct {
+	any bool
+	val int
+}
+
+func (f cronField) matches(v int) bool {
+	return f.any || f.val == v
+}
+
+func parseCronField(s, name string, min, max int) (cronField, error) {
+	if s == "*" {
+		return cronField{any: true}, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < min || n > max {
+		return cronField{}, fmt.Errorf("runtime: campo %s de cron inválido: %q (esperava \"*\" ou um inteiro entre %d e %d)", name, s, min, max)
+	}
+	return cronField{val: n}, nil
+}
+
+// CronSchedule is a parsed 5-field cron expression (see the scope note
+// above).
+type CronSchedule struct {
+	minute, hour, dom, month, dow cronField
+}
+
+// ParseCron parses a standard 5-field cron expression ("minute hour
+// day-of-month month day-of-week"), within the scope documented above.
+func ParseCron(spec string) (*CronSchedule, error) {
+	fields := strings.Fields(spec)
+	if len(fields) != 5 {
+		return nil, fmt.Errorf("runtime: expressão cron precisa de 5 campos (minuto hora dia mês dia-da-semana), veio %d: %q", len(fields), spec)
+	}
+	minute, err := parseCronField(fields[0], "minuto", 0, 59)
+	if err != nil {
+		return nil, err
+	}
+	hour, err := parseCronField(fields[1], "hora", 0, 23)
+	if err != nil {
+		return nil, err
+	}
+	dom, err := parseCronField(fields[2], "dia", 1, 31)
+	if err != nil {
+		return nil, err
+	}
+	month, err := parseCronField(fields[3], "mês", 1, 12)
+	if err != nil {
+		return nil, err
+	}
+	dow, err := parseCronField(fields[4], "dia-da-semana", 0, 6)
+	if err != nil {
+		return nil, err
+	}
+	return &CronSchedule{minute: minute, hour: hour, dom: dom, month: month, dow: dow}, nil
+}
+
+// Next returns the next minute-aligned time strictly after from that matches
+// the schedule, searching at most 4 years ahead — enough for any valid
+// 5-field spec; this bound only protects against looping forever on a
+// malformed one (e.g. a day-of-month/month combination that never occurs).
+func (c *CronSchedule) Next(from time.Time) time.Time {
+	t := from.Truncate(time.Minute).Add(time.Minute)
+	limit := from.AddDate(4, 0, 0)
+	for t.Before(limit) {
+		if c.minute.matches(t.Minute()) && c.hour.matches(t.Hour()) &&
+			c.dom.matches(t.Day()) && c.month.matches(int(t.Month())) &&
+			c.dow.matches(int(t.Weekday())) {
+			return t
+		}
+		t = t.Add(time.Minute)
+	}
+	return limit
+}

@@ -19,6 +19,7 @@ func TestWorkerEvery(t *testing.T) {
 	got := sdecl(parseDeclOK(t, src))
 	want := "(Worker ProcessExpiredReservations sched=every/1min" +
 		" set[concurrency=1] set[timeout=5min]" +
+		` set[onError={retry:{attempts:3 backoff:"exponential"}}]` +
 		` exec()(block (call (. order Cancel) "Reserva expirada")))`
 	if got != want {
 		t.Errorf("=> %s\nquero %s", got, want)

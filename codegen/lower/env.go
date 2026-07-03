@@ -231,6 +231,21 @@ func (env *TypeEnv) SeedQuery(params []*ast.Field) {
 	env.bindParams(params)
 }
 
+// SeedWorkerExecute semeia o escopo raiz do execute de um Worker
+// (constructWorkerExecute, Marco F2): paramName (WorkerDecl.ExecuteParam) é
+// vinculado a itemType — o tipo do item da fonte (schedule continuous,
+// calculado pelo chamador a partir de Source, ver codegen/decl_worker.go).
+// paramName == "" (every/cron, que não têm ExecuteParam) é um no-op. Worker
+// não tem "caller"/"self" semeados — resolver/receivers.go não lista nenhum
+// receptor contextual para constructWorkerSource/constructWorkerExecute (a
+// mesma ausência documentada em env.go para os demais construtos).
+func (env *TypeEnv) SeedWorkerExecute(paramName string, itemType types.Type) {
+	if paramName == "" {
+		return
+	}
+	env.seedIfKnown(paramName, itemType)
+}
+
 // --- Núcleo: extensão de inferência para locais que types.Model.Infer não cobre. ---
 
 // InferAssignRHS infere o tipo do lado direito de um AssignStmt de alvo nu
