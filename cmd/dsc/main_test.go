@@ -99,23 +99,28 @@ func TestRunGenRefusesInvalidProject(t *testing.T) {
 	}
 }
 
-// A geração em si ainda não está implementada (scaffold do Marco E): um
-// projeto válido é aceito na pré-condição mas a CLI sinaliza a limitação com
-// código 2, sem imprimir diagnósticos (não há nenhum).
-func TestRunGenValidProjectNotImplemented(t *testing.T) {
+// REQ-32.1/32.2: "dsc gen" sobre um projeto válido gera de fato — sai com
+// código 0, sem relatório de diagnósticos (não há nenhum), e escreve o
+// projeto Go completo (go.mod, runtime/ vendorado, um pacote por módulo) em
+// -o.
+func TestRunGenValidProjectWritesFiles(t *testing.T) {
 	dir := t.TempDir()
-	write(t, dir, "domain.ds", `ValueObject Email(string) { Valid { ok } }`)
+	write(t, dir, "moda/mod.ds", `Module Moda { }`)
+	write(t, dir, "moda/domain.ds", `ValueObject Email(string) { Valid { ok } }`)
 
+	out := filepath.Join(t.TempDir(), "gen")
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"gen", dir, "-o", filepath.Join(t.TempDir(), "gen")}, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("exit = %d, quero 2; stdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	code := run([]string{"gen", dir, "-o", out}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, quero 0; stdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 	if stdout.String() != "" {
 		t.Fatalf("não esperava relatório de diagnósticos:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "ainda não implementada") {
-		t.Fatalf("esperava mensagem de limitação em stderr:\n%s", stderr.String())
+	for _, rel := range []string{"go.mod", "runtime/eventstore.go", "moda/value_objects.go"} {
+		if _, err := os.Stat(filepath.Join(out, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("esperava %q em %s, não achei: %v", rel, out, err)
+		}
 	}
 }
 

@@ -323,7 +323,7 @@
 
 ### Fase E10 — CLI e fechamento do Marco E
 
-- [ ] **E10.1** `dsc gen <dir> -o <out>` completo + escrita **idempotente** da saída
+- [x] **E10.1** `dsc gen <dir> -o <out>` completo + escrita **idempotente** da saída
   (mesma entrada → mesmos bytes; remove artefatos órfãos de declarações removidas).
   _(REQ-32.1/32.2/32.3, §design 3.15/4.1)_ **Depende:** E9.
   **Commit:** `feat(cli): subcomando gen`

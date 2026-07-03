@@ -71,10 +71,15 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	return report(bag, stdout)
 }
 
-// runGen valida o projeto em <diretório> e, se válido, geraria o projeto Go em
-// -o <saída> (REQ-14.1, REQ-32.2). A geração em si (codegen.Generate e a
-// escrita dos arquivos) chega em fases posteriores deste ciclo — por ora o
-// subcomando confirma a pré-condição e recusa programas com erro, sem gerar.
+// runGen valida o projeto em <diretório> e, se válido, gera o projeto Go
+// completo em -o <saída>, escrevendo de forma idempotente e limpando
+// artefatos órfãos de declarações removidas (REQ-14.1, REQ-32, §design
+// 3.15/4.1 — driver.GenerateProject faz o trabalho de fato). Programas com
+// erro são recusados: report(bag) já devolve 1 (bag.HasErrors()) antes de
+// qualquer escrita em disco. Um erro que não vem de diagnósticos (ex.: falha
+// de IO ao escrever out) sai com código 2, no mesmo espírito de
+// runCheck/parseGenArgs para erros que não são do domínio do programa
+// analisado.
 func runGen(args []string, stdout, stderr io.Writer) int {
 	dir, out, ok := parseGenArgs(args)
 	if !ok {

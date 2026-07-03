@@ -23,13 +23,6 @@ import (
 // de severidade error: o gerador recusa produzir código (REQ-14.1).
 var ErrHasDiagnostics = errors.New("codegen: programa com diagnósticos de erro, geração recusada")
 
-// ErrNotImplemented sinaliza que a geração de código ainda não está
-// implementada. Era o estado do scaffold do Marco E antes de Generate ganhar
-// corpo (E9.1); mantido só como sinalizador residual para quem ainda o
-// referencia (driver.GenerateProject, E10.1) — Generate em si nunca o
-// devolve mais.
-var ErrNotImplemented = errors.New("codegen: geração de código ainda não implementada")
-
 // Options configura a geração de um projeto Go (REQ-14.5, REQ-15).
 type Options struct {
 	// ModulePath é o caminho do módulo Go gerado (1ª linha do go.mod). Vazio
