@@ -310,7 +310,7 @@
   REQ-26.4, §design 3.4/3.11/3.12)_
   **Commit:** `feat(codegen): layout de projeto, go.mod e wiring in-memory`
 
-- [ ] **E9.2** HTTP `net/http`: cada `ast.Route` → `mux.HandleFunc("METHOD /path/
+- [x] **E9.2** HTTP `net/http`: cada `ast.Route` → `mux.HandleFunc("METHOD /path/
   {param}", …)` (ServeMux de Go 1.22+); handler decodifica path/query/body, popula um
   **caller de dev** a partir do header `X-Caller-Id` (placeholder até auth real), chama
   o UseCase/Query e mapeia o resultado a status **por `errors.As(&BusinessError)`**

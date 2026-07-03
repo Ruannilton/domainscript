@@ -1,0 +1,175 @@
+package main
+
+import (
+	runtime "domainscript/generated/runtime"
+	wallet "domainscript/generated/wallet"
+	json "encoding/json"
+	errors "errors"
+	fmt "fmt"
+	log "log"
+	http "net/http"
+)
+
+// main é o ponto de entrada do service "wallet" — wiring in-memory a partir de
+// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada
+// geração, não editar à mão.
+func main() {
+	store := runtime.NewMemoryEventStore()
+	uow := runtime.NewUnitOfWork(store)
+
+	wallet.Wire(uow)
+
+	port := "8080"
+	server := &http.Server{Addr: fmt.Sprintf(":%s", port), Handler: newMux(store)}
+	log.Fatal(server.ListenAndServe())
+}
+
+// newMux constrói o *http.ServeMux do service "wallet", registrando cada rota de
+// Interface HTTP (§design 3.12) — função à parte de main() (ver a doc acima)
+// para poder ser exercitada por teste via httptest, sem subir um socket real.
+func newMux(store runtime.EventStore) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /wallets/{id}/deposit", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		var cmd wallet.Deposit
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+				http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+				return
+			}
+		}
+		idVal, err := wallet.NewWalletId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		cmd.WalletId = idVal
+		if err := wallet.PerformDeposit(ctx, cmd); err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /wallets/{id}/withdraw", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		var cmd wallet.Withdraw
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+				http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+				return
+			}
+		}
+		idVal, err := wallet.NewWalletId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		cmd.WalletId = idVal
+		if err := wallet.PerformWithdrawal(ctx, cmd); err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /wallets/{id}", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		idVal, err := wallet.NewWalletId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		result, err := wallet.GetWallet(ctx, store, idVal)
+		if err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
+		}
+	})
+	mux.HandleFunc("GET /wallets/{id}/entries", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		idVal, err := wallet.NewWalletId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		result, err := wallet.ListEntries(ctx, store, idVal)
+		if err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
+		}
+	})
+	return mux
+}
+
+// devCallerFromRequest constrói um runtime.Caller de DESENVOLVIMENTO a partir
+// do header "X-Caller-Id" (§design 3.12): presente e não-vazio ->
+// Authenticated()==true, ID()==valor do header; ausente -> Authenticated()==
+// false, ID()=="". Placeholder até a borda de auth real chegar; HasRole
+// sempre devolve false.
+func devCallerFromRequest(r *http.Request) runtime.Caller {
+	id := r.Header.Get("X-Caller-Id")
+	return devCaller{authenticated: id != "", id: id}
+}
+
+// devCaller implementa runtime.Caller para o caller de dev acima.
+type devCaller struct {
+	authenticated bool
+	id            string
+}
+
+func (c devCaller) Authenticated() bool {
+	return c.authenticated
+}
+
+func (c devCaller) ID() string {
+	return c.id
+}
+
+func (c devCaller) HasRole(role string) bool {
+	return false
+}
+
+// writeBusinessError mapeia err a um status HTTP (§design 3.12, REQ-28.2):
+// distingue por errors.As(&runtime.BusinessError) — negócio -> 422, exceto
+// runtime.ErrForbidden (403) e runtime.ErrNotFound (404); qualquer outro
+// error (infra) -> 503. Rate-limit (429), tenant ausente (400) e sunset
+// (410) são marcos posteriores (G4/G5/G6) — deliberadamente não tratados
+// aqui, para não travar a extensão futura com suposições erradas.
+func writeBusinessError(w http.ResponseWriter, err error) {
+	var be runtime.BusinessError
+	if errors.As(err, &be) {
+		switch {
+		case errors.Is(err, runtime.ErrForbidden):
+			http.Error(w, be.Msg, http.StatusForbidden)
+		case errors.Is(err, runtime.ErrNotFound):
+			http.Error(w, be.Msg, http.StatusNotFound)
+		default:
+			http.Error(w, be.Msg, http.StatusUnprocessableEntity)
+		}
+		return
+	}
+	http.Error(w, "internal error", http.StatusServiceUnavailable)
+}

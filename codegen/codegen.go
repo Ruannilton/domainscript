@@ -107,9 +107,11 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 
 	var allPublicEvents []*ast.EventDecl
 	modulesWithUseCases := make(map[string]bool, len(moduleNames))
+	buckets := make(map[string]moduleBucket, len(moduleNames))
 
 	for _, name := range moduleNames {
 		b := bucketModuleDecls(prog, name)
+		buckets[name] = b
 		modFiles, hasUseCases, err := generateModuleFiles(b, name, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: módulo %s: %w", name, err)
@@ -128,7 +130,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range buildCmdGroups(prog) {
-		f, err := generateCmdMainFile(prog, group, modulesWithUseCases)
+		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -496,10 +498,17 @@ func defaultCmdDirName(modules []string) string {
 // os pacotes de domínio dos módulos do grupo que declaram UseCase
 // (modulesWithUseCases — só esses têm Wire, ver decl_usecase.go),
 // instancia o event store e a unit of work in-memory, chama "<pkg>.Wire(uow)"
-// para cada um, e um esqueleto de servidor HTTP na porta do setting "port:"
-// da Interface HTTP do grupo (fallback 8080) — SEM registrar rotas ainda
-// (E9.2, §design 3.12).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases map[string]bool) (File, error) {
+// para cada um, e sobe um servidor HTTP na porta do setting "port:" da
+// Interface HTTP do grupo (fallback 8080) cujo Handler é newMux(store) — uma
+// função de PACOTE separada (não inline em func main()) que constrói o
+// *http.ServeMux e registra cada ast.Route dessa Interface (emitHTTPRoutes,
+// http.go, E9.2, §design 3.12). newMux existir à parte de main() é
+// deliberado: deixa um teste gerado (E10.2+) construir o mux e exercitá-lo
+// via httptest sem subir um socket de verdade — main() vira só o glue de
+// processo (wiring + ListenAndServe). Um grupo sem Interface HTTP
+// (findGroupInterface devolve nil) ainda sobe um servidor, só que com o mux
+// vazio (grupos só-worker, Marco F+).
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases map[string]bool, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -520,7 +529,8 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg})
 	}
 
-	port := httpPortGo(findGroupInterface(prog, group.modules))
+	iface := findGroupInterface(prog, group.modules)
+	port := httpPortGo(iface)
 
 	e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
 	e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
@@ -538,10 +548,30 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 		e.Line("")
 		e.Line("port := %s", port)
-		e.Line("server := &%s.Server{Addr: %s.Sprintf(\":%%s\", port)}", httpAlias, fmtAlias)
-		e.Line("// TODO(E9.2): registrar rotas HTTP (net/http.ServeMux) a partir de interface.ds.")
+		e.Line("server := &%s.Server{Addr: %s.Sprintf(\":%%s\", port), Handler: newMux(store)}", httpAlias, fmtAlias)
 		e.Line("%s.Fatal(server.ListenAndServe())", logAlias)
 	})
+
+	e.Line("")
+	e.Line("// newMux constrói o *http.ServeMux do service %q, registrando cada rota de", group.dirName)
+	e.Line("// Interface HTTP (§design 3.12) — função à parte de main() (ver a doc acima)")
+	e.Line("// para poder ser exercitada por teste via httptest, sem subir um socket real.")
+	var bodyErr error
+	var hadRoutes bool
+	e.Block(fmt.Sprintf("func newMux(store %s.EventStore) *%s.ServeMux", runtimeAlias, httpAlias), func() {
+		e.Line("mux := %s.NewServeMux()", httpAlias)
+		hadRoutes, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab)
+		if bodyErr != nil {
+			return
+		}
+		e.Line("return mux")
+	})
+	if bodyErr != nil {
+		return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, bodyErr)
+	}
+	if hadRoutes {
+		emitHTTPHelpers(e, runtimeAlias)
+	}
 
 	content, err := e.Bytes()
 	if err != nil {
