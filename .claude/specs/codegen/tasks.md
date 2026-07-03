@@ -328,7 +328,7 @@
   _(REQ-32.1/32.2/32.3, §design 3.15/4.1)_ **Depende:** E9.
   **Commit:** `feat(cli): subcomando gen`
 
-- [ ] **E10.2** Smoke end-to-end do wallet: gerar, `go build ./...`, `go vet ./...` e
+- [x] **E10.2** Smoke end-to-end do wallet: gerar, `go build ./...`, `go vet ./...` e
   um **teste comportamental in-memory** verdes (sem subir socket) — semeia estado via
   eventos `given` (evento isolado) ou construção completa (fluxo), executa um UseCase e
   confere o evento emitido; **`go.mod` gerado sem `require` externo**. Regen
