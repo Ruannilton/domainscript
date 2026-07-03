@@ -17,12 +17,24 @@ import (
 // parte (§3.3). Subárvores de erro são puladas, preservando REQ-4.5 (REQ-9.6).
 
 // builtinValues são identificadores nus aceitos em posição de valor sem
-// declaração: o no-op `Nop` (ação sem efeito, §3.1) e o wildcard `_`. Booleanos
-// (true/false) e controles de laço (break/continue) são nós próprios, não Idents,
-// e não passam por aqui.
+// declaração: o no-op `Nop` (ação sem efeito, §3.1), o wildcard `_` e o
+// sentinela `unrecoverable` de um passo de Saga (`down { unrecoverable }`,
+// §18.2/REQ-24.2 — marca compensação impossível; o parser aceita o bloco
+// como um Block de 1 statement comum, um Ident nu, ver
+// parser/parse_saga_test.go; codegen/decl_saga.go reconhece essa forma
+// exata, isUnrecoverableDown). Booleanos (true/false) e controles de laço
+// (break/continue) são nós próprios, não Idents, e não passam por aqui.
+//
+// Como resolveIdent (abaixo) não carrega o construto sendo resolvido,
+// `unrecoverable` é aceito em QUALQUER posição de valor, não só dentro de
+// `down` — o mesmo raciocínio já vale para `Nop` hoje (só é significativo
+// dentro de um `for`, mas o front-end aceita a resolução do NOME em
+// qualquer lugar; a validade posicional de `Nop` é responsabilidade de uma
+// regra semântica à parte, sema/rules_flow.go, não da resolução de nomes).
 var builtinValues = map[string]bool{
-	"Nop": true,
-	"_":   true,
+	"Nop":           true,
+	"_":             true,
+	"unrecoverable": true,
 }
 
 // resolveBodies executa a passagem de resolução de corpos sobre todas as unidades

@@ -183,17 +183,18 @@ type moduleBucket struct {
 	projections []*ast.ProjectionDecl
 	policies    []*ast.PolicyDecl
 	workers     []*ast.WorkerDecl
+	sagas       []*ast.SagaDecl
 }
 
 // bucketModuleDecls percorre os arquivos de moduleName (prog.Files filtrados
 // por prog.ModuleOf, ORDENADOS por path — NFR-13) e roteia cada Decl por
 // tipo concreto. *ast.ModuleDecl/*ast.InterfaceDecl/*ast.TopologyDecl/
 // *ast.UpcastDecl e os construtos de Marco F+ que AINDA não têm emissor
-// (Saga/Notification/Adapter/Foreign/Metric — Policy ganhou o dela em F1,
-// Worker em F2) não são emitidos por este orquestrador (wiring/borda tratados
-// à parte) — caem no default, ignorados silenciosamente, junto de qualquer nó
-// de erro (rede de segurança defensiva sobre um programa já validado sem
-// erros, REQ-14.4).
+// (Notification/Adapter/Foreign/Metric — Policy ganhou o dela em F1, Worker
+// em F2, Saga em F3) não são emitidos por este orquestrador (wiring/borda
+// tratados à parte) — caem no default, ignorados silenciosamente, junto de
+// qualquer nó de erro (rede de segurança defensiva sobre um programa já
+// validado sem erros, REQ-14.4).
 func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 	var paths []string
 	for p := range prog.Files {
@@ -235,6 +236,8 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 				b.policies = append(b.policies, n)
 			case *ast.WorkerDecl:
 				b.workers = append(b.workers, n)
+			case *ast.SagaDecl:
+				b.sagas = append(b.sagas, n)
 			}
 		}
 	}
@@ -398,6 +401,19 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 			return nil, moduleMarks{}, fmt.Errorf("workers.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "workers.go"), Content: content})
+	}
+
+	if len(b.sagas) > 0 {
+		// Sagas não somam a moduleMarks/wireTargets (generateCmdMainFile): ao
+		// contrário de UseCase/Policy/Worker, uma Saga não precisa de nenhum
+		// ponto de entrada injetado por cmd/<service>/main.go — sua função de
+		// entrada é diretamente chamável e seu SagaStore (mode async) é uma var
+		// de pacote auto-inicializada (ver a doc de decl_saga.go).
+		content, err := EmitSagas(pkg, b.sagas, model, tab, moduleName, reg)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("sagas.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "sagas.go"), Content: content})
 	}
 
 	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers}, nil

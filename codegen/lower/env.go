@@ -246,6 +246,29 @@ func (env *TypeEnv) SeedWorkerExecute(paramName string, itemType types.Type) {
 	env.seedIfKnown(paramName, itemType)
 }
 
+// SeedSagaStep semeia o escopo raiz de um passo de Saga (constructSagaStep,
+// Marco F3): state resolve a um *types.ShapeType PRÓPRIO — não
+// types.Model.TypeOf(sagaSymbol), que devolve, para uma Saga, um ShapeType
+// SEM Fields (types/model.go, ramo default: "UseCase/Policy/Saga/Worker/...
+// não têm forma de campos própria relevante à checagem de membro" — REQ-12
+// não cobre Saga hoje, ver sema/rules_typecheck.go:checkDeclMembers, que só
+// lista Aggregate/ValueObject/Query/UseCase/Policy). O lowering (member(),
+// expr.go) só precisa que "state" resolva a ALGUM *types.ShapeType para gerar
+// "state.<Campo>" — member() nunca consulta t.Fields para validar o nome (só
+// o Kind do receptor decide a forma: campo exportado para ShapeType/VOType) —
+// então construir um ShapeType com os Fields de sagaState (ast.SagaDecl.State)
+// aqui é suficiente e mais preciso que reusar o ShapeType vazio do Model.
+func (env *TypeEnv) SeedSagaStep(sagaName string, sagaState []*ast.Field) {
+	sh := &types.ShapeType{Name: sagaName + "State", Kind: symbols.KindSaga}
+	for _, f := range sagaState {
+		if f == nil || f.Name == "" {
+			continue
+		}
+		sh.Fields = append(sh.Fields, types.Field{Name: f.Name, Type: env.model.TypeOfRef(env.module, f.Type)})
+	}
+	env.Bind("state", sh)
+}
+
 // --- Núcleo: extensão de inferência para locais que types.Model.Infer não cobre. ---
 
 // InferAssignRHS infere o tipo do lado direito de um AssignStmt de alvo nu

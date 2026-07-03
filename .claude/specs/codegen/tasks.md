@@ -360,7 +360,7 @@
   Worker no shop mínimo.)*
   **Commit:** `feat(codegen): Workers`
 
-- [ ] **F3** `Saga`→state machine com `state` e `Steps` (`up`/`down`/`onInfraError`);
+- [x] **F3** `Saga`→state machine com `state` e `Steps` (`up`/`down`/`onInfraError`);
   falha após N steps → `down` em ordem reversa (respeitando `down { unrecoverable }`);
   `async`→`sagaId`+`SagaStatus`, `await`→bloqueante com `timeout`. Steps semeiam
   `state`. _(REQ-24, §design 3.10)_

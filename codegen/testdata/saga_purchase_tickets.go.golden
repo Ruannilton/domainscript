@@ -1,0 +1,95 @@
+package tickets
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	slog "log/slog"
+	time "time"
+)
+
+// PurchaseTicketsState é o state da Saga PurchaseTickets (§18.2) — os campos que os passos
+// semeiam conforme executam (Up escreve em state.<Campo>; ver a doc do
+// arquivo sobre por que o Command não é visível diretamente dentro de um
+// passo).
+type PurchaseTicketsState struct {
+	OrderId         OrderId                      `json:"orderId"`
+	TicketIds       runtime.AppendList[TicketId] `json:"ticketIds"`
+	PaymentId       PaymentId                    `json:"paymentId"`
+	CompensationLog runtime.AppendList[string]   `json:"compensationLog"`
+}
+
+func purchaseTicketsReserveTicketsUp(ctx context.Context, state *PurchaseTicketsState) error {
+	state.TicketIds.Add(TicketId("T1"))
+	state.TicketIds.Add(TicketId("T2"))
+	return nil
+}
+
+func purchaseTicketsReserveTicketsDown(ctx context.Context, state *PurchaseTicketsState) error {
+	state.CompensationLog.Add("ReserveTickets")
+	return nil
+}
+
+func purchaseTicketsProcessPaymentUp(ctx context.Context, state *PurchaseTicketsState) error {
+	state.PaymentId = PaymentId("PAY-1")
+	return nil
+}
+
+func purchaseTicketsProcessPaymentDown(ctx context.Context, state *PurchaseTicketsState) error {
+	state.CompensationLog.Add("ProcessPayment")
+	return nil
+}
+
+func purchaseTicketsProcessPaymentOnInfraError(ctx context.Context, state *PurchaseTicketsState) error {
+	slog.Warn("infra ao processar pagamento")
+	return nil
+}
+
+func purchaseTicketsConfirmPurchaseUp(ctx context.Context, state *PurchaseTicketsState) error {
+	return nil
+}
+
+func purchaseTicketsNotifyCustomerUp(ctx context.Context, state *PurchaseTicketsState) error {
+	if !(state.OrderId != OrderId("FAIL-TRIGGER")) {
+		return ErrNotificationFailed
+	}
+	return nil
+}
+
+// purchaseTicketsSteps é a lista de passos da Saga, na ordem declarada (§18.2) —
+// runtime.RunSaga roda Up em ordem e, numa falha, compensa (Down) os passos
+// já completados em ordem REVERSA, respeitando Unrecoverable (REQ-24.2).
+var purchaseTicketsSteps = []runtime.Step[PurchaseTicketsState]{
+	{Name: "ReserveTickets", Up: purchaseTicketsReserveTicketsUp, Down: purchaseTicketsReserveTicketsDown, OnInfraError: nil, Unrecoverable: false},
+	{Name: "ProcessPayment", Up: purchaseTicketsProcessPaymentUp, Down: purchaseTicketsProcessPaymentDown, OnInfraError: purchaseTicketsProcessPaymentOnInfraError, Unrecoverable: false},
+	{Name: "ConfirmPurchase", Up: purchaseTicketsConfirmPurchaseUp, Down: nil, OnInfraError: nil, Unrecoverable: true},
+	{Name: "NotifyCustomer", Up: purchaseTicketsNotifyCustomerUp, Down: nil, OnInfraError: nil, Unrecoverable: false},
+}
+
+// purchaseTicketsRunSteps executa os passos da Saga uma vez sobre state (§18.2): Up em
+// ordem; numa falha, Down dos passos já completados em ordem reversa
+// (runtime.RunSaga, REQ-24.2).
+func purchaseTicketsRunSteps(ctx context.Context, state *PurchaseTicketsState) runtime.SagaResult {
+	return runtime.RunSaga(ctx, state, purchaseTicketsSteps)
+}
+
+// PurchaseTickets é a Saga PurchaseTickets (§18.2, mode await): roda os passos numa goroutine à
+// parte e bloqueia até terminar ou o timeout expirar (REQ-24.3);
+// state.<Campo> é semeado a partir dos campos de mesmo nome de PurchaseTicketsCmd antes
+// do 1º passo (ver a doc do arquivo sobre o receptor "state").
+func PurchaseTickets(ctx context.Context, cmd PurchaseTicketsCmd) (*PurchaseTicketsState, error) {
+	state := &PurchaseTicketsState{}
+	state.OrderId = cmd.OrderId
+	done := make(chan runtime.SagaResult, 1)
+	go func() {
+		done <- purchaseTicketsRunSteps(context.Background(), state)
+	}()
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, time.Duration(2000000000))
+	defer cancel()
+	select {
+	case res := <-done:
+		return state, res.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}

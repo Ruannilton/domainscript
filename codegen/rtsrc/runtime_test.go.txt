@@ -697,3 +697,154 @@ func TestCronScheduleNextSameDayWhenTimeStillAhead(t *testing.T) {
 		t.Fatalf("Next(%v) = %v, want %v", from, next, want)
 	}
 }
+
+// --- Saga seam (Marco F3): Step/RunSaga/SagaStore. ---
+
+func TestRunSagaAllStepsSucceedRecordsCompletedNoCompensation(t *testing.T) {
+	var log []string
+	steps := []Step[int]{
+		{Name: "A", Up: func(ctx context.Context, s *int) error { log = append(log, "A.up"); return nil }},
+		{Name: "B", Up: func(ctx context.Context, s *int) error { log = append(log, "B.up"); return nil }},
+	}
+	state := 0
+	res := RunSaga(context.Background(), &state, steps)
+	if !res.Ok() {
+		t.Fatalf("esperava sucesso, got Err=%v", res.Err)
+	}
+	if len(res.Completed) != 2 || res.Completed[0] != "A" || res.Completed[1] != "B" {
+		t.Fatalf("Completed = %v, want [A B]", res.Completed)
+	}
+	if len(res.Compensated) != 0 || len(res.Unrecoverable) != 0 {
+		t.Fatalf("não esperava compensação sobre sucesso total: %+v", res)
+	}
+}
+
+func TestRunSagaFailureCompensatesCompletedStepsInReverseOrder(t *testing.T) {
+	var log []string
+	sentinel := errors.New("falha de negócio")
+	steps := []Step[int]{
+		{Name: "ReserveTickets", Up: func(ctx context.Context, s *int) error { log = append(log, "reserve.up"); return nil },
+			Down: func(ctx context.Context, s *int) error { log = append(log, "reserve.down"); return nil }},
+		{Name: "ProcessPayment", Up: func(ctx context.Context, s *int) error { log = append(log, "payment.up"); return nil },
+			Down: func(ctx context.Context, s *int) error { log = append(log, "payment.down"); return nil }},
+		{Name: "ConfirmPurchase", Up: func(ctx context.Context, s *int) error { return sentinel }},
+	}
+	state := 0
+	res := RunSaga(context.Background(), &state, steps)
+
+	if res.Ok() {
+		t.Fatal("esperava falha")
+	}
+	if !errors.Is(res.Err, sentinel) {
+		t.Fatalf("esperava propagar o erro do step, got %v", res.Err)
+	}
+	wantCompensated := []string{"ProcessPayment", "ReserveTickets"}
+	if len(res.Compensated) != len(wantCompensated) || res.Compensated[0] != wantCompensated[0] || res.Compensated[1] != wantCompensated[1] {
+		t.Fatalf("Compensated = %v, want %v (ordem REVERSA)", res.Compensated, wantCompensated)
+	}
+	wantLog := []string{"reserve.up", "payment.up", "payment.down", "reserve.down"}
+	if len(log) != len(wantLog) {
+		t.Fatalf("log = %v, want %v", log, wantLog)
+	}
+	for i := range wantLog {
+		if log[i] != wantLog[i] {
+			t.Fatalf("log[%d] = %q, want %q (log completo: %v)", i, log[i], wantLog[i], log)
+		}
+	}
+}
+
+func TestRunSagaUnrecoverableStepSkipsDownButKeepsCompensatingEarlierSteps(t *testing.T) {
+	var log []string
+	sentinel := errors.New("falha")
+	steps := []Step[int]{
+		{Name: "ReserveTickets", Up: func(ctx context.Context, s *int) error { return nil },
+			Down: func(ctx context.Context, s *int) error { log = append(log, "reserve.down"); return nil }},
+		{Name: "ConfirmPurchase", Up: func(ctx context.Context, s *int) error { return nil },
+			Unrecoverable: true}, // down { unrecoverable } -> Down nil
+		{Name: "NotifyCustomer", Up: func(ctx context.Context, s *int) error { return sentinel }},
+	}
+	state := 0
+	res := RunSaga(context.Background(), &state, steps)
+
+	if res.FullyCompensated() {
+		t.Fatal("não esperava FullyCompensated com um step Unrecoverable no caminho")
+	}
+	if len(res.Unrecoverable) != 1 || res.Unrecoverable[0] != "ConfirmPurchase" {
+		t.Fatalf("Unrecoverable = %v, want [ConfirmPurchase]", res.Unrecoverable)
+	}
+	if len(res.Compensated) != 1 || res.Compensated[0] != "ReserveTickets" {
+		t.Fatalf("Compensated = %v, want [ReserveTickets] (compensação continua ANTES do step unrecoverable)", res.Compensated)
+	}
+	if len(log) != 1 || log[0] != "reserve.down" {
+		t.Fatalf("log = %v, want [reserve.down] (nada chamado para o step unrecoverable)", log)
+	}
+	if res.FinalState() != SagaFailed {
+		t.Fatalf("FinalState() = %v, want SagaFailed (compensação incompleta)", res.FinalState())
+	}
+}
+
+func TestRunSagaInfraErrorRunsOnInfraErrorHookButBusinessErrorDoesNot(t *testing.T) {
+	infraErr := errors.New("timeout de infraestrutura")
+	hookCalled := false
+	steps := []Step[int]{
+		{Name: "X", Up: func(ctx context.Context, s *int) error { return infraErr },
+			OnInfraError: func(ctx context.Context, s *int) error { hookCalled = true; return nil }},
+	}
+	res := RunSaga(context.Background(), new(int), steps)
+	if !hookCalled {
+		t.Fatal("esperava que OnInfraError rodasse para um erro que não é BusinessError")
+	}
+	if !errors.Is(res.Err, infraErr) {
+		t.Fatalf("esperava propagar o erro de infra mesmo após o hook, got %v", res.Err)
+	}
+
+	hookCalled = false
+	bizErr := BusinessError{Code: "PaymentDeclined", Msg: "pagamento recusado"}
+	steps = []Step[int]{
+		{Name: "Y", Up: func(ctx context.Context, s *int) error { return bizErr },
+			OnInfraError: func(ctx context.Context, s *int) error { hookCalled = true; return nil }},
+	}
+	res = RunSaga(context.Background(), new(int), steps)
+	if hookCalled {
+		t.Fatal("NÃO esperava que OnInfraError rodasse para um BusinessError")
+	}
+	if !errors.Is(res.Err, bizErr) {
+		t.Fatalf("esperava propagar o BusinessError, got %v", res.Err)
+	}
+}
+
+func TestSagaResultFinalStateMapping(t *testing.T) {
+	if got := (SagaResult{}).FinalState(); got != SagaCompleted {
+		t.Fatalf("sucesso total: FinalState() = %v, want SagaCompleted", got)
+	}
+	if got := (SagaResult{Err: errors.New("x")}).FinalState(); got != SagaCompensated {
+		t.Fatalf("falha totalmente compensada: FinalState() = %v, want SagaCompensated", got)
+	}
+	if got := (SagaResult{Err: errors.New("x"), Unrecoverable: []string{"A"}}).FinalState(); got != SagaFailed {
+		t.Fatalf("falha com step unrecoverable: FinalState() = %v, want SagaFailed", got)
+	}
+}
+
+func TestMemorySagaStoreGetPut(t *testing.T) {
+	store := NewMemorySagaStore()
+	ctx := context.Background()
+
+	if _, found, err := store.Get(ctx, "saga-1"); err != nil || found {
+		t.Fatalf("esperava found=false para sagaId ausente, got found=%v err=%v", found, err)
+	}
+	if err := store.Put(ctx, SagaStatus{ID: "saga-1", State: SagaRunning}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := store.Get(ctx, "saga-1")
+	if err != nil || !found || got.State != SagaRunning {
+		t.Fatalf("Get = (%+v, %v, %v), want State=SagaRunning", got, found, err)
+	}
+
+	if err := store.Put(ctx, SagaStatus{ID: "saga-1", State: SagaCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err = store.Get(ctx, "saga-1")
+	if err != nil || !found || got.State != SagaCompleted {
+		t.Fatalf("Put deveria substituir o status anterior: got %+v", got)
+	}
+}

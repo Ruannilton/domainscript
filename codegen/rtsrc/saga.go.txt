@@ -1,0 +1,220 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"sync"
+)
+
+// saga.go.txt is the orchestration seam behind a generated Saga (Marco F3,
+// REQ-24, §design codegen 3.10): Step/RunSaga run a Saga's steps in order and
+// compensate (running Down, in REVERSE order) the steps that already
+// succeeded when a later one fails — respecting `down { unrecoverable }`
+// (Step.Unrecoverable) — while SagaStore/SagaStatus back the `async` mode's
+// sagaId + queryable status (REQ-24.3). The generated Saga owns deciding the
+// concrete State type, building the []Step[S] literal from its lowered up/
+// down/onInfraError bodies, and (for `async`) wiring a SagaStore; this file
+// only provides the reusable, independently testable orchestration — the
+// same split as Dispatcher/Outbox versus the Policy handler that wires them
+// (dispatcher.go.txt/outbox.go.txt), or Semaphore/RateLimiter/RetryPolicy
+// versus the Worker function that wires them (worker.go.txt).
+
+// Step is one step of a Saga's state machine (ast.SagaStep): Up performs the
+// step's action; Down (nil when the step declares no `down`, or when it
+// declares exactly `down { unrecoverable }`) compensates it; OnInfraError
+// (nil when the step declares no `onInfraError`) runs as a one-shot
+// side-effect hook when Up fails with an INFRA error — any error that is NOT
+// a BusinessError, the same business-vs-infra distinction the HTTP edge
+// already draws (codegen/http.go, writeBusinessError: errors.As(&BusinessError)).
+//
+// OnInfraError is deliberately NOT an automatic retry loop: unlike a
+// Worker's `onError.retry` (a structured {attempts, backoff} config, see
+// worker.go.txt/RetryPolicy), a Saga step's onInfraError is an arbitrary
+// DomainScript block (ast.SagaStep.OnInfraError) with no attempts count to
+// drive a retry. It runs once, for its side effects (log/alert/cleanup), and
+// the step is still considered failed afterward — compensation proceeds
+// exactly as it would for a business error.
+//
+// Unrecoverable marks a step whose compensation is impossible (`down {
+// unrecoverable }`, spec §18.2): RunSaga records it (SagaResult.Unrecoverable)
+// instead of calling Down (nil for such a step), but keeps compensating
+// EARLIER completed steps — one step being unrecoverable does not stop
+// compensation for the rest (REQ-24.2 says compensation "respects"
+// unrecoverable, not that it halts there).
+type Step[S any] struct {
+	Name          string
+	Up            func(ctx context.Context, state *S) error
+	Down          func(ctx context.Context, state *S) error
+	OnInfraError  func(ctx context.Context, state *S) error
+	Unrecoverable bool
+}
+
+// SagaResult is the outcome of running a Saga's steps once (RunSaga).
+type SagaResult struct {
+	// Completed lists, in order, the steps whose Up succeeded.
+	Completed []string
+	// Compensated lists, in the order Down actually ran (REVERSE step
+	// order), the completed steps that were compensated.
+	Compensated []string
+	// Unrecoverable lists, in reverse step order, the completed steps
+	// skipped during compensation because Step.Unrecoverable is true.
+	Unrecoverable []string
+	// Err is the error that stopped the Saga (nil on full success).
+	Err error
+}
+
+// Ok reports whether every step's Up succeeded — RunSaga never ran
+// compensation.
+func (r SagaResult) Ok() bool { return r.Err == nil }
+
+// FullyCompensated reports whether the Saga failed but every completed step
+// was compensated (no Unrecoverable step stood in the way).
+func (r SagaResult) FullyCompensated() bool {
+	return r.Err != nil && len(r.Unrecoverable) == 0
+}
+
+// FinalState maps r to the SagaState an `async` Saga's status store records
+// once it finishes running (REQ-24.3): SagaCompleted on full success;
+// SagaCompensated when it failed but every completed step was undone;
+// SagaFailed when at least one completed step could not be compensated
+// (Unrecoverable) — a saga a human needs to look at.
+func (r SagaResult) FinalState() SagaState {
+	switch {
+	case r.Ok():
+		return SagaCompleted
+	case r.FullyCompensated():
+		return SagaCompensated
+	default:
+		return SagaFailed
+	}
+}
+
+// RunSaga runs steps in order over state, stopping at the first Up that
+// fails; on failure, it compensates every already-completed step in REVERSE
+// order (REQ-24.2), skipping (never calling) any step marked Unrecoverable —
+// see the Step doc for the full rationale. Compensation/OnInfraError errors
+// are best-effort: swallowed, never overriding Err (the step failure that
+// triggered compensation is always what the caller sees) — a Saga
+// mid-compensation has no "undo the undo" story in this milestone, the same
+// spirit as the `unrecoverable` escape hatch (compensation is expected to be
+// safe/idempotent enough not to need its own error handling here).
+func RunSaga[S any](ctx context.Context, state *S, steps []Step[S]) SagaResult {
+	var res SagaResult
+	failedAt := -1
+	for i, step := range steps {
+		if err := step.Up(ctx, state); err != nil {
+			if step.OnInfraError != nil && !isBusinessError(err) {
+				_ = step.OnInfraError(ctx, state)
+			}
+			res.Err = err
+			failedAt = i
+			break
+		}
+		res.Completed = append(res.Completed, step.Name)
+	}
+	if failedAt == -1 {
+		return res
+	}
+
+	for i := failedAt - 1; i >= 0; i-- {
+		step := steps[i]
+		if step.Unrecoverable {
+			res.Unrecoverable = append(res.Unrecoverable, step.Name)
+			continue
+		}
+		if step.Down != nil {
+			_ = step.Down(ctx, state)
+		}
+		res.Compensated = append(res.Compensated, step.Name)
+	}
+	return res
+}
+
+// isBusinessError reports whether err is (or wraps) a BusinessError — the
+// same errors.As check codegen/http.go uses at the edge.
+func isBusinessError(err error) bool {
+	var be BusinessError
+	return errors.As(err, &be)
+}
+
+// --- SagaStatus/SagaStore: `async` mode's sagaId + queryable status (REQ-24.3). ---
+
+// SagaState is the lifecycle state of an `async` Saga instance, tracked by
+// SagaStore under its sagaId.
+type SagaState int
+
+const (
+	// SagaRunning is the initial state, recorded before the async Saga's
+	// steps start.
+	SagaRunning SagaState = iota
+	// SagaCompleted means every step's Up succeeded.
+	SagaCompleted
+	// SagaCompensated means a step failed but every completed step was
+	// compensated.
+	SagaCompensated
+	// SagaFailed means a step failed and at least one completed step could
+	// not be compensated (Unrecoverable) — needs manual attention.
+	SagaFailed
+)
+
+// String renders the SagaState for status payloads/logs.
+func (s SagaState) String() string {
+	switch s {
+	case SagaRunning:
+		return "Running"
+	case SagaCompleted:
+		return "Completed"
+	case SagaCompensated:
+		return "Compensated"
+	case SagaFailed:
+		return "Failed"
+	default:
+		return "Unknown"
+	}
+}
+
+// SagaStatus is the queryable status of one `async` Saga instance.
+type SagaStatus struct {
+	ID    string
+	State SagaState
+	// Err is the final error message, if any (empty on SagaCompleted).
+	Err string
+}
+
+// SagaStore is the storage seam behind an `async` Saga's sagaId -> SagaStatus
+// tracking (REQ-24.3). A real backend (persistence across process restarts)
+// is later work (Marco G) — this milestone only needs the in-memory default
+// below.
+type SagaStore interface {
+	// Get returns the status recorded for sagaID, if any.
+	Get(ctx context.Context, sagaID string) (status SagaStatus, found bool, err error)
+	// Put records status, replacing any previous value for status.ID.
+	Put(ctx context.Context, status SagaStatus) error
+}
+
+// memorySagaStore is a thread-safe, in-process SagaStore backed by a map.
+type memorySagaStore struct {
+	mu       sync.RWMutex
+	statuses map[string]SagaStatus
+}
+
+// NewMemorySagaStore creates an empty in-memory SagaStore.
+func NewMemorySagaStore() SagaStore {
+	return &memorySagaStore{statuses: make(map[string]SagaStatus)}
+}
+
+// Get implements SagaStore.
+func (s *memorySagaStore) Get(ctx context.Context, sagaID string) (SagaStatus, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	st, ok := s.statuses[sagaID]
+	return st, ok, nil
+}
+
+// Put implements SagaStore.
+func (s *memorySagaStore) Put(ctx context.Context, status SagaStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statuses[status.ID] = status
+	return nil
+}
