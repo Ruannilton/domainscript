@@ -180,6 +180,14 @@ type IdempotencyStore interface {
 	// periodically by the auto-generated cleanup Worker (spec §14: "Limpeza
 	// de chaves expiradas: Worker gerado automaticamente").
 	Cleanup(ctx context.Context, now time.Time) (removed int, err error)
+	// Peek reports whether an UNEXPIRED, TERMINAL (already completed) record
+	// exists for key with the given fingerprint — a read-only check, unlike
+	// Begin: it never starts a new in-flight record, never conflicts, never
+	// blocks. Used by the generated HTTP edge (Marco G4, spec §14/§16) to
+	// decide, BEFORE running any rate-limit check, that a request is a known
+	// replay that must be let straight through without consuming quota (see
+	// codegen/usecase_idempotency.go's "<Nome>IsReplay").
+	Peek(ctx context.Context, key, fingerprint string) (isReplay bool)
 }
 
 // idemRecordState is the lifecycle state of one memoryIdempotencyStore record.
@@ -316,6 +324,25 @@ func (s *memoryIdempotencyStore) Cleanup(ctx context.Context, now time.Time) (in
 		}
 	}
 	return removed, nil
+}
+
+// Peek implements IdempotencyStore: read-only, never mutates s.records —
+// an expired or in-flight (not yet terminal) or fingerprint-mismatched
+// record all report false, exactly like Begin would treat them as "not a
+// replay" (a fresh run, a conflict, or an in-flight race respectively —
+// none of those is what Peek answers about; the caller still goes through
+// the normal Begin-driven wrapper for those cases, Peek only short-circuits
+// the ONE case that matters to rate limiting: a genuine, already-settled
+// replay).
+func (s *memoryIdempotencyStore) Peek(ctx context.Context, key, fingerprint string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.records[key]
+	if !ok || rec.state != idemTerminal || rec.fingerprint != fingerprint {
+		return false
+	}
+	return rec.expiresAt.After(time.Now())
 }
 
 // IdempotencyFingerprint computes a stable signature of a Command's payload

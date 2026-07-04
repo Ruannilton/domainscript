@@ -30,8 +30,15 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 // Tenant identifies the tenant a request belongs to in a multi-tenant
 // deployment. Filtering/enforcement by Tenant is a no-op until
 // multi-tenancy lands (Marco G5) — for now it is only a context carrier.
+// Tier names the tenant's RateLimitTier (spec §16: "resolve do
+// tenant.tier") — like ID, nobody sets it yet (WithTenant is never called
+// by generated code until G5's edge lands); a "rateLimit: byTier" route
+// (codegen/ratelimit.go, G4) simply finds no Tenant and skips tier-based
+// limiting entirely, the same documented no-op posture as every other
+// TenantFrom consumer (G3's cache key, this file's own doc history).
 type Tenant struct {
-	ID string
+	ID   string
+	Tier string
 }
 
 // WithTenant returns a copy of ctx carrying tenant, retrievable via

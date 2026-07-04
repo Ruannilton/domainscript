@@ -310,6 +310,7 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 
 	if idemPlan != nil {
 		emitIdempotencyWrapper(e, decl, idemPlan, innerName, ctxAlias, runtimeAlias)
+		emitIdempotencyExportedIsReplay(e, decl, ctxAlias, runtimeAlias)
 	}
 	return nil
 }

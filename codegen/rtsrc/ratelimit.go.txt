@@ -1,0 +1,402 @@
+package runtime
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+// ratelimit.go.txt is the rate-limiting seam behind a route's "rateLimit {
+// ... }" declaration (spec §16, Marco G4): a transport-agnostic Limiter per
+// configured dimension (perIp/perUser/perTenant/perApiKey/global —
+// codegen/ratelimit.go decides WHICH key to pass for each request; a
+// Limiter itself has no notion of "dimension", it only ever counts by
+// key), three in-memory algorithms behind that ONE interface (token_bucket
+// — the spec default, with burst; sliding_window; fixed_window), and
+// CheckRateLimits — the multi-dimension AND-semantics built on top. See
+// codegen/ratelimit.go for how a route's declared dimensions/tiers compile
+// down to a []RateLimitCheck, and codegen/http.go for the HTTP-specific
+// adapter (429 + Retry-After + X-RateLimit-* headers) — this file stays
+// transport-agnostic at its core on purpose, so a later gRPC edge (H1,
+// RESOURCE_EXHAUSTED) can reuse the SAME Limiter/CheckRateLimits without
+// this seam changing shape.
+//
+// --- "Retry idempotente não consome cota" (spec §14/§16) is NOT this
+// file's job ---
+//
+// An idempotent replay (G2) must not be admission-gated by rate limiting
+// AT ALL — not "consume then refund" (a refund arriving only after
+// dispatch can never un-deny the SAME request's own check, if quota was
+// already exhausted the moment it ran). The generated HTTP edge
+// (codegen/http.go) resolves this by asking the idempotent UseCase's
+// generated peek (runtime.IdempotencyStore.Peek, idempotency.go.txt,
+// exposed per UseCase as "<Nome>IsReplay" — usecase_idempotency.go)
+// WHETHER this request is a known replay BEFORE ever calling
+// CheckRateLimits, and skipping the call entirely when it is. This file's
+// Limiter/CheckRateLimits stay simple general-purpose rate limiting with
+// no awareness of idempotency at all.
+//
+// --- Bounded memory, no goroutines (the F5 lesson) ---
+//
+// Each algorithm keeps ONE map[string]*entry per Limiter instance (one
+// instance per configured dimension per route/tier) — no per-key
+// goroutine or timer is EVER created (F5 shipped a real deadlock from
+// exactly that shape in generated runtime code; this package has none of
+// it). Memory is reclaimed by an OPPORTUNISTIC sweep instead: every
+// sweepEvery-th Allow call walks the map once, under the same mutex Allow
+// already holds, evicting any key idle for longer than staleAfter(period)
+// — an amortized O(1) cost per call, with no background ticker/goroutine
+// whose lifecycle would need managing (unlike, say,
+// StartIdempotencyCleanup's dedicated Worker, G2 — this seam has no
+// per-service entry point to hang a ticker off of, and doesn't need one:
+// the sweep piggybacks on traffic that is already flowing through Allow).
+//
+// --- Backend (spec §16) ---
+//
+// mod.ds's "RateLimit { backend: ... }" names a distributed backend
+// (Redis, "quase obrigatório com réplicas" per the spec); this milestone
+// implements only the in-memory default (backend/connection settings are
+// parsed but not acted on yet — same incremental-backend story as
+// Idempotency's "storage: same", G2, and Cache's "memory", G3). A
+// distributed Limiter is later, opt-in work behind this SAME interface
+// (NFR-12) — it is also the only implementation that could realistically
+// fail (a network error), which is why Allow already returns an error and
+// CheckRateLimits already resolves onBackendFailure (FailOpen, resolved at
+// GENERATION time from the mod.ds default + any per-endpoint override) —
+// the in-memory Limiter below simply never produces one.
+
+// RateLimitResult is what a Limiter reports about one Allow decision — it
+// backs the generated HTTP edge's response headers (codegen/http.go):
+// Limit/Remaining/ResetAt shape "X-RateLimit-*"; RetryAfter (meaningful
+// only when the request was denied) shapes "Retry-After".
+type RateLimitResult struct {
+	Limit      int
+	Remaining  int
+	RetryAfter time.Duration
+	ResetAt    time.Time
+}
+
+// Limiter is the transport-agnostic rate-limiting seam behind ONE
+// configured dimension (spec §16, G4). Allow decides admission for key —
+// an IP, a caller/tenant/API-key ID, or "" for the global dimension.
+type Limiter interface {
+	Allow(ctx context.Context, key string) (allowed bool, result RateLimitResult, err error)
+}
+
+// NewLimiter builds the in-memory Limiter for one of the three spec §16
+// algorithms — "token_bucket" (the spec default, and the fallback for any
+// unrecognized value, rather than panicking on something codegen should
+// already have validated), "sliding_window", "fixed_window". limit
+// requests are allowed per period; burst (token_bucket only, ignored by
+// the other two) caps how many requests a single key can spend in one
+// instant — <= 0 defaults burst to limit (no extra allowance beyond the
+// steady rate).
+func NewLimiter(algorithm string, limit int, period time.Duration, burst int) Limiter {
+	switch algorithm {
+	case "sliding_window":
+		return newSlidingWindowLimiter(limit, period, time.Now)
+	case "fixed_window":
+		return newFixedWindowLimiter(limit, period, time.Now)
+	default:
+		if burst <= 0 {
+			burst = limit
+		}
+		return newTokenBucketLimiter(limit, period, burst, time.Now)
+	}
+}
+
+// RateLimitCheck is one dimension's check for a single request, built by
+// generated code (codegen/ratelimit.go) from a route's configured
+// dimensions or a resolved RateLimitTier. FailOpen is onBackendFailure
+// (spec §16), already resolved at GENERATION time into a plain bool (the
+// mod.ds default, overridable per endpoint).
+type RateLimitCheck struct {
+	Limiter  Limiter
+	Key      string
+	FailOpen bool
+}
+
+// CheckRateLimits runs every check IN ORDER — spec §16: "múltiplas
+// dimensões → todas precisam passar" — short-circuiting at the first
+// denied (or failed-CLOSED) dimension. result is the MOST RESTRICTIVE
+// (lowest Remaining) result seen among the checks that actually ran (an
+// empty checks slice — e.g. an idempotent replay the caller decided to
+// skip entirely, or a "byTier" route whose tenant/tier didn't resolve —
+// reports ok=true with a zero RateLimitResult) — what the generated HTTP
+// edge reports via X-RateLimit-*, on the success path and the 429 alike.
+func CheckRateLimits(ctx context.Context, checks []RateLimitCheck) (ok bool, result RateLimitResult) {
+	haveResult := false
+	for _, c := range checks {
+		allowed, res, err := c.Limiter.Allow(ctx, c.Key)
+		if err != nil {
+			if c.FailOpen {
+				continue
+			}
+			return false, res
+		}
+		if !haveResult || res.Remaining < result.Remaining {
+			result, haveResult = res, true
+		}
+		if !allowed {
+			return false, result
+		}
+	}
+	return true, result
+}
+
+// sweepEvery gates the opportunistic eviction sweep every algorithm below
+// runs from inside Allow (see the file doc): only every sweepEvery-th call
+// pays the O(n) scan, amortizing it to a constant cost per call.
+const sweepEvery = 256
+
+// staleAfter is how long a key may sit idle before an eviction sweep
+// reclaims it — comfortably longer than any realistic refill/catch-up
+// window, so a sweep never evicts a key whose state is still worth
+// keeping.
+func staleAfter(period time.Duration) time.Duration {
+	return 10 * period
+}
+
+// --- 1. token_bucket (the spec §16 default, burst-capable). ---
+
+type tokenBucketEntry struct {
+	tokens     float64
+	lastRefill time.Time
+	lastAccess time.Time
+}
+
+// tokenBucketLimiter is a classic continuous-refill token bucket: each key
+// accrues rate (limit/period, in tokens/second) tokens over time, capped
+// at burst, and Allow spends one when available.
+type tokenBucketLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	period time.Duration
+	burst  int
+	rate   float64 // tokens per second
+	now    func() time.Time
+	byKey  map[string]*tokenBucketEntry
+	calls  uint64
+}
+
+func newTokenBucketLimiter(limit int, period time.Duration, burst int, now func() time.Time) *tokenBucketLimiter {
+	if limit <= 0 {
+		limit = 1
+	}
+	if period <= 0 {
+		period = time.Minute
+	}
+	if burst <= 0 {
+		burst = limit
+	}
+	return &tokenBucketLimiter{
+		limit: limit, period: period, burst: burst,
+		rate:  float64(limit) / period.Seconds(),
+		now:   now,
+		byKey: make(map[string]*tokenBucketEntry),
+	}
+}
+
+// Allow implements Limiter.
+func (l *tokenBucketLimiter) Allow(ctx context.Context, key string) (bool, RateLimitResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	e, ok := l.byKey[key]
+	if !ok {
+		e = &tokenBucketEntry{tokens: float64(l.burst), lastRefill: now}
+		l.byKey[key] = e
+	} else {
+		e.tokens += now.Sub(e.lastRefill).Seconds() * l.rate
+		if e.tokens > float64(l.burst) {
+			e.tokens = float64(l.burst)
+		}
+		e.lastRefill = now
+	}
+	e.lastAccess = now
+	l.sweepLocked(now)
+
+	allowed := e.tokens >= 1
+	var retryAfter time.Duration
+	if allowed {
+		e.tokens--
+	} else {
+		retryAfter = time.Duration((1 - e.tokens) / l.rate * float64(time.Second))
+	}
+	remaining := int(e.tokens)
+	if remaining < 0 {
+		remaining = 0
+	}
+	resetIn := time.Duration((float64(l.burst) - e.tokens) / l.rate * float64(time.Second))
+	return allowed, RateLimitResult{Limit: l.burst, Remaining: remaining, RetryAfter: retryAfter, ResetAt: now.Add(resetIn)}, nil
+}
+
+func (l *tokenBucketLimiter) sweepLocked(now time.Time) {
+	l.calls++
+	if l.calls%sweepEvery != 0 {
+		return
+	}
+	idle := staleAfter(l.period)
+	for k, e := range l.byKey {
+		if now.Sub(e.lastAccess) > idle {
+			delete(l.byKey, k)
+		}
+	}
+}
+
+// --- 2. sliding_window. ---
+
+type slidingWindowEntry struct {
+	hits       []time.Time
+	lastAccess time.Time
+}
+
+// slidingWindowLimiter keeps a per-key log of hit timestamps, pruning any
+// hit older than period on every Allow — memory per key is bounded by
+// limit (the log can never hold more than that many live entries).
+type slidingWindowLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	period time.Duration
+	now    func() time.Time
+	byKey  map[string]*slidingWindowEntry
+	calls  uint64
+}
+
+func newSlidingWindowLimiter(limit int, period time.Duration, now func() time.Time) *slidingWindowLimiter {
+	if limit <= 0 {
+		limit = 1
+	}
+	if period <= 0 {
+		period = time.Minute
+	}
+	return &slidingWindowLimiter{limit: limit, period: period, now: now, byKey: make(map[string]*slidingWindowEntry)}
+}
+
+// Allow implements Limiter.
+func (l *slidingWindowLimiter) Allow(ctx context.Context, key string) (bool, RateLimitResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	e, ok := l.byKey[key]
+	if !ok {
+		e = &slidingWindowEntry{}
+		l.byKey[key] = e
+	}
+	cutoff := now.Add(-l.period)
+	kept := e.hits[:0]
+	for _, h := range e.hits {
+		if h.After(cutoff) {
+			kept = append(kept, h)
+		}
+	}
+	e.hits = kept
+	e.lastAccess = now
+	l.sweepLocked(now)
+
+	allowed := len(e.hits) < l.limit
+	var retryAfter time.Duration
+	if allowed {
+		e.hits = append(e.hits, now)
+	} else if len(e.hits) > 0 {
+		retryAfter = e.hits[0].Add(l.period).Sub(now)
+	}
+	remaining := l.limit - len(e.hits)
+	if remaining < 0 {
+		remaining = 0
+	}
+	resetAt := now.Add(l.period)
+	if len(e.hits) > 0 {
+		resetAt = e.hits[0].Add(l.period)
+	}
+	return allowed, RateLimitResult{Limit: l.limit, Remaining: remaining, RetryAfter: retryAfter, ResetAt: resetAt}, nil
+}
+
+func (l *slidingWindowLimiter) sweepLocked(now time.Time) {
+	l.calls++
+	if l.calls%sweepEvery != 0 {
+		return
+	}
+	idle := staleAfter(l.period)
+	for k, e := range l.byKey {
+		if len(e.hits) == 0 && now.Sub(e.lastAccess) > idle {
+			delete(l.byKey, k)
+		}
+	}
+}
+
+// --- 3. fixed_window. ---
+
+type fixedWindowEntry struct {
+	windowStart time.Time
+	count       int
+	lastAccess  time.Time
+}
+
+// fixedWindowLimiter counts hits in a window aligned to absolute time
+// (time.Time.Truncate(period), since the zero time) — the classic
+// "counter resets every period" definition, one int per key.
+type fixedWindowLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	period time.Duration
+	now    func() time.Time
+	byKey  map[string]*fixedWindowEntry
+	calls  uint64
+}
+
+func newFixedWindowLimiter(limit int, period time.Duration, now func() time.Time) *fixedWindowLimiter {
+	if limit <= 0 {
+		limit = 1
+	}
+	if period <= 0 {
+		period = time.Minute
+	}
+	return &fixedWindowLimiter{limit: limit, period: period, now: now, byKey: make(map[string]*fixedWindowEntry)}
+}
+
+// Allow implements Limiter.
+func (l *fixedWindowLimiter) Allow(ctx context.Context, key string) (bool, RateLimitResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	windowStart := now.Truncate(l.period)
+	e, ok := l.byKey[key]
+	if !ok || !e.windowStart.Equal(windowStart) {
+		e = &fixedWindowEntry{windowStart: windowStart}
+		l.byKey[key] = e
+	}
+	e.lastAccess = now
+	l.sweepLocked(now)
+
+	allowed := e.count < l.limit
+	if allowed {
+		e.count++
+	}
+	remaining := l.limit - e.count
+	if remaining < 0 {
+		remaining = 0
+	}
+	resetAt := windowStart.Add(l.period)
+	var retryAfter time.Duration
+	if !allowed {
+		retryAfter = resetAt.Sub(now)
+	}
+	return allowed, RateLimitResult{Limit: l.limit, Remaining: remaining, RetryAfter: retryAfter, ResetAt: resetAt}, nil
+}
+
+func (l *fixedWindowLimiter) sweepLocked(now time.Time) {
+	l.calls++
+	if l.calls%sweepEvery != 0 {
+		return
+	}
+	idle := staleAfter(l.period)
+	for k, e := range l.byKey {
+		if now.Sub(e.lastAccess) > idle {
+			delete(l.byKey, k)
+		}
+	}
+}

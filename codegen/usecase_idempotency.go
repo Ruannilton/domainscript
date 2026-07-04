@@ -20,6 +20,23 @@ import (
 // concurrentRetry). Ver codegen/rtsrc/idempotency.go.txt para o contrato
 // Begin/Wait/Complete/Release que este arquivo dirige.
 //
+// --- Integração com rate limiting (G4, spec §14/§16) ---
+//
+// "Retry idempotente não consome cota" (spec §14/§16) não pode ser um
+// "consome e depois estorna": se a cota já estava esgotada no instante em
+// que o PRÓPRIO replay chega, um estorno que só roda DEPOIS do despacho
+// nunca teria como desbloquear essa MESMA requisição — chegaria tarde
+// demais. A solução é o inverso: a borda HTTP (codegen/http.go, G4) NUNCA
+// deixa uma requisição que já sabe ser um replay passar pela checagem de
+// rate limit. emitIdempotencyExportedIsReplay (abaixo) emite, ao lado do
+// wrapper, uma função exportada "<Nome>IsReplay(ctx, cmd) bool" que faz só
+// um PEEK (runtime.IdempotencyStore.Peek, idempotency.go.txt — não muta
+// nada, ao contrário de Begin) — http.go chama essa função ANTES de
+// decidir se roda runtime.CheckRateLimits, pulando a checagem inteira
+// quando IsReplay devolve true. Este arquivo (o wrapper Begin/Wait/
+// Complete/Release) não precisa saber NADA sobre rate limiting — só expõe
+// o peek como uma função pública a mais.
+//
 // --- Por que um wrapper, não um corpo reescrito (§design 3.8 preservado) ---
 //
 // emitUseCaseDecl (decl_usecase.go) continua emitindo EXATAMENTE o mesmo
@@ -334,5 +351,31 @@ func emitIdempotencyWrapper(e *emit.Emitter, decl *ast.UseCaseDecl, plan *usecas
 			e.Line("_ = idem.Complete(ctx, key, %s.NewCompletedResult(runErr), %s)", runtimeAlias, windowGo)
 			e.Line("return runErr")
 		})
+	})
+}
+
+// emitIdempotencyExportedIsReplay emite "func <decl.Name>IsReplay(ctx, cmd)
+// bool" — um PEEK público, ao lado do wrapper (ver a doc do arquivo,
+// "Integração com rate limiting"): reporta se cmd, sob a Idempotency-Key de
+// ctx, já tem um resultado concluído registrado (runtime.IdempotencyStore.
+// Peek — NUNCA muta estado, ao contrário de Begin), sem rodar nem "começar"
+// nada. É o que permite ao codegen/http.go (G4) decidir, ANTES de chamar
+// runtime.CheckRateLimits, que esta requisição é um replay e a checagem de
+// rate limit deve ser pulada inteira — spec §14/§16: "retry idempotente não
+// consome cota". Sem Idempotency-Key nenhuma, sempre false (nada a
+// repetir).
+func emitIdempotencyExportedIsReplay(e *emit.Emitter, decl *ast.UseCaseDecl, ctxAlias, runtimeAlias string) {
+	e.Line("")
+	e.Line("// %sIsReplay reporta se cmd, sob a Idempotency-Key de ctx, já tem um", decl.Name)
+	e.Line("// resultado concluído registrado (peek — nunca muta nada, spec §14/§16,")
+	e.Line("// G4): usado pela borda HTTP para pular a checagem de rate limit inteira")
+	e.Line("// quando esta requisição é um replay conhecido.")
+	sig := fmt.Sprintf("func %sIsReplay(ctx %s.Context, cmd %s) bool", decl.Name, ctxAlias, decl.Handles)
+	e.Block(sig, func() {
+		e.Line("key, ok := %s.IdempotencyKeyFrom(ctx)", runtimeAlias)
+		e.Block("if !ok", func() {
+			e.Line("return false")
+		})
+		e.Line("return idem.Peek(ctx, key, %s.IdempotencyFingerprint(cmd))", runtimeAlias)
 	})
 }

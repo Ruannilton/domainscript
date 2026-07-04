@@ -93,6 +93,18 @@ func PerformIncrement(ctx context.Context, cmd IncrementTally) error {
 	}
 }
 
+// PerformIncrementIsReplay reporta se cmd, sob a Idempotency-Key de ctx, já tem um
+// resultado concluído registrado (peek — nunca muta nada, spec §14/§16,
+// G4): usado pela borda HTTP para pular a checagem de rate limit inteira
+// quando esta requisição é um replay conhecido.
+func PerformIncrementIsReplay(ctx context.Context, cmd IncrementTally) bool {
+	key, ok := runtime.IdempotencyKeyFrom(ctx)
+	if !ok {
+		return false
+	}
+	return idem.Peek(ctx, key, runtime.IdempotencyFingerprint(cmd))
+}
+
 // StartIdempotencyCleanup roda o worker de limpeza de chaves de idempotência
 // expiradas (spec §14, G2) — gerado automaticamente porque este módulo usa
 // idempotência; chamado por cmd/<service>/main.go na inicialização, ao lado

@@ -419,7 +419,7 @@
   `Cache-Control: no-cache`, tenant na chave. _(REQ-21.3, spec §15)_
   **Commit:** `feat(codegen): cache de Queries`
 
-- [ ] **G4** Rate limiting na borda (spec §16): dimensões `perIp`/`perUser`/
+- [x] **G4** Rate limiting na borda (spec §16): dimensões `perIp`/`perUser`/
   `perTenant`/`perApiKey`/`global` (múltiplas → todas precisam passar), algoritmos
   (`token_bucket` com `burst`, `sliding_window`, `fixed_window`), tiers de
   `RateLimitTier` via `byTier`/`tenant.tier`, resposta `429` + `Retry-After` +

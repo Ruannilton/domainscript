@@ -1747,3 +1747,237 @@ func TestQueueChannelPanicCountsAsCircuitBreakerFailure(t *testing.T) {
 		t.Fatal("NÃO esperava a 2ª entrega ser processada com o circuito aberto")
 	}
 }
+
+// --- Rate limiting (ratelimit.go.txt, Marco G4, spec §16) ------------------
+//
+// Cada algoritmo é exercitado com um relógio INJETADO (a variável local
+// "now", capturada por "clock") em vez de time.Sleep real — o mesmo espírito
+// de F2/F3 evitarem flakiness de timing: avançar "now" manualmente torna os
+// limites de burst/janela determinísticos, sem depender de quão rápido a
+// máquina de CI executa.
+
+// fakeLimiter é um Limiter de teste com comportamento fixo — usado pelos
+// testes de CheckRateLimits abaixo, que provam a orquestração
+// multi-dimensão (AND-semantics, fail-open/closed), não um algoritmo real.
+type fakeLimiter struct {
+	mu         sync.Mutex
+	allowed    bool
+	result     RateLimitResult
+	err        error
+	allowCalls int
+}
+
+func (f *fakeLimiter) Allow(ctx context.Context, key string) (bool, RateLimitResult, error) {
+	f.mu.Lock()
+	f.allowCalls++
+	f.mu.Unlock()
+	return f.allowed, f.result, f.err
+}
+
+func TestTokenBucketAllowsBurstThenThrottlesAndRefillsOverTime(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	l := newTokenBucketLimiter(60, time.Minute, 5, clock) // 60/min = 1 token/s, burst 5
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		allowed, res, err := l.Allow(ctx, "k")
+		if err != nil {
+			t.Fatalf("chamada %d: erro inesperado: %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("chamada %d deveria ter sido permitida (dentro do burst=5)", i+1)
+		}
+		if res.Remaining != 4-i {
+			t.Fatalf("chamada %d: Remaining = %d, want %d", i+1, res.Remaining, 4-i)
+		}
+	}
+
+	allowed, res, _ := l.Allow(ctx, "k")
+	if allowed {
+		t.Fatal("6ª chamada deveria ter sido bloqueada (burst esgotado)")
+	}
+	if res.RetryAfter <= 0 {
+		t.Fatalf("esperava RetryAfter > 0 quando negado, got %v", res.RetryAfter)
+	}
+
+	// Avança o relógio 1s (refill de 1 token/s) — libera exatamente 1 chamada.
+	now = now.Add(time.Second)
+	if allowed, _, _ := l.Allow(ctx, "k"); !allowed {
+		t.Fatal("depois de 1s (1 token reposto), a chamada deveria ter sido permitida")
+	}
+	if allowed, _, _ := l.Allow(ctx, "k"); allowed {
+		t.Fatal("a chamada seguinte, no MESMO instante, deveria ter sido bloqueada de novo (só 1 token reposto)")
+	}
+}
+
+func TestSlidingWindowAllowsUpToLimitThenBlocksAndRecoversAfterWindow(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	l := newSlidingWindowLimiter(3, time.Second, clock)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		if allowed, _, _ := l.Allow(ctx, "k"); !allowed {
+			t.Fatalf("chamada %d deveria ter sido permitida (dentro do limite=3)", i+1)
+		}
+	}
+	allowed, res, _ := l.Allow(ctx, "k")
+	if allowed {
+		t.Fatal("4ª chamada dentro da janela deveria ter sido bloqueada")
+	}
+	if res.RetryAfter <= 0 {
+		t.Fatalf("esperava RetryAfter > 0, got %v", res.RetryAfter)
+	}
+
+	now = now.Add(time.Second + time.Millisecond) // passa da janela de 1s
+	if allowed, _, _ := l.Allow(ctx, "k"); !allowed {
+		t.Fatal("depois de passar a janela, a chamada deveria ter sido permitida de novo")
+	}
+}
+
+func TestFixedWindowResetsAtWindowBoundary(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // alinhado a um segundo
+	clock := func() time.Time { return now }
+	l := newFixedWindowLimiter(2, time.Second, clock)
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		if allowed, _, _ := l.Allow(ctx, "k"); !allowed {
+			t.Fatalf("chamada %d deveria ter sido permitida (dentro do limite=2)", i+1)
+		}
+	}
+	allowed, res, _ := l.Allow(ctx, "k")
+	if allowed {
+		t.Fatal("3ª chamada na mesma janela deveria ter sido bloqueada")
+	}
+	if res.RetryAfter <= 0 {
+		t.Fatalf("esperava RetryAfter > 0, got %v", res.RetryAfter)
+	}
+
+	now = now.Add(time.Second)
+	if allowed, _, _ := l.Allow(ctx, "k"); !allowed {
+		t.Fatal("na janela seguinte, a chamada deveria ter sido permitida de novo")
+	}
+}
+
+func TestCheckRateLimitsAllMustPassOneFailingBlocksAndSkipsLaterChecks(t *testing.T) {
+	ctx := context.Background()
+	passing := &fakeLimiter{allowed: true, result: RateLimitResult{Limit: 10, Remaining: 5}}
+	failing := &fakeLimiter{allowed: false, result: RateLimitResult{Limit: 1, Remaining: 0, RetryAfter: time.Second}}
+	neverReached := &fakeLimiter{allowed: true, result: RateLimitResult{Limit: 10, Remaining: 9}}
+
+	checks := []RateLimitCheck{
+		{Limiter: passing, Key: "ip"},
+		{Limiter: failing, Key: "user"},
+		{Limiter: neverReached, Key: "global"},
+	}
+	ok, result := CheckRateLimits(ctx, checks)
+	if ok {
+		t.Fatal("esperava ok=false: uma dimensão (perUser) negou, então TODAS precisam ter falhado (spec §16: múltiplas dimensões → todas precisam passar)")
+	}
+	if result.Remaining != 0 {
+		t.Fatalf("result deveria refletir a dimensão que falhou (Remaining=0), got %d", result.Remaining)
+	}
+	if neverReached.allowCalls != 0 {
+		t.Fatal("a dimensão APÓS a que falhou nunca deveria ter sido checada (short-circuit)")
+	}
+}
+
+func TestCheckRateLimitsAllPassSucceedsAndReportsMostRestrictiveDimension(t *testing.T) {
+	ctx := context.Background()
+	generous := &fakeLimiter{allowed: true, result: RateLimitResult{Limit: 100, Remaining: 90}}
+	tight := &fakeLimiter{allowed: true, result: RateLimitResult{Limit: 10, Remaining: 2}}
+
+	ok, result := CheckRateLimits(ctx, []RateLimitCheck{
+		{Limiter: generous, Key: "ip"},
+		{Limiter: tight, Key: "global"},
+	})
+	if !ok {
+		t.Fatal("esperava ok=true: as duas dimensões passaram")
+	}
+	if result.Remaining != 2 {
+		t.Fatalf("esperava reportar a dimensão MAIS restritiva (Remaining=2), got %d", result.Remaining)
+	}
+}
+
+func TestCheckRateLimitsEmptyChecksAlwaysSucceeds(t *testing.T) {
+	// Uma requisição que o chamador decidiu NÃO submeter a rate limiting
+	// (ex.: um replay idempotente conhecido, G4/G2 — ver
+	// codegen/usecase_idempotency.go's "<Nome>IsReplay" — ou uma rota
+	// "byTier" cujo tenant/tier não resolveu) passa []RateLimitCheck{} para
+	// CheckRateLimits — deve sempre passar, sem tocar limiter nenhum.
+	ok, result := CheckRateLimits(context.Background(), nil)
+	if !ok {
+		t.Fatal("esperava ok=true para uma lista de checks vazia")
+	}
+	if result != (RateLimitResult{}) {
+		t.Fatalf("esperava um RateLimitResult zero-value, got %+v", result)
+	}
+}
+
+func TestCheckRateLimitsBackendErrorFailOpenSkipsDimensionButContinues(t *testing.T) {
+	ctx := context.Background()
+	broken := &fakeLimiter{err: errors.New("backend indisponível (simulado)")}
+	rest := &fakeLimiter{allowed: true, result: RateLimitResult{Limit: 10, Remaining: 5}}
+
+	ok, _ := CheckRateLimits(ctx, []RateLimitCheck{
+		{Limiter: broken, Key: "ip", FailOpen: true},
+		{Limiter: rest, Key: "global"},
+	})
+	if !ok {
+		t.Fatal("onBackendFailure: open deveria deixar passar quando o backend de uma dimensão falha")
+	}
+	if rest.allowCalls != 1 {
+		t.Fatal("fail-open deveria pular só a dimensão quebrada, não interromper as demais")
+	}
+}
+
+func TestCheckRateLimitsBackendErrorFailClosedBlocks(t *testing.T) {
+	ctx := context.Background()
+	broken := &fakeLimiter{err: errors.New("backend indisponível (simulado)")}
+
+	ok, _ := CheckRateLimits(ctx, []RateLimitCheck{{Limiter: broken, Key: "ip", FailOpen: false}})
+	if ok {
+		t.Fatal("onBackendFailure: closed deveria bloquear quando o backend falha")
+	}
+}
+
+// TestMemoryIdempotencyStorePeekReplayVsFresh prova o seam que G4 usa para
+// nunca deixar um replay idempotente passar por rate limiting (spec
+// §14/§16): Peek é read-only (nunca inicia um registro em voo, ao
+// contrário de Begin) e só reporta true para um registro TERMINAL com o
+// MESMO fingerprint.
+func TestMemoryIdempotencyStorePeekReplayVsFresh(t *testing.T) {
+	s := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+
+	if s.Peek(ctx, "k1", "fp1") {
+		t.Fatal("chave nunca vista: Peek deveria devolver false")
+	}
+
+	begin, err := s.Begin(ctx, "k1", "fp1")
+	if err != nil || begin.Outcome != BeginStarted {
+		t.Fatalf("Begin inesperado: %+v, %v", begin, err)
+	}
+	if s.Peek(ctx, "k1", "fp1") {
+		t.Fatal("registro ainda EM VOO (não concluído): Peek deveria devolver false")
+	}
+
+	if err := s.Complete(ctx, "k1", NewCompletedResult(nil), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Peek(ctx, "k1", "fp1") {
+		t.Fatal("registro concluído com o MESMO fingerprint: Peek deveria devolver true")
+	}
+	if s.Peek(ctx, "k1", "fp-diferente") {
+		t.Fatal("fingerprint diferente (conflito): Peek deveria devolver false")
+	}
+}
+
+func TestNewLimiterUnknownAlgorithmDefaultsToTokenBucket(t *testing.T) {
+	l := NewLimiter("nonsense", 10, time.Minute, 0)
+	if _, ok := l.(*tokenBucketLimiter); !ok {
+		t.Fatalf("algoritmo desconhecido deveria cair no default token_bucket, got %T", l)
+	}
+}

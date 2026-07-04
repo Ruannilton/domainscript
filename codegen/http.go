@@ -9,6 +9,7 @@ import (
 	"domainscript/ast"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
+	"domainscript/program"
 	"domainscript/symbols"
 	"domainscript/types"
 )
@@ -85,8 +86,9 @@ import (
 // G2 — aqui é só o carrier). writeBusinessError distingue o erro por
 // errors.As(&runtime.BusinessError): negócio -> 422, exceto ErrForbidden
 // (403) e ErrNotFound (404); qualquer outro error (infra) -> 503. Rate-limit
-// (429), tenant ausente (400) e sunset (410) são marcos G4/G5/G6 — nem
-// mencionados aqui de propósito, para não travar a extensão futura.
+// (429, G4, ver emitRateLimitGate acima e codegen/ratelimit.go) já está
+// coberto; tenant ausente (400) e sunset (410) continuam marcos G5/G6 —
+// nem mencionados aqui de propósito, para não travar a extensão futura.
 //
 // --- Forma do corpo de resposta (decisão desta task) ---
 //
@@ -103,17 +105,24 @@ import (
 // iface. iface nil ou sem Routes não emite nada (hadRoutes=false) — o
 // chamador usa hadRoutes para decidir se emite os helpers de borda
 // (devCaller/writeBusinessError, emitHTTPHelpers): não faz sentido importar
-// "errors"/"encoding/json" num service sem nenhuma rota.
-func emitHTTPRoutes(e *emit.Emitter, muxVar string, iface *ast.InterfaceDecl, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable) (hadRoutes bool, err error) {
+// "errors"/"encoding/json" num service sem nenhuma rota. rlPending acumula as
+// declarações de rate limit (G4, spec §16) que ALGUMA rota enfileirou —
+// vazio quando nenhuma rota configura "rateLimit"; o chamador
+// (generateCmdMainFile) as renderiza de volta no nível de pacote depois que
+// este bloco (newMux) fecha (ver a doc de pendingRateLimitPlan,
+// codegen/ratelimit.go, sobre por que isso não pode ser emitido aqui
+// dentro).
+func emitHTTPRoutes(e *emit.Emitter, muxVar string, iface *ast.InterfaceDecl, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) (hadRoutes bool, rlPending []pendingRateLimitPlan, err error) {
 	if iface == nil || len(iface.Routes) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
+	rlEnv := newHTTPRateLimitEnv(prog, iface)
 	for _, route := range iface.Routes {
-		if err := emitRoute(e, muxVar, route, buckets, modules, model, tab); err != nil {
-			return true, fmt.Errorf("rota %s %q -> %s: %w", route.Method, route.Path, route.Target, err)
+		if err := emitRoute(e, muxVar, route, buckets, modules, model, tab, rlEnv); err != nil {
+			return true, *rlEnv.pending, fmt.Errorf("rota %s %q -> %s: %w", route.Method, route.Path, route.Target, err)
 		}
 	}
-	return true, nil
+	return true, *rlEnv.pending, nil
 }
 
 // routeTarget é o resultado de resolveRouteTarget: exatamente um dos dois
@@ -151,16 +160,18 @@ func resolveRouteTarget(buckets map[string]moduleBucket, modules []string, targe
 }
 
 // emitRoute despacha para emitUseCaseRoute ou emitQueryRoute conforme
-// resolveRouteTarget achou.
-func emitRoute(e *emit.Emitter, muxVar string, route *ast.Route, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable) error {
+// resolveRouteTarget achou. rlEnv (G4, spec §16) resolve/enfileira o rate
+// limiting da rota, quando configurado — ver a doc de httpRateLimitEnv
+// (codegen/ratelimit.go).
+func emitRoute(e *emit.Emitter, muxVar string, route *ast.Route, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv) error {
 	target, err := resolveRouteTarget(buckets, modules, route.Target)
 	if err != nil {
 		return err
 	}
 	if target.usecase != nil {
-		return emitUseCaseRoute(e, muxVar, route, target.usecase, target.ucModule, buckets, modules, model, tab)
+		return emitUseCaseRoute(e, muxVar, route, target.usecase, target.ucModule, buckets, modules, model, tab, rlEnv)
 	}
-	return emitQueryRoute(e, muxVar, route, target.query, target.qModule, model, tab)
+	return emitQueryRoute(e, muxVar, route, target.query, target.qModule, model, tab, rlEnv)
 }
 
 // findCommandInBuckets procura um CommandDecl de nome name entre TODOS os
@@ -430,11 +441,46 @@ func emitNoCacheBypass(e *emit.Emitter, runtimeAlias string) {
 	})
 }
 
+// emitRateLimitGate emite a checagem de rate limit (G4, spec §16) comum a
+// Query e a um UseCase SEM idempotência: chama a função de checagem da
+// rota, e ou escreve o 429 + headers e retorna, ou escreve os headers de
+// sucesso e segue.
+func emitRateLimitGate(e *emit.Emitter, checksFuncName, runtimeAlias string) {
+	e.Line("rlOK, rlResult := %s.CheckRateLimits(ctx, %s(ctx, r))", runtimeAlias, checksFuncName)
+	e.Block("if !rlOK", func() {
+		e.Line("writeRateLimitExceeded(w, rlResult)")
+		e.Line("return")
+	})
+	e.Line("writeRateLimitHeaders(w, rlResult)")
+}
+
 // emitUseCaseRoute emite um mux.HandleFunc para uma rota cujo Target resolve
 // a um UseCase (ver a doc do arquivo: decodifica o corpo JSON no Command,
 // sobrescreve os campos correlacionados a path params, despacha o UseCase, e
 // mapeia o resultado — sucesso 204 sem corpo, erro via writeBusinessError).
-func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.UseCaseDecl, ucModule string, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable) error {
+//
+// --- Rate limiting (G4, spec §16) ---
+//
+// Quando rlEnv.resolveAndQueue devolve um nome de função (a rota configura
+// "rateLimit" em algum lugar) e o UseCase NÃO declara idempotency, a
+// checagem roda logo ANTES do corpo/path params serem sequer parseados —
+// nenhum trabalho de decodificação para uma requisição que vai ser 429 de
+// qualquer jeito.
+//
+// Quando o UseCase TAMBÉM declara "idempotency { ... }" (G2), a ordem
+// inverte: o corpo/path params são decodificados PRIMEIRO (o cmd precisa
+// existir para "<Nome>IsReplay(ctx, cmd)" poder responder), e só quando
+// IsReplay devolve false a checagem de rate limit roda. Um replay
+// idempotente conhecido NUNCA passa por runtime.CheckRateLimits — spec
+// §14/§16: "retry idempotente não consome cota" (ver a doc de
+// codegen/usecase_idempotency.go sobre por que "consumir e depois
+// estornar" não FUNCIONA aqui: um estorno só rodaria DEPOIS do despacho,
+// tarde demais para a checagem da PRÓPRIA requisição já ter negado por
+// cota esgotada).
+//
+// Uma rota sem "rateLimit" configurado (checksFuncName == "") não muda
+// NADA: o handler continua byte a byte igual ao de antes desta task.
+func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.UseCaseDecl, ucModule string, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv) error {
 	cmdDecl, cmdModule, ok := findCommandInBuckets(buckets, modules, uc.Handles)
 	if !ok {
 		return fmt.Errorf("UseCase %s: Command %q (handles) não encontrado nos módulos do grupo", uc.Name, uc.Handles)
@@ -457,12 +503,21 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 	httpAlias := e.Import("net/http")
 	runtimeAlias := e.Import(RuntimeImportPath)
 
+	checksFuncName, err := rlEnv.resolveAndQueue(route, ucModule)
+	if err != nil {
+		return fmt.Errorf("UseCase %s: %w", uc.Name, err)
+	}
+	hasIdempotency := uc.Idempotency != nil
+
 	pattern := route.Method + " " + route.Path
 	header := fmt.Sprintf("%s.HandleFunc(%s, func(w %s.ResponseWriter, r *%s.Request)", muxVar, strconv.Quote(pattern), httpAlias, httpAlias)
 
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
 		emitCallerAndIdempotency(e, runtimeAlias)
+		if checksFuncName != "" && !hasIdempotency {
+			emitRateLimitGate(e, checksFuncName, runtimeAlias)
+		}
 
 		e.Line("var cmd %s.%s", cmdAlias, cmdDecl.Name)
 		e.Block("if r.ContentLength != 0", func() {
@@ -490,6 +545,14 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 			e.Line("cmd.%s = %s", goname.ExportField(field.Name), varName)
 		}
 
+		if checksFuncName != "" && hasIdempotency {
+			// O cmd só existe a partir daqui — precisa vir DEPOIS do decode/
+			// path params (ver a doc do arquivo acima).
+			e.Block(fmt.Sprintf("if !%s.%sIsReplay(ctx, cmd)", ucAlias, uc.Name), func() {
+				emitRateLimitGate(e, checksFuncName, runtimeAlias)
+			})
+		}
+
 		e.Block(fmt.Sprintf("if err := %s.%s(ctx, cmd); err != nil", ucAlias, uc.Name), func() {
 			e.Line("writeBusinessError(w, err)")
 			e.Line("return")
@@ -502,8 +565,11 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 // emitQueryRoute emite um mux.HandleFunc para uma rota cujo Target resolve a
 // uma Query (ver a doc do arquivo: cada parâmetro declarado vem de um path
 // param de mesmo nome, na ordem declarada; sucesso 200 + JSON, erro via
-// writeBusinessError).
-func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.QueryDecl, qModule string, model *types.Model, tab *symbols.SymbolTable) error {
+// writeBusinessError). rlEnv (G4, spec §16) resolve/enfileira o rate
+// limiting da rota, quando configurado — ver emitRateLimitGate. Query não
+// tem conceito de idempotência (REQ-20.4/G2 só cobre Command), então a
+// checagem sempre roda ANTES de tudo, sem exceção.
+func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.QueryDecl, qModule string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv) error {
 	pp := routePathParams(route.Path)
 	pathSet := make(map[string]bool, len(pp))
 	for _, p := range pp {
@@ -517,12 +583,20 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 	httpAlias := e.Import("net/http")
 	runtimeAlias := e.Import(RuntimeImportPath)
 
+	checksFuncName, err := rlEnv.resolveAndQueue(route, qModule)
+	if err != nil {
+		return fmt.Errorf("Query %s: %w", decl.Name, err)
+	}
+
 	pattern := route.Method + " " + route.Path
 	header := fmt.Sprintf("%s.HandleFunc(%s, func(w %s.ResponseWriter, r *%s.Request)", muxVar, strconv.Quote(pattern), httpAlias, httpAlias)
 
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
 		emitCallerAndIdempotency(e, runtimeAlias)
+		if checksFuncName != "" {
+			emitRateLimitGate(e, checksFuncName, runtimeAlias)
+		}
 		if len(decl.Cache) > 0 {
 			emitNoCacheBypass(e, runtimeAlias)
 		}
@@ -615,8 +689,10 @@ func emitHTTPHelpers(e *emit.Emitter, runtimeAlias string) {
 	e.Line("// (G2) caem no default (422) DE PROPÓSITO — REQ-20.4 pede 422 para o")
 	e.Line("// conflito, que já é o que o default produz; não precisam de um case à")
 	e.Line("// parte, ao contrário de Forbidden/NotFound/InFlight, que DEVIAM do default.")
-	e.Line("// Rate-limit (429), tenant ausente (400) e sunset (410) são marcos")
-	e.Line("// posteriores (G4/G5/G6) — deliberadamente não tratados aqui, para não")
+	e.Line("// Rate-limit (429, G4) é resolvido À PARTE, ANTES desta função sequer ser")
+	e.Line("// chamada (writeRateLimitExceeded, ver as rotas com \"rateLimit\" acima) —")
+	e.Line("// nunca chega a err aqui. Tenant ausente (400) e sunset (410) continuam")
+	e.Line("// marcos posteriores (G5/G6) — deliberadamente não tratados aqui, para não")
 	e.Line("// travar a extensão futura com suposições erradas.")
 	e.Block(fmt.Sprintf("func writeBusinessError(w %s.ResponseWriter, err error)", httpAlias), func() {
 		e.Line("var be %s.BusinessError", runtimeAlias)

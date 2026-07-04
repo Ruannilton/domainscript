@@ -950,9 +950,10 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	e.Line("// para poder ser exercitada por teste via httptest, sem subir um socket real.")
 	var bodyErr error
 	var hadRoutes bool
+	var rlPending []pendingRateLimitPlan
 	e.Block(fmt.Sprintf("func newMux(store %s.EventStore) *%s.ServeMux", runtimeAlias, httpAlias), func() {
 		e.Line("mux := %s.NewServeMux()", httpAlias)
-		hadRoutes, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab)
+		hadRoutes, rlPending, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab, prog)
 		if bodyErr != nil {
 			return
 		}
@@ -963,6 +964,17 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	}
 	if hadRoutes {
 		emitHTTPHelpers(e, runtimeAlias)
+	}
+	// Declarações de rate limit (G4, spec §16) — vars de Limiter + a função
+	// "<rota>RateLimitChecks" de CADA rota que configura "rateLimit" — só
+	// depois que o bloco de newMux (acima) fecha: são declarações de PACOTE,
+	// e emiti-las de DENTRO de newMux as aninharia dentro de outra func, Go
+	// inválido (ver a doc de pendingRateLimitPlan, codegen/ratelimit.go).
+	if len(rlPending) > 0 {
+		emitRateLimitHelpers(e, runtimeAlias, httpAlias)
+		for _, p := range rlPending {
+			emitRouteRateLimitChecks(e, p, runtimeAlias, httpAlias)
+		}
 	}
 
 	content, err := e.Bytes()
