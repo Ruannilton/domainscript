@@ -414,6 +414,22 @@ func emitCallerAndIdempotency(e *emit.Emitter, runtimeAlias string) {
 	})
 }
 
+// emitNoCacheBypass emite o bypass do cache de Query via "Cache-Control:
+// no-cache" (G3, spec §15): só chamado por emitQueryRoute quando o alvo da
+// rota é uma Query com "cache" declarado — para uma Query sem cache, marcar
+// ctx não teria nenhum efeito (a Query descartaria o valor sem nunca chamar
+// runtime.NoCacheFrom), então nem vale emitir a checagem (mantém o Go de
+// rotas sem cache byte-a-byte igual ao de antes desta task). O bypass pula
+// só a LEITURA do cache (a Query cacheada ainda REPOPULA com o resultado
+// fresco — revalidar, não desligar o cache, a semântica padrão de
+// "no-cache" HTTP).
+func emitNoCacheBypass(e *emit.Emitter, runtimeAlias string) {
+	stringsAlias := e.Import("strings")
+	e.Block(fmt.Sprintf(`if %s.Contains(%s.ToLower(r.Header.Get("Cache-Control")), "no-cache")`, stringsAlias, stringsAlias), func() {
+		e.Line("ctx = %s.WithNoCache(ctx)", runtimeAlias)
+	})
+}
+
 // emitUseCaseRoute emite um mux.HandleFunc para uma rota cujo Target resolve
 // a um UseCase (ver a doc do arquivo: decodifica o corpo JSON no Command,
 // sobrescreve os campos correlacionados a path params, despacha o UseCase, e
@@ -507,6 +523,9 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
 		emitCallerAndIdempotency(e, runtimeAlias)
+		if len(decl.Cache) > 0 {
+			emitNoCacheBypass(e, runtimeAlias)
+		}
 
 		argNames := make([]string, len(decl.Params))
 		for i, param := range decl.Params {

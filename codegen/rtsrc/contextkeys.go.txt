@@ -11,7 +11,8 @@ const (
 	callerCtxKey ctxKey = iota
 	tenantCtxKey
 	idempotencyKeyCtxKey
-	traceCtxKey // accessor pair (WithTrace/TraceFrom) lands with observability, H2.
+	traceCtxKey   // accessor pair (WithTrace/TraceFrom) lands with observability, H2.
+	noCacheCtxKey // G3, spec §15 — Cache-Control: no-cache bypass, see WithNoCache/NoCacheFrom.
 )
 
 // WithCaller returns a copy of ctx carrying caller, retrievable via
@@ -57,4 +58,22 @@ func WithIdempotencyKey(ctx context.Context, key string) context.Context {
 func IdempotencyKeyFrom(ctx context.Context) (string, bool) {
 	key, ok := ctx.Value(idempotencyKeyCtxKey).(string)
 	return key, ok
+}
+
+// WithNoCache returns a copy of ctx marked to bypass a cached Query's cache
+// READ for this call (spec §15: "Bypass: Header HTTP Cache-Control:
+// no-cache") — the generated HTTP edge (codegen/http.go) sets this when the
+// request carries that header. The cached Query's wrapper still POPULATES
+// the cache with the fresh result afterwards (standard no-cache semantics:
+// revalidate, don't disable the cache for everyone else — see
+// codegen/decl_query_cache.go).
+func WithNoCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noCacheCtxKey, true)
+}
+
+// NoCacheFrom reports whether ctx carries the no-cache bypass set by
+// WithNoCache.
+func NoCacheFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(noCacheCtxKey).(bool)
+	return v
 }

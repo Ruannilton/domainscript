@@ -90,13 +90,26 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 	}
 	fsDefault := moduleFileStorageDefault(mod)
 
+	// cached acumula, por Query com "cache" (G3, spec §15), o plano já
+	// resolvido — emitQueryCacheWireFunc consome isso no final do arquivo
+	// para montar "func WireQueryCache(d runtime.Dispatcher)" (ver
+	// decl_query_cache.go).
+	var cached []cachedQueryWire
 	for i, decl := range decls {
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitQueryDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias, fsByField, fsDefault); err != nil {
+		plan, err := emitQueryDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias, fsByField, fsDefault, mod)
+		if err != nil {
 			return nil, err
 		}
+		if plan != nil {
+			cached = append(cached, cachedQueryWire{name: decl.Name, plan: plan})
+		}
+	}
+	if len(cached) > 0 {
+		e.Line("")
+		emitQueryCacheWireFunc(e, ctxAlias, runtimeAlias, cached)
 	}
 	return e.Bytes()
 }
@@ -105,8 +118,17 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 // context.Context, store runtime.EventStore, <params...>) (<Return>, error)"
 // — ctx/store sempre presentes (mesmo quando o corpo não os usa, ex. um
 // fallback puro), o mesmo espírito de UseCase sempre receber ctx mesmo sem
-// timeout (decl_usecase.go) — mais o corpo (ver queryBodyEmitter).
-func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string) error {
+// timeout (decl_usecase.go) — mais o corpo (ver queryBodyEmitter). Quando
+// decl.Cache declara uma política (G3, spec §15), o corpo de sempre migra
+// para um nome PRIVADO ("<nome>Run") e o nome público vira o wrapper de
+// cache (decl_query_cache.go/emitQueryCacheWrapper) — mesmo padrão do
+// wrapper de idempotência de UseCase (G2, usecase_idempotency.go). mod (G3)
+// é o *program.Module do módulo — usado só para o fallback "defaultTtl" do
+// bloco mod.ds Cache{} quando a Query não declara "ttl" própria; nil é
+// seguro (nenhum fallback disponível, mesmo efeito de mod.ds sem Cache{}).
+// Devolve o queryCachePlan resolvido (nil quando a Query não usa cache) para
+// EmitQueries acumular e montar WireQueryCache.
+func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string, mod *program.Module) (*queryCachePlan, error) {
 	env := lower.New(model, tab, module)
 	env.SeedQuery(decl.Params)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
@@ -124,22 +146,44 @@ func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*
 		e.Import("time")
 	}
 
+	plan, err := planQueryCache(decl, aggregates, env, l, mod)
+	if err != nil {
+		return nil, fmt.Errorf("codegen: Query %s: %w", decl.Name, err)
+	}
+	if plan != nil {
+		// ttl/negativeCacheTtl lowerizam para "time.Duration(...)" cru (mesma
+		// razão do signed_url acima) — garantir o import ANTES do corpo.
+		e.Import("time")
+	}
+
 	returnGoType, err := goname.GoFieldType(decl.Return)
 	if err != nil {
-		return fmt.Errorf("codegen: Query %s: return: %w", decl.Name, err)
+		return nil, fmt.Errorf("codegen: Query %s: return: %w", decl.Name, err)
 	}
 
 	paramStrs, err := handleParamList(decl.Params)
 	if err != nil {
-		return fmt.Errorf("codegen: Query %s: %w", decl.Name, err)
+		return nil, fmt.Errorf("codegen: Query %s: %w", decl.Name, err)
 	}
+	paramNames := queryParamNames(decl.Params)
+
+	fnName := decl.Name
+	if plan != nil {
+		fnName = unexportedQueryRunName(decl.Name)
+	}
+
 	allParams := append([]string{
 		fmt.Sprintf("ctx %s.Context", ctxAlias),
 		fmt.Sprintf("store %s.EventStore", runtimeAlias),
 	}, paramStrs...)
-	sig := fmt.Sprintf("func %s(%s) (%s, error)", decl.Name, strings.Join(allParams, ", "), returnGoType)
+	sig := fmt.Sprintf("func %s(%s) (%s, error)", fnName, strings.Join(allParams, ", "), returnGoType)
 
-	e.Line("// %s é a Query %s (§6.3): leitura pura, sem unit of work.", decl.Name, decl.Name)
+	if plan != nil {
+		e.Line("// %s carrega o corpo de sempre da Query %s (§6.3) — a borda com cache", fnName, decl.Name)
+		e.Line("// (spec §15, G3) é %s, logo abaixo.", decl.Name)
+	} else {
+		e.Line("// %s é a Query %s (§6.3): leitura pura, sem unit of work.", decl.Name, decl.Name)
+	}
 
 	qc := &queryBodyEmitter{
 		e:            e,
@@ -158,9 +202,15 @@ func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*
 		bodyErr = qc.emitBody(decl.Body)
 	})
 	if bodyErr != nil {
-		return fmt.Errorf("codegen: Query %s: %w", decl.Name, bodyErr)
+		return nil, fmt.Errorf("codegen: Query %s: %w", decl.Name, bodyErr)
 	}
-	return nil
+
+	if plan != nil {
+		emitQueryCacheVar(e, decl, plan, runtimeAlias)
+		emitQueryCacheWrapper(e, decl, plan, fnName, returnGoType, paramStrs, paramNames, ctxAlias, runtimeAlias)
+	}
+
+	return plan, nil
 }
 
 // queryBodyEmitter carrega o estado compartilhado pelas funções de lowering

@@ -412,7 +412,7 @@
   F3) + o `ensure cmd/agg exists` adiado de E7.2. _(REQ-20.4, REQ-26, spec §14)_
   **Commit:** `feat(codegen): idempotência de Commands`
 
-- [ ] **G3** Cache de Query (`QueryDecl.Cache`, spec §15): `ttl`, invalidação por
+- [x] **G3** Cache de Query (`QueryDecl.Cache`, spec §15): `ttl`, invalidação por
   evento (inferida dos aggregates tocados; override `invalidateOn`; in-process
   imediata após `emit`, antes da fila externa), `negativeCacheTtl`, stampede
   protection (request coalescing), fail-open na falha do backend, bypass

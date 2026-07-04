@@ -1,0 +1,125 @@
+package widgets
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	time "time"
+)
+
+// getWidgetRun carrega o corpo de sempre da Query GetWidget (§6.3) — a borda com cache
+// (spec §15, G3) é GetWidget, logo abaixo.
+func getWidgetRun(ctx context.Context, store runtime.EventStore, widgetId WidgetId) (WidgetView, error) {
+	var zero WidgetView
+	if !(widgetId != WidgetId("missing")) {
+		return zero, ErrWidgetNotFound
+	}
+	widget, err := LoadWidget(runtime.NewEventLoader(ctx, store), widgetId)
+	if err != nil {
+		var zero WidgetView
+		return zero, err
+	}
+	return WidgetView{Id: widget.state.Id, Name: widget.state.Name}, nil
+}
+
+// getWidgetCache é o cache da Query GetWidget (spec §15, G3): invalidado (in-process,
+// imediatamente após emit, antes de qualquer fila externa) pelos eventos
+// [WidgetRenamed] — declarados explicitamente em "invalidateOn".
+var getWidgetCache = runtime.NewMemoryQueryCache()
+
+// GetWidget é a Query GetWidget (§6.3) com cache (spec §15, G3): ttl/negativeCacheTtl,
+// invalidação por [WidgetRenamed], stampede protection (Coalesce — só 1 execução
+// real de getWidgetRun por chave, mesmo sob N chamadas concorrentes) e bypass
+// "Cache-Control: no-cache" (runtime.NoCacheFrom pula a LEITURA; ainda
+// repopula o cache com o resultado fresco).
+func GetWidget(ctx context.Context, store runtime.EventStore, widgetId WidgetId) (WidgetView, error) {
+	tenant, _ := runtime.TenantFrom(ctx)
+	key := runtime.CacheKey("GetWidget", tenant.ID, widgetId)
+	if !runtime.NoCacheFrom(ctx) {
+		if v, cachedErr, hit := getWidgetCache.Get(ctx, key); hit {
+			if cachedErr != nil {
+				var zero WidgetView
+				return zero, cachedErr
+			}
+			return v.(WidgetView), nil
+		}
+	}
+	result, err := getWidgetCache.Coalesce(key, func() (any, error) {
+		return getWidgetRun(ctx, store, widgetId)
+	})
+	if err != nil {
+		if runtime.IsBusinessError(err) {
+			getWidgetCache.SetErr(ctx, key, err, time.Duration(100000000))
+		}
+		var zero WidgetView
+		return zero, err
+	}
+	getWidgetCache.Set(ctx, key, result, time.Duration(200000000))
+	return result.(WidgetView), nil
+}
+
+// getWidgetAutoInvalidateRun carrega o corpo de sempre da Query GetWidgetAutoInvalidate (§6.3) — a borda com cache
+// (spec §15, G3) é GetWidgetAutoInvalidate, logo abaixo.
+func getWidgetAutoInvalidateRun(ctx context.Context, store runtime.EventStore, widgetId WidgetId) (WidgetView, error) {
+	widget, err := LoadWidget(runtime.NewEventLoader(ctx, store), widgetId)
+	if err != nil {
+		var zero WidgetView
+		return zero, err
+	}
+	return WidgetView{Id: widget.state.Id, Name: widget.state.Name}, nil
+}
+
+// getWidgetAutoInvalidateCache é o cache da Query GetWidgetAutoInvalidate (spec §15, G3): invalidado (in-process,
+// imediatamente após emit, antes de qualquer fila externa) pelos eventos
+// [WidgetCreated, WidgetRenamed] — inferidos dos Applies do Aggregate Widget tocado por esta Query.
+var getWidgetAutoInvalidateCache = runtime.NewMemoryQueryCache()
+
+// GetWidgetAutoInvalidate é a Query GetWidgetAutoInvalidate (§6.3) com cache (spec §15, G3): ttl/negativeCacheTtl,
+// invalidação por [WidgetCreated, WidgetRenamed], stampede protection (Coalesce — só 1 execução
+// real de getWidgetAutoInvalidateRun por chave, mesmo sob N chamadas concorrentes) e bypass
+// "Cache-Control: no-cache" (runtime.NoCacheFrom pula a LEITURA; ainda
+// repopula o cache com o resultado fresco).
+func GetWidgetAutoInvalidate(ctx context.Context, store runtime.EventStore, widgetId WidgetId) (WidgetView, error) {
+	tenant, _ := runtime.TenantFrom(ctx)
+	key := runtime.CacheKey("GetWidgetAutoInvalidate", tenant.ID, widgetId)
+	if !runtime.NoCacheFrom(ctx) {
+		if v, cachedErr, hit := getWidgetAutoInvalidateCache.Get(ctx, key); hit {
+			if cachedErr != nil {
+				var zero WidgetView
+				return zero, cachedErr
+			}
+			return v.(WidgetView), nil
+		}
+	}
+	result, err := getWidgetAutoInvalidateCache.Coalesce(key, func() (any, error) {
+		return getWidgetAutoInvalidateRun(ctx, store, widgetId)
+	})
+	if err != nil {
+		var zero WidgetView
+		return zero, err
+	}
+	getWidgetAutoInvalidateCache.Set(ctx, key, result, time.Duration(60000000000))
+	return result.(WidgetView), nil
+}
+
+// WireQueryCache registra a invalidação de cache das Queries deste pacote no
+// runtime.Dispatcher (spec §15, G3): cada evento do conjunto inferido/
+// invalidateOn de uma Query com cache dispara InvalidateAll na respectiva
+// instância — in-process, imediatamente após emit (antes de qualquer fila
+// externa, §15), porque runtime.Dispatcher.Publish já roda de forma síncrona
+// dentro de uow.Run logo após o commit (uow.go.txt). Chamada por
+// cmd/<service>/main.go na inicialização, ao lado de
+// Wire/StartWorkers/StartIdempotencyCleanup.
+func WireQueryCache(d runtime.Dispatcher) {
+	d.Subscribe("WidgetRenamed", func(ctx context.Context, ev runtime.Event) error {
+		getWidgetCache.InvalidateAll()
+		return nil
+	})
+	d.Subscribe("WidgetCreated", func(ctx context.Context, ev runtime.Event) error {
+		getWidgetAutoInvalidateCache.InvalidateAll()
+		return nil
+	})
+	d.Subscribe("WidgetRenamed", func(ctx context.Context, ev runtime.Event) error {
+		getWidgetAutoInvalidateCache.InvalidateAll()
+		return nil
+	})
+}

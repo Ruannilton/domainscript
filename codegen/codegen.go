@@ -113,8 +113,9 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	modulesWithUseCases := make(map[string]bool, len(moduleNames))
 	modulesWithPolicies := make(map[string]bool, len(moduleNames))
 	modulesWithWorkers := make(map[string]bool, len(moduleNames))
-	modulesWithIdempotency := make(map[string]bool, len(moduleNames)) // G2, REQ-20.4
-	modulesXADatabases := make(map[string][]string, len(moduleNames)) // G1, REQ-20.5
+	modulesWithIdempotency := make(map[string]bool, len(moduleNames))   // G2, REQ-20.4
+	modulesWithCachedQueries := make(map[string]bool, len(moduleNames)) // G3, REQ-21.3
+	modulesXADatabases := make(map[string][]string, len(moduleNames))   // G1, REQ-20.5
 	buckets := make(map[string]moduleBucket, len(moduleNames))
 
 	for _, name := range moduleNames {
@@ -129,6 +130,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		modulesWithPolicies[name] = marks.hasPolicies
 		modulesWithWorkers[name] = marks.hasWorkers
 		modulesWithIdempotency[name] = marks.hasIdempotency
+		modulesWithCachedQueries[name] = marks.hasCachedQueries
 		modulesXADatabases[name] = marks.xaDatabases
 		allPublicEvents = append(allPublicEvents, b.pubEvents...)
 		for _, ev := range b.pubEvents {
@@ -145,7 +147,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range buildCmdGroups(prog) {
-		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesXADatabases, buckets, model, tab)
+		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesXADatabases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -303,6 +305,16 @@ type moduleMarks struct {
 	// ao lado de StartWorkers (mesma razão de não reusar "Wire", ver a doc de
 	// decl_worker.go).
 	hasIdempotency bool
+	// hasCachedQueries (G3, REQ-21.3, spec §15) é true quando ao menos uma
+	// Query deste módulo declara "cache { ... }" — vazio no caso comum
+	// (nenhuma Query do wallet/shop declara). generateCmdMainFile usa isto
+	// para (a) garantir que o service tenha um runtime.Dispatcher mesmo sem
+	// nenhuma Policy (a invalidação de cache precisa de um Dispatcher para
+	// assinar, exatamente como Policy) e (b) chamar
+	// "<pkg>.WireQueryCache(dispatcher)" — nome próprio, ao lado de
+	// StartWorkers/StartIdempotencyCleanup (mesma razão de não reusar "Wire",
+	// ver a doc de decl_worker.go).
+	hasCachedQueries bool
 }
 
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
@@ -457,6 +469,14 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "views.go"), Content: content})
 	}
 
+	hasCachedQueries := false
+	for _, q := range b.queries {
+		if len(q.Cache) > 0 {
+			hasCachedQueries = true
+			break
+		}
+	}
+
 	if len(b.queries) > 0 {
 		content, err := EmitQueries(pkg, b.queries, aggregates, prog, model, tab, moduleName, reg)
 		if err != nil {
@@ -531,7 +551,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "filestorage.go"), Content: content})
 	}
 
-	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency}, nil
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -716,7 +736,21 @@ func defaultCmdDirName(modules []string) string {
 // dentro do MESMO processo). needsDispatcher (Policy local) e um canal de
 // saída no MESMO service ainda não têm wiring combinado suportado — erro de
 // geração claro (nem wallet nem shop combinam os dois hoje).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
+//
+// --- Cache de Query (G3, REQ-21.3, spec §15) ---
+//
+// Um módulo com ao menos uma Query cacheada (modulesWithCachedQueries) força
+// needsDispatcher=true mesmo sem nenhuma Policy: a invalidação de cache
+// assina o MESMO runtime.Dispatcher que Policy já usa (WireQueryCache, ver
+// decl_query_cache.go) — "in-process imediata após emit" vem de graça
+// porque Dispatcher.Publish já roda de forma síncrona dentro de uow.Run,
+// logo após o commit (uow.go.txt), antes de qualquer entrega externa. Isso
+// reusa a MESMA guarda que já recusa combinar Policy local com um canal de
+// saída no mesmo service (abaixo): uma Query cacheada num módulo que também
+// produz para um canal "queue" cai no mesmo erro claro, documentado como
+// wiring ainda não combinado (nem wallet nem shop hoje combinam nenhum dos
+// dois casos).
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -724,15 +758,16 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	httpAlias := e.Import("net/http")
 
 	type wireTarget struct {
-		alias          string
-		pkg            string
-		module         string
-		hasUseCases    bool
-		hasPolicies    bool
-		hasWorkers     bool
-		hasIdempotency bool     // G2, REQ-20.4 — chama StartIdempotencyCleanup (ver emitIdempotencyCleanupStarter)
-		xaDatabases    []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
-		fileStorages   []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
+		alias            string
+		pkg              string
+		module           string
+		hasUseCases      bool
+		hasPolicies      bool
+		hasWorkers       bool
+		hasIdempotency   bool     // G2, REQ-20.4 — chama StartIdempotencyCleanup (ver emitIdempotencyCleanupStarter)
+		hasCachedQueries bool     // G3, REQ-21.3 — chama WireQueryCache(dispatcher) (ver decl_query_cache.go)
+		xaDatabases      []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
+		fileStorages     []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
 	}
 	var wireTargets []wireTarget
 	needsDispatcher := false
@@ -742,15 +777,19 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	for _, m := range group.modules {
 		hu, hp, hw := modulesWithUseCases[m], modulesWithPolicies[m], modulesWithWorkers[m]
 		hi := modulesWithIdempotency[m]
+		hc := modulesWithCachedQueries[m] // G3
 		fsNames := moduleFileStorageNames(programModule(prog, m))
-		if !hu && !hp && !hw && len(fsNames) == 0 {
+		if !hu && !hp && !hw && !hc && len(fsNames) == 0 {
 			continue
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, hasCachedQueries: hc, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
 		if hp {
 			needsDispatcher = true
+		}
+		if hc {
+			needsDispatcher = true // G3: WireQueryCache também assina o Dispatcher
 		}
 		if hi {
 			anyIdempotency = true
@@ -795,7 +834,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		producerModule, producerChannel = m, ch
 	}
 	if producerChannel != nil && needsDispatcher {
-		return File{}, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5)", group.dirName)
+		return File{}, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5/G3)", group.dirName)
 	}
 
 	anyXADatabases := false
@@ -863,6 +902,13 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				}
 				if wt.hasUseCases || wt.hasPolicies {
 					e.Line("%s.Wire(%s)", wt.alias, strings.Join(args, ", "))
+				}
+				if wt.hasCachedQueries {
+					// WireQueryCache (G3, decl_query_cache.go): nome PRÓPRIO,
+					// nunca "Wire" (mesma razão de StartWorkers) — assina o
+					// MESMO Dispatcher que Policy usa, garantido acima por
+					// needsDispatcher.
+					e.Line("%s.WireQueryCache(dispatcher)", wt.alias)
 				}
 				if len(wt.xaDatabases) > 0 {
 					if err := emitXADatabaseWiring(e, prog, wt.module, wt.alias, wt.xaDatabases, ctxAlias); err != nil {

@@ -1,0 +1,211 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// querycache.go.txt is the per-Query cache seam behind a "cache { ttl, ... }"
+// block (spec §15, Marco G3): TTL-based caching, negative-result caching
+// (negativeCacheTtl), request coalescing (stampede protection) and
+// fail-open-shaped semantics for a future real backend. See
+// codegen/decl_query_cache.go for how a cached Query's generated code drives
+// this seam.
+//
+// --- One instance per cached Query (why invalidation needs no per-entry tags) ---
+//
+// Every cached Query gets its OWN QueryCache instance (a package-level var,
+// auto-initialized, no Wire needed — same shape as runtime.IdempotencyStore's
+// "var idem", idempotency.go.txt). Because an instance is never shared
+// between two Queries, invalidation only ever needs to evict EVERYTHING in
+// ONE instance (InvalidateAll) — there is no need to tag individual entries
+// with the event(s) that should evict them: the Query's inferred/overridden
+// invalidateOn event set (codegen/decl_query_cache.go) already applies
+// uniformly to every entry the instance holds.
+//
+// --- Backends (spec §15) ---
+//
+// mod.ds's "Cache { backend: ... }" names memory/distributed/layered
+// backends; this milestone implements ONLY "memory" (NewMemoryQueryCache) —
+// the same incremental-backend story as Idempotency's "storage: same" (G2)
+// and RateLimit's in-memory default: a distributed/layered backend is later,
+// opt-in work behind this SAME QueryCache interface (NFR-12) — no generated
+// call site changes when it lands.
+//
+// --- Fail-open (spec §15: "Falha do backend: Fail-open") ---
+//
+// Get/Set/SetErr never return an error: a future real (networked) backend
+// failing is modeled as Get simply reporting hit=false — exactly like a
+// plain miss — rather than surfacing a distinct error the generated caller
+// would have to special-case; the query just runs for real, which IS
+// fail-open. The in-memory implementation below cannot actually fail, but
+// the interface is already shaped so a future backend can fail open safely.
+//
+// --- Stampede protection (spec §15: "Cache stampede: Request coalescing por
+// construção") ---
+//
+// Coalesce ensures at most one concurrent execution of fn per key: while a
+// call for key is in flight, every other caller for the SAME key blocks on
+// the first one's result instead of re-running fn — "by construction", not
+// an opt-in the module can turn off (mirrors the spec table's own wording).
+
+// QueryCache is the cache seam a cached Query's generated wrapper drives
+// (codegen/decl_query_cache.go). value/err are stored as `any`/`error`
+// because a single instance is only ever used by ONE generated Query, whose
+// concrete return type the generated wrapper already knows and type-asserts
+// back to (see the file doc on per-Query scoping).
+type QueryCache interface {
+	// Get returns the cached entry for key. hit=false means "miss, run the
+	// query for real" (whether the entry never existed, expired, or — for a
+	// future real backend — the backend itself failed; fail-open, see file
+	// doc). When hit=true and err!=nil, err is a previously cached NEGATIVE
+	// result (negativeCacheTtl, spec §15) to return AS-IS, without running
+	// the query again.
+	Get(ctx context.Context, key string) (value any, err error, hit bool)
+	// Set stores a successful result for key, expiring after ttl. ttl<=0
+	// means "do not cache this result" (defensive: never caches forever on a
+	// zero/misconfigured ttl).
+	Set(ctx context.Context, key string, value any, ttl time.Duration)
+	// SetErr stores a NEGATIVE result (a business error the query produced
+	// for these exact args — spec §15's negativeCacheTtl) for key, expiring
+	// after ttl. ttl<=0 means "do not cache this negative result" (the
+	// generated wrapper only calls SetErr at all when the Query declares
+	// negativeCacheTtl).
+	SetErr(ctx context.Context, key string, err error, ttl time.Duration)
+	// InvalidateAll evicts every entry of this instance — called by the
+	// generated WireQueryCache (codegen/decl_query_cache.go) whenever an
+	// event in the Query's invalidation set is published, in-process,
+	// immediately after the emitting UseCase commits (spec §15: "Invalidação
+	// in-process imediata após emit, antes da fila externa").
+	InvalidateAll()
+	// Coalesce runs fn if no identical call for key is already in flight;
+	// otherwise it waits for that call's result and reuses it (request
+	// coalescing / stampede protection, see file doc). fn's error is
+	// returned as-is (never wrapped) to every waiter.
+	Coalesce(key string, fn func() (any, error)) (any, error)
+}
+
+// cacheEntry is one memoryQueryCache record — a positive value OR a negative
+// (cached-error) result, never both; ExpiresAt is compared against
+// time.Now() on every Get.
+type cacheEntry struct {
+	value     any
+	err       error
+	expiresAt time.Time
+}
+
+// queryCacheFlight tracks one in-flight Coalesce call: every caller for the
+// same key while it runs waits on done, then reads value/err — the classic
+// single-flight shape (NFR-12 keeps this hand-written instead of pulling in
+// golang.org/x/sync/singleflight).
+type queryCacheFlight struct {
+	done  chan struct{}
+	value any
+	err   error
+}
+
+// memoryQueryCache is the Marco G3 in-memory QueryCache: a mutex-guarded map
+// plus an in-flight map for Coalesce.
+type memoryQueryCache struct {
+	mu      sync.Mutex
+	entries map[string]cacheEntry
+	flights map[string]*queryCacheFlight
+}
+
+// NewMemoryQueryCache creates an empty in-memory QueryCache — one instance
+// per cached Query (see file doc).
+func NewMemoryQueryCache() QueryCache {
+	return &memoryQueryCache{
+		entries: make(map[string]cacheEntry),
+		flights: make(map[string]*queryCacheFlight),
+	}
+}
+
+// Get implements QueryCache.
+func (c *memoryQueryCache) Get(ctx context.Context, key string) (any, error, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return nil, nil, false
+	}
+	if !time.Now().Before(e.expiresAt) {
+		delete(c.entries, key)
+		return nil, nil, false
+	}
+	return e.value, e.err, true
+}
+
+// Set implements QueryCache.
+func (c *memoryQueryCache) Set(ctx context.Context, key string, value any, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = cacheEntry{value: value, expiresAt: time.Now().Add(ttl)}
+}
+
+// SetErr implements QueryCache.
+func (c *memoryQueryCache) SetErr(ctx context.Context, key string, err error, ttl time.Duration) {
+	if ttl <= 0 || err == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = cacheEntry{err: err, expiresAt: time.Now().Add(ttl)}
+}
+
+// InvalidateAll implements QueryCache.
+func (c *memoryQueryCache) InvalidateAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]cacheEntry)
+}
+
+// Coalesce implements QueryCache.
+func (c *memoryQueryCache) Coalesce(key string, fn func() (any, error)) (any, error) {
+	c.mu.Lock()
+	if fl, inFlight := c.flights[key]; inFlight {
+		c.mu.Unlock()
+		<-fl.done
+		return fl.value, fl.err
+	}
+	fl := &queryCacheFlight{done: make(chan struct{})}
+	c.flights[key] = fl
+	c.mu.Unlock()
+
+	fl.value, fl.err = fn()
+	close(fl.done)
+
+	c.mu.Lock()
+	delete(c.flights, key)
+	c.mu.Unlock()
+
+	return fl.value, fl.err
+}
+
+// CacheKey builds the deterministic cache key for a cached Query's call
+// (spec §15: "tenant na chave" + query name + args): tenant (empty until
+// multi-tenancy, Marco G5, resolves it at the HTTP edge — see TenantFrom)
+// comes first so a future per-tenant backend can shard/scan by prefix; query
+// name defends against accidental collisions even though each cached Query
+// already owns a SEPARATE QueryCache instance (file doc); args are
+// JSON-marshaled the same way IdempotencyFingerprint (idempotency.go.txt)
+// hashes a Command's payload — deterministic field order, equal for two
+// calls with equal-valued arguments.
+func CacheKey(query, tenant string, args ...any) string {
+	b, err := json.Marshal(args)
+	if err != nil {
+		// Same defensive spirit as IdempotencyFingerprint: never silently
+		// collapse distinct args into the same key just because one of them
+		// failed to marshal — a generated Query's params are always
+		// JSON-marshalable in practice (VOs/Enums/primitives/composites), so
+		// this is unreached by generated code.
+		return fmt.Sprintf("unmarshalable:%s:%s:%v", tenant, query, err)
+	}
+	return tenant + "|" + query + "|" + string(b)
+}
