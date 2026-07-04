@@ -83,14 +83,24 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		return nil, ErrHasDiagnostics
 	}
 
+	needsSQL := programNeedsSQLAdapter(prog) // G1, NFR-12 — true só quando ao menos um Database é provider:"sqlite"
+
 	var files []File
-	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "")})
+	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", needsSQL)})
 
 	runtimeFiles, err := generateRuntimeFiles()
 	if err != nil {
 		return nil, err
 	}
 	files = append(files, runtimeFiles...)
+
+	if needsSQL {
+		sqlFiles, err := generateSQLRuntimeFiles()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, sqlFiles...)
+	}
 
 	moduleNames := make([]string, 0, len(prog.Modules))
 	for name := range prog.Modules {
@@ -103,6 +113,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	modulesWithUseCases := make(map[string]bool, len(moduleNames))
 	modulesWithPolicies := make(map[string]bool, len(moduleNames))
 	modulesWithWorkers := make(map[string]bool, len(moduleNames))
+	modulesXADatabases := make(map[string][]string, len(moduleNames)) // G1, REQ-20.5
 	buckets := make(map[string]moduleBucket, len(moduleNames))
 
 	for _, name := range moduleNames {
@@ -116,6 +127,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		modulesWithUseCases[name] = marks.hasUseCases
 		modulesWithPolicies[name] = marks.hasPolicies
 		modulesWithWorkers[name] = marks.hasWorkers
+		modulesXADatabases[name] = marks.xaDatabases
 		allPublicEvents = append(allPublicEvents, b.pubEvents...)
 		for _, ev := range b.pubEvents {
 			publicEventModule[ev.Name] = name
@@ -131,7 +143,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range buildCmdGroups(prog) {
-		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, buckets, model, tab)
+		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesXADatabases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -264,6 +276,16 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 // soma mais um "func Wire" ao invés de ganhar seu próprio nome).
 type moduleMarks struct {
 	hasUseCases, hasPolicies, hasWorkers bool
+	// xaDatabases (G1, REQ-20.5, §design 3.8) são os nomes de Database
+	// (ordenados) que ao menos um UseCase deste módulo precisa coordenar via
+	// 2PC (usecase2PCPlan, decl_usecase.go) — vazio no caso comum (Marco
+	// E/F, nenhuma mudança). generateCmdMainFile usa isto para decidir se
+	// wira "<pkg>.Wire2PC(...)" com stores sqlite reais, ao lado do
+	// "<pkg>.Wire(uow)" de sempre (que continua sendo chamado
+	// incondicionalmente quando hasUseCases — inofensivo mesmo quando NENHUM
+	// UseCase do módulo de fato usa a uow em memória, já que "uow" é uma var
+	// de pacote nunca exigida como "usada").
+	xaDatabases []string
 }
 
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
@@ -367,6 +389,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "commands.go"), Content: content})
 	}
 
+	var xaDatabases []string
 	if hasUseCases {
 		repaired := make([]*ast.UseCaseDecl, len(b.usecases))
 		for i, uc := range b.usecases {
@@ -376,11 +399,33 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 			// padrão exato.
 			repaired[i] = repairLoadDispatchExecute(uc)
 		}
-		content, err := EmitUseCases(pkg, repaired, aggregates, model, tab, moduleName, reg, adapterByName)
+		content, err := EmitUseCases(pkg, repaired, aggregates, prog, model, tab, moduleName, reg, adapterByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("usecases.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "usecases.go"), Content: content})
+
+		// xaDatabases (G1): a união, ordenada e sem repetição, dos nomes de
+		// Database que ALGUM UseCase repaired precisa coordenar via 2PC — a
+		// MESMA decisão que emitUseCaseDecl toma por dentro (usecase2PCPlan),
+		// recalculada aqui só para generateCmdMainFile saber se este módulo
+		// precisa de "<pkg>.Wire2PC(...)" (main.go não reprocessa UseCaseDecl,
+		// só consulta esta marca).
+		xaSet := make(map[string]bool)
+		for _, uc := range repaired {
+			if names, ok := usecase2PCPlan(uc, aggregates, prog); ok {
+				for _, n := range names {
+					xaSet[n] = true
+				}
+			}
+		}
+		if len(xaSet) > 0 {
+			xaDatabases = make([]string, 0, len(xaSet))
+			for n := range xaSet {
+				xaDatabases = append(xaDatabases, n)
+			}
+			sort.Strings(xaDatabases)
+		}
 	}
 
 	if len(b.views) > 0 {
@@ -456,7 +501,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "sagas.go"), Content: content})
 	}
 
-	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers}, nil
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -641,7 +686,7 @@ func defaultCmdDirName(modules []string) string {
 // dentro do MESMO processo). needsDispatcher (Policy local) e um canal de
 // saída no MESMO service ainda não têm wiring combinado suportado — erro de
 // geração claro (nem wallet nem shop combinam os dois hoje).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers map[string]bool, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -651,9 +696,11 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	type wireTarget struct {
 		alias       string
 		pkg         string
+		module      string
 		hasUseCases bool
 		hasPolicies bool
 		hasWorkers  bool
+		xaDatabases []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
 	}
 	var wireTargets []wireTarget
 	needsDispatcher := false
@@ -666,7 +713,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, xaDatabases: modulesXADatabases[m]})
 		if hp {
 			needsDispatcher = true
 		}
@@ -713,8 +760,16 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		return File{}, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5)", group.dirName)
 	}
 
+	anyXADatabases := false
+	for _, wt := range wireTargets {
+		if len(wt.xaDatabases) > 0 {
+			anyXADatabases = true
+			break
+		}
+	}
+
 	var ctxAlias string
-	if anyWorkers {
+	if anyWorkers || anyXADatabases {
 		ctxAlias = e.Import("context")
 	}
 
@@ -770,6 +825,12 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				}
 				if wt.hasUseCases || wt.hasPolicies {
 					e.Line("%s.Wire(%s)", wt.alias, strings.Join(args, ", "))
+				}
+				if len(wt.xaDatabases) > 0 {
+					if err := emitXADatabaseWiring(e, prog, wt.module, wt.alias, wt.xaDatabases, ctxAlias); err != nil {
+						mainErr = fmt.Errorf("wiring 2PC do módulo %s: %w", wt.module, err)
+						return
+					}
 				}
 				if wt.hasWorkers {
 					e.Line("%s.StartWorkers(workerCtx)", wt.alias)

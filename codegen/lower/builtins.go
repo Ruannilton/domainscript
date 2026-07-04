@@ -45,6 +45,15 @@ type BuiltinLowerer struct {
 	runtimeAlias string // alias do import do runtime vendorado (ex. "runtime", via emit.Emitter.Import)
 	ctxGoName    string // nome Go do parâmetro de contexto (ex. "ctx")
 	storeGoName  string // nome Go do parâmetro de acesso à persistência (EventStore/Tx/repo — ex. "tx")
+	// storeGoNameFor roteia "load T(id)" (LoadCall) para um Tx DIFERENTE por
+	// Aggregate (typeName) — habilitado por WithPerAggregateStore (G1,
+	// §design 3.8): um UseCase 2PC cross-database recebe um "txs
+	// map[string]runtime.Tx" em vez de um único "tx", e cada load precisa
+	// indexar o mapa pelo Database que gerencia AQUELE Aggregate, não por um
+	// nome fixo. nil (o default) preserva o comportamento de sempre usar
+	// storeGoName — nenhuma mudança para UseCases de um único banco (Marco
+	// E/F).
+	storeGoNameFor func(typeName string) string
 }
 
 // NewBuiltinLowerer cria um BuiltinLowerer sobre runtimeAlias (alias já
@@ -55,6 +64,26 @@ type BuiltinLowerer struct {
 // e unit of work).
 func NewBuiltinLowerer(runtimeAlias, ctxGoName, storeGoName string) *BuiltinLowerer {
 	return &BuiltinLowerer{runtimeAlias: runtimeAlias, ctxGoName: ctxGoName, storeGoName: storeGoName}
+}
+
+// WithPerAggregateStore anexa storeGoNameFor a b (encadeável) — ver a doc do
+// campo storeGoNameFor. Usado só pelo caminho de emissão 2PC de
+// decl_usecase.go (G1); todo outro chamador (Query, UseCase de um único
+// banco, Policy, Worker, Saga) nunca chama isto, preservando storeGoName
+// fixo.
+func (b *BuiltinLowerer) WithPerAggregateStore(f func(typeName string) string) *BuiltinLowerer {
+	b.storeGoNameFor = f
+	return b
+}
+
+// store devolve o nome Go do parâmetro de acesso à persistência a usar para
+// typeName: storeGoNameFor(typeName) quando roteado (G1, 2PC), senão o
+// storeGoName fixo (Marco E/F, todo o resto do gerador).
+func (b *BuiltinLowerer) store(typeName string) string {
+	if b.storeGoNameFor != nil {
+		return b.storeGoNameFor(typeName)
+	}
+	return b.storeGoName
 }
 
 // --- 1. now()/uuid()/random(min,max)/random_str(length) — CallExpr. ---
@@ -174,7 +203,7 @@ func (b *BuiltinLowerer) loadFuncName(typeName string) string {
 // "tmp, err := ...; if err != nil { ... }" — por isso só é chamada de dentro
 // de hoistLoad (stmt.go), nunca em posição de expressão pura.
 func (b *BuiltinLowerer) LoadCall(typeName, idGo string) string {
-	return fmt.Sprintf("%s(%s, %s)", b.loadFuncName(typeName), b.storeGoName, idGo)
+	return fmt.Sprintf("%s(%s, %s)", b.loadFuncName(typeName), b.store(typeName), idGo)
 }
 
 // ListCall devolve o texto Go PROVISÓRIO (sem "tmp, err :=") de uma

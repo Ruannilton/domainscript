@@ -22,7 +22,21 @@ type Database struct {
 	Module     string
 	SupportsXA bool
 	Manages    []string // nomes de Aggregate geridos por este banco
-	Decl       *ast.ConfigBlock
+	// Provider é o valor textual de "provider:" (ex. "postgres", "sqlite"),
+	// livre no front-end (nunca validado contra um enum fixo — qualquer string
+	// é aceita, ver resolver/resolve_config_test.go). O codegen (G1,
+	// §design 3.11) é quem dá semântica a valores reconhecidos: hoje só
+	// "sqlite" seleciona o adapter real database/sql (codegen/sqlrt);
+	// qualquer outro valor (incl. "postgres", ausente) mantém o fallback
+	// in-memory do Marco E — nenhum driver correspondente é vendorado ainda
+	// (NFR-12, mesmo espírito documentado de gRPC/OTel em §design 4.4).
+	Provider string
+	// DSN é o valor textual de "dsn:" (data source name/connection string do
+	// adapter real, ex. um caminho de arquivo sqlite) — "" quando ausente ou
+	// não-literal (ex. env(...), não resolvido estaticamente aqui, mesmo
+	// espírito de httpPortGo em codegen/codegen.go).
+	DSN  string
+	Decl *ast.ConfigBlock
 }
 
 // Service é um service da topologia (§11): agrupa módulos. Um service =
@@ -107,6 +121,8 @@ func newModule(m *ast.ModuleDecl) *Module {
 			Module:     m.Name,
 			SupportsXA: boolValue(entry(b.Entries, "supportsXA")),
 			Manages:    identList(entry(b.Entries, "manages")),
+			Provider:   stringValue(entry(b.Entries, "provider")),
+			DSN:        stringValue(entry(b.Entries, "dsn")),
 			Decl:       b,
 		}
 	}
@@ -182,6 +198,17 @@ func identName(expr ast.Expr) string {
 func boolValue(expr ast.Expr) bool {
 	lit, ok := expr.(*ast.Literal)
 	return ok && lit.Kind == token.TRUE
+}
+
+// stringValue devolve o conteúdo (já sem aspas — mesma convenção de
+// httpPortGo em codegen/codegen.go) de expr quando é um literal STRING, ou ""
+// para qualquer outra forma (ausente, env(...), não-literal).
+func stringValue(expr ast.Expr) string {
+	lit, ok := expr.(*ast.Literal)
+	if !ok || lit.Kind != token.STRING {
+		return ""
+	}
+	return lit.Value
 }
 
 // identList devolve os nomes dos elementos Ident de uma lista [a, b, c]; elementos

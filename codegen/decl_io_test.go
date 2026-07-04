@@ -381,7 +381,7 @@ func TestEmitUseCaseCallGolden(t *testing.T) {
 	model := types.NewModel(prog.Symbols)
 	reg := goname.NewVOOperatorRegistry()
 
-	got, err := codegen.EmitUseCase("reactions", uc, map[string]*ast.AggregateDecl{}, model, prog.Symbols, "Reactions", reg, adaptersByNameIO(prog))
+	got, err := codegen.EmitUseCase("reactions", uc, map[string]*ast.AggregateDecl{}, prog, model, prog.Symbols, "Reactions", reg, adaptersByNameIO(prog))
 	if err != nil {
 		t.Fatalf("EmitUseCase(Pay): erro inesperado: %v", err)
 	}
@@ -528,7 +528,7 @@ func ioSmokeFiles(t *testing.T) map[string][]byte {
 	files[filepath.Join("payments", "adapter_payment.go")] = payAdapterGo
 
 	aggregates := map[string]*ast.AggregateDecl{}
-	usecaseGo, err := codegen.EmitUseCase("payments", uc, aggregates, model, prog.Symbols, "Reactions", reg, payAdapters)
+	usecaseGo, err := codegen.EmitUseCase("payments", uc, aggregates, prog, model, prog.Symbols, "Reactions", reg, payAdapters)
 	if err != nil {
 		t.Fatalf("EmitUseCase(Pay): erro inesperado: %v", err)
 	}

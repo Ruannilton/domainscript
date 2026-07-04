@@ -118,6 +118,14 @@ type StmtLowerer struct {
 	// embutido (goname.GoBuiltinCall).
 	aggregates map[string]*ast.AggregateDecl
 	txGoName   string
+	// txGoNameFor roteia o dispatch de Handle (tx.Append) para um Tx
+	// DIFERENTE por Aggregate — habilitado por WithHandleDispatchRouted (G1,
+	// §design 3.8, 2PC): um UseCase cross-database com todos os bancos XA
+	// recebe "txs map[string]runtime.Tx" em vez de um "tx" único, e cada
+	// dispatch precisa indexar pelo Database que gerencia AQUELE Aggregate.
+	// nil (o default) preserva txGoName fixo — nenhuma mudança para
+	// UseCases de um único banco (Marco E/F).
+	txGoNameFor func(aggName string) string
 	// notifyAdapters/ctxGoName habilitam o reconhecimento de notify/call de
 	// Notification/Adapter (F4, REQ-25.3, ver notifyOrCallStmt) — anexados
 	// via WithNotifyAdapters. notifyAdapters nil (o default) preserva o
@@ -144,6 +152,31 @@ func (sl *StmtLowerer) WithHandleDispatch(aggregates map[string]*ast.AggregateDe
 	sl.aggregates = aggregates
 	sl.txGoName = txGoName
 	return sl
+}
+
+// WithHandleDispatchRouted é a variante de WithHandleDispatch usada pelo
+// caminho de emissão 2PC (G1, §design 3.8, decl_usecase.go): em vez de um
+// txGoName fixo, txGoNameFor(aggName) decide, POR Aggregate despachado, qual
+// expressão Go referencia o runtime.Tx do Database que o gerencia (ex.
+// "txs[\"MainDb\"]") — o mesmo mapa que StmtLowerer.WithBuiltins(...
+// .WithPerAggregateStore(...)) já usa para "load T(id)", uma única fonte de
+// verdade (aggName -> Database) compartilhada entre load e dispatch. Devolve
+// o próprio sl (encadeável, mesmo padrão de WithHandleDispatch).
+func (sl *StmtLowerer) WithHandleDispatchRouted(aggregates map[string]*ast.AggregateDecl, txGoNameFor func(aggName string) string) *StmtLowerer {
+	sl.aggregates = aggregates
+	sl.txGoNameFor = txGoNameFor
+	return sl
+}
+
+// txNameFor devolve a expressão Go do Tx a usar para o dispatch de aggName:
+// txGoNameFor(aggName) quando roteado (G1, 2PC), senão txGoName fixo (Marco
+// E/F, todo o resto do gerador) — "" quando NENHUM dos dois foi anexado
+// (WithHandleDispatch/WithHandleDispatchRouted nunca chamados).
+func (sl *StmtLowerer) txNameFor(aggName string) string {
+	if sl.txGoNameFor != nil {
+		return sl.txGoNameFor(aggName)
+	}
+	return sl.txGoName
 }
 
 // WithNotifyAdapters anexa adapters (nome de Notification/Adapter -> o
@@ -1068,7 +1101,8 @@ func (sl *StmtLowerer) handleDispatchCall(mem *ast.MemberExpr, call *ast.CallExp
 	if findHandleDecl(aggDecl, mem.Name) == nil {
 		return nil, false, nil
 	}
-	if sl.txGoName == "" {
+	txName := sl.txNameFor(shape.Name)
+	if txName == "" {
 		return nil, true, fmt.Errorf("codegen: dispatch de Handle %s.%s: nenhum runtime.Tx anexado — chame StmtLowerer.WithHandleDispatch (E7.2)", shape.Name, mem.Name)
 	}
 
@@ -1099,7 +1133,7 @@ func (sl *StmtLowerer) handleDispatchCall(mem *ast.MemberExpr, call *ast.CallExp
 	lines := append(hoisted,
 		fmt.Sprintf("events, err %s %s.%s(%s)", op, recvGo, mem.Name, strings.Join(args, ", ")),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
-		fmt.Sprintf("if err := %s.Append(string(%s.id), events); err != nil { %s }", sl.txGoName, recvGo, ctx.ExitOnError("err")),
+		fmt.Sprintf("if err := %s.Append(string(%s.id), events); err != nil { %s }", txName, recvGo, ctx.ExitOnError("err")),
 	)
 	return lines, true, nil
 }

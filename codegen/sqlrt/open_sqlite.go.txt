@@ -1,0 +1,32 @@
+package sqlruntime
+
+import (
+	"database/sql"
+
+	// modernc.org/sqlite é um driver puro Go (sem cgo) — a ÚNICA dependência
+	// externa deste pacote (G1, NFR-12): opt-in, isolada aqui, nunca
+	// importada pelo núcleo (runtime/) nem por um projeto gerado que não use
+	// um Database provider: "sqlite" (ver codegen/codegen.go,
+	// needsSQLAdapter — este pacote inteiro só é emitido, e só entra no
+	// go.mod, quando esse for o caso).
+	_ "modernc.org/sqlite"
+)
+
+// Open abre uma conexão sqlite para dsn (ex. um caminho de arquivo, ou
+// ":memory:"/"file::memory:?cache=shared" para um banco efêmero) — o único
+// provider real suportado hoje (ver program.Database.Provider). Chamado pelo
+// wiring gerado (cmd/<service>/main.go) para cada Database cujo provider é
+// "sqlite" (§design 3.11, REQ-26.2/26.3).
+func Open(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// SQLite em modo memória/arquivo não tolera múltiplas conexões
+	// concorrentes de verdade (cada conexão do pool veria um banco distinto
+	// em ":memory:", ou disputaria o lock de um arquivo) — uma única conexão
+	// lógica é o padrão seguro para este driver, o mesmo recomendado pela
+	// própria modernc.org/sqlite para uso concorrente simples.
+	db.SetMaxOpenConns(1)
+	return db, nil
+}

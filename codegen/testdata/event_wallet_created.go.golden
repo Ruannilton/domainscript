@@ -19,3 +19,9 @@ func (*WalletCreated) EventType() string { return "WalletCreated" }
 var eventRegistry = map[string]func() runtime.Event{
 	"WalletCreated": func() runtime.Event { return &WalletCreated{} },
 }
+
+// EventRegistry expõe eventRegistry a quem monta o adapter de persistência
+// real (G1, §design 3.11) — cmd/<service>/main.go, pacote diferente deste.
+func EventRegistry() map[string]func() runtime.Event {
+	return eventRegistry
+}

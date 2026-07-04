@@ -387,7 +387,7 @@
 
 ## Marco G — Infraestrutura Real
 
-- [ ] **G1** Adapter de persistência `database/sql` (stdlib) atrás de `runtime.Store`;
+- [x] **G1** Adapter de persistência `database/sql` (stdlib) atrás de `runtime.Store`;
   driver concreto isolado e opt-in (única dep externa). O **mesmo** lowering de Query
   (E8) passa a gerar SQL parametrizado; o núcleo in-memory continua compilando **sem**
   dep externa. `supportsXA`/`retry`/`circuitBreaker`/`tenancy` (do `Database`)

@@ -10,12 +10,36 @@ import (
 // <módulo>/, cmd/<service>/) é montado pelo orquestrador (codegen.go), que
 // reusa EmitGoMod.
 
+// sqliteDriverModule/sqliteDriverVersion identificam o ÚNICO driver real que
+// este gerador sabe vendorar atrás do adapter sqlruntime (G1, NFR-12): puro
+// Go (sem cgo — o projeto gerado continua buildável só com o toolchain,
+// mesmo espírito de NFR-12 aplicado ao driver em si), testado end-to-end
+// contra este exato par módulo/versão (ver o relatório da task G1). A versão
+// é fixa (não "latest") para que o go.mod gerado seja determinístico
+// (NFR-13) e para que `go mod tidy`/`go build` resolvam sempre o mesmo grafo
+// de dependências.
+const (
+	sqliteDriverModule  = "modernc.org/sqlite"
+	sqliteDriverVersion = "v1.53.0"
+	// sqliteMinGoVersion é a versão mínima de Go que sqliteDriverVersion
+	// exige (seu próprio go.mod declara "go 1.25.0") — EmitGoMod usa isto
+	// como default de opts.GoVersion quando o adapter SQL está habilitado e
+	// o chamador não pediu uma versão explícita.
+	sqliteMinGoVersion = "1.25"
+)
+
 // EmitGoMod gera o conteúdo de go.mod do projeto gerado: "module <path>\n\ngo
-// <version>\n", SEM bloco require — o núcleo depende só de stdlib e do
-// runtime vendorado (NFR-12), então não há nenhuma dependência externa a
-// declarar aqui (isso muda só a partir do Marco G, quando um adapter opt-in
-// como database/sql+driver concreto entra atrás de um seam — ainda fora deste
-// go.mod nuclear).
+// <version>\n", SEM bloco require no caso comum — o núcleo depende só de
+// stdlib e do runtime vendorado (NFR-12), então não há nenhuma dependência
+// externa a declarar. sqlAdapter (G1, REQ-26.2/26.3) é true quando
+// programNeedsSQLAdapter (codegen.go) encontrou ao menos um Database
+// provider:"sqlite" no programa: só ENTÃO um bloco
+// "require modernc.org/sqlite <versão>" é acrescentado (a única dependência
+// externa que este gerador introduz, isolada e opt-in — NFR-12), e o default
+// de versão de Go sobe para sqliteMinGoVersion (o driver exige go >= 1.25).
+// Um programa sem nenhum Database sqlite continua produzindo EXATAMENTE o
+// go.mod de antes de G1 (byte a byte) — wallet/shop (provider "postgres")
+// incluídos.
 //
 // O caminho do módulo é opts.ModulePath quando não-vazio; senão, é derivado
 // do nome-base de outDir (ex. "/tmp/out/wallet" -> "wallet") — a heurística
@@ -39,7 +63,7 @@ import (
 // Options.ModulePath em TODOS os decl_*.go (8 arquivos, cada um com golden
 // tests byte-a-byte) é trabalho futuro fora do orçamento desta task — ver o
 // resumo da task E9.1.
-func EmitGoMod(opts Options, outDir string) []byte {
+func EmitGoMod(opts Options, outDir string, sqlAdapter bool) []byte {
 	modulePath := opts.ModulePath
 	if modulePath == "" {
 		modulePath = moduleNameFromOutDir(outDir)
@@ -48,9 +72,15 @@ func EmitGoMod(opts Options, outDir string) []byte {
 	version := opts.GoVersion
 	if version == "" {
 		version = "1.22"
+		if sqlAdapter {
+			version = sqliteMinGoVersion
+		}
 	}
 
-	return []byte(fmt.Sprintf("module %s\n\ngo %s\n", modulePath, version))
+	if !sqlAdapter {
+		return []byte(fmt.Sprintf("module %s\n\ngo %s\n", modulePath, version))
+	}
+	return []byte(fmt.Sprintf("module %s\n\ngo %s\n\nrequire %s %s\n", modulePath, version, sqliteDriverModule, sqliteDriverVersion))
 }
 
 // moduleNameFromOutDir deriva um nome de módulo Go do nome-base de outDir

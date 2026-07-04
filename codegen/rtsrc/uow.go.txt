@@ -29,6 +29,27 @@ type UnitOfWork interface {
 	Run(ctx context.Context, fn func(tx Tx) error) error
 }
 
+// UnitOfWork2PC is the seam for a unit of work spanning multiple databases
+// that all declare supportsXA (REQ-20.5, §design codegen 3.8): Run
+// coordinates a two-phase commit across the underlying stores, exposing one
+// Tx per database (keyed by Database name, from mod.ds) instead of a single
+// Tx — the generated dispatch code routes each Aggregate's Append/Load to
+// the Tx of the Database that manages it (codegen, decl_usecase.go).
+//
+// There is no in-memory implementation: a single in-memory EventStore never
+// needs 2PC — a UseCase touching two same-process, in-memory-backed
+// Databases already "degenerates" to a local commit through the plain
+// UnitOfWork/Tx above (Marco E, §design codegen 3.8). Only the database/sql
+// adapter (Marco G, package sqlruntime — codegen/sqlrt) implements this for
+// real, over genuinely separate SQL connections.
+type UnitOfWork2PC interface {
+	// Run begins a transaction against every database in dbNames, executes
+	// fn, and either commits all (fn returns nil) or rolls back all (fn
+	// returns a non-nil error). See sqlruntime.UnitOfWork2PC.Run for the
+	// concrete prepare/commit protocol and its documented limitations.
+	Run(ctx context.Context, dbNames []string, fn func(txs map[string]Tx) error) error
+}
+
 // Publisher is anything that can be handed every event a successful
 // UnitOfWork.Run appended — Dispatcher and ChannelTransport (channel.go.txt)
 // both already satisfy it (identical Publish signature), so either can be

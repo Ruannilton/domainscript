@@ -43,3 +43,9 @@ var eventRegistry = map[string]func() runtime.Event{
 	"DepositPerformed":    func() runtime.Event { return &DepositPerformed{} },
 	"WithdrawalPerformed": func() runtime.Event { return &WithdrawalPerformed{} },
 }
+
+// EventRegistry expõe eventRegistry a quem monta o adapter de persistência
+// real (G1, §design 3.11) — cmd/<service>/main.go, pacote diferente deste.
+func EventRegistry() map[string]func() runtime.Event {
+	return eventRegistry
+}

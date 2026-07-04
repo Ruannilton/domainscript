@@ -1,0 +1,87 @@
+package sqlruntime
+
+import (
+	"context"
+	"database/sql"
+	"log/slog"
+
+	"domainscript/generated/runtime"
+)
+
+// Tx implementa runtime.Tx sobre um único *sql.Tx — o análogo, sobre
+// database/sql, da memoryTx in-memory (runtime/uow.go.txt): as escritas ficam
+// dentro de uma transação SQL de verdade, só visíveis a outras conexões após
+// o Commit — exatamente o comportamento que o comentário de
+// runtime.UnitOfWork já antecipava para este adapter ("buffers writes and
+// only makes them visible on commit — that lands with the database/sql
+// adapter").
+type Tx struct {
+	ctx      context.Context
+	sqlTx    *sql.Tx
+	registry map[string]EventFactory
+	appended []runtime.Event
+}
+
+// Append implementa runtime.Tx.
+func (t *Tx) Append(aggregateID string, events []runtime.Event) error {
+	if err := appendWithinTx(t.ctx, t.sqlTx, aggregateID, events); err != nil {
+		return err
+	}
+	t.appended = append(t.appended, events...)
+	return nil
+}
+
+// Load implementa runtime.Tx: lê através da MESMA *sql.Tx ainda não comitada,
+// então um UseCase que carrega um Aggregate em que ele mesmo (ou um statement
+// anterior) já escreveu dentro desta unit of work enxerga suas próprias
+// escritas — semântica padrão de transação "read-your-writes".
+func (t *Tx) Load(aggregateID string) ([]runtime.Event, error) {
+	return loadWithinQuerier(t.ctx, t.sqlTx, t.registry, aggregateID)
+}
+
+// UnitOfWork é o runtime.UnitOfWork de um único banco sobre database/sql (G1,
+// §design 3.8): abre uma *sql.Tx de verdade, roda fn e comita no sucesso ou
+// rollbacka no erro — o mesmo contrato commit/rollback que memoryUnitOfWork
+// já documenta como "landing com o adapter database/sql (Marco G)".
+type UnitOfWork struct {
+	db        *sql.DB
+	registry  map[string]EventFactory
+	publisher runtime.Publisher
+}
+
+// NewUnitOfWork cria uma UnitOfWork sobre db (já aberta via Open), decodifica
+// eventos via registry — mesma convenção de publisher opcional de
+// runtime.NewUnitOfWork (rtsrc/uow.go.txt): quando dado, todo evento
+// apensado por um Run bem-sucedido é publicado (dispatcher/canal de saída),
+// na mesma ordem de apensação, logo após o commit.
+func NewUnitOfWork(db *sql.DB, registry map[string]EventFactory, publisher ...runtime.Publisher) *UnitOfWork {
+	u := &UnitOfWork{db: db, registry: registry}
+	if len(publisher) > 0 {
+		u.publisher = publisher[0]
+	}
+	return u
+}
+
+// Run implementa runtime.UnitOfWork.
+func (u *UnitOfWork) Run(ctx context.Context, fn func(tx runtime.Tx) error) error {
+	sqlTx, err := u.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	tx := &Tx{ctx: ctx, sqlTx: sqlTx, registry: u.registry}
+	if err := fn(tx); err != nil {
+		_ = sqlTx.Rollback()
+		return err
+	}
+	if err := sqlTx.Commit(); err != nil {
+		return err
+	}
+	if u.publisher != nil {
+		for _, ev := range tx.appended {
+			if pubErr := u.publisher.Publish(ctx, ev); pubErr != nil {
+				slog.Error("sqlruntime: uow: falha ao publicar evento após commit", "eventType", ev.EventType(), "error", pubErr)
+			}
+		}
+	}
+	return nil
+}

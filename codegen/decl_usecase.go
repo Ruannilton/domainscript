@@ -2,11 +2,15 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/codegen/lower"
+	"domainscript/program"
 	"domainscript/symbols"
 	"domainscript/types"
 )
@@ -87,13 +91,32 @@ func emitUOWWireFunc(e *emit.Emitter, runtimeAlias string) {
 	})
 }
 
+// emitUOW2PCWireFunc espelha emitUOWWireFunc para o caminho 2PC (G1, REQ-20.5,
+// §design 3.8): só emitido quando ao menos um UseCase do módulo precisa dele
+// (ver usecase2PCPlan) — um módulo sem UseCase cross-database (o caso de
+// wallet/shop hoje) nunca ganha "uow2pc"/"Wire2PC", byte-a-byte igual a antes
+// de G1.
+func emitUOW2PCWireFunc(e *emit.Emitter, runtimeAlias string) {
+	e.Line("")
+	e.Line("// Wire2PC injeta a unit of work de duas fases usada pelos UseCases deste")
+	e.Line("// pacote que tocam Aggregates de bancos XA distintos (G1, §design 3.8) —")
+	e.Line("// chamada por cmd/<service>/main.go na inicialização, ao lado de Wire.")
+	e.Block(fmt.Sprintf("func Wire2PC(u %s.UnitOfWork2PC)", runtimeAlias), func() {
+		e.Line("uow2pc = u")
+	})
+}
+
 // EmitUseCase gera o Go de um único UseCaseDecl — a mesma forma de
 // EmitUseCases, mantendo o contrato uniforme entre as duas funções (mesmo
 // padrão de EmitCommand/EmitCommands, EmitEvent/EmitEvents). adapters (F4,
 // REQ-25.3) é o registry de Notification/Adapter do módulo — nil preserva o
-// comportamento anterior a F4 (nenhum notify/call reconhecido no corpo).
-func EmitUseCase(pkg string, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
-	return EmitUseCases(pkg, []*ast.UseCaseDecl{decl}, aggregates, model, tab, module, reg, adapters)
+// comportamento anterior a F4 (nenhum notify/call reconhecido no corpo). prog
+// (G1, REQ-20.5) é o Program agregado — usado só para decidir, por UseCase,
+// se ele toca Aggregates de Databases XA distintos e portanto precisa do
+// caminho 2PC (ver usecase2PCPlan); nil preserva o comportamento anterior a
+// G1 (sempre o caminho de uma unit of work só).
+func EmitUseCase(pkg string, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+	return EmitUseCases(pkg, []*ast.UseCaseDecl{decl}, aggregates, prog, model, tab, module, reg, adapters)
 }
 
 // EmitUseCases gera o Go de vários UseCaseDecl num único arquivo,
@@ -103,8 +126,12 @@ func EmitUseCase(pkg string, decl *ast.UseCaseDecl, aggregates map[string]*ast.A
 // PerformWithdrawal). adapters (F4) é repassado a cada corpo via
 // StmtLowerer.WithNotifyAdapters (ver emitUseCaseDecl) — habilita
 // "PaymentRequest(...)" dentro de execute a reconhecer notify (Mode
-// async)/call (Mode sync) do Adapter parceiro (§9.1/9.3, REQ-25.3).
-func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+// async)/call (Mode sync) do Adapter parceiro (§9.1/9.3, REQ-25.3). prog (G1)
+// habilita o caminho 2PC — ver a doc de EmitUseCase; "var uow2pc
+// runtime.UnitOfWork2PC"/Wire2PC só são emitidos quando ALGUM decl de fato
+// precisa (usecase2PCPlan), preservando byte a byte a saída de módulos sem
+// UseCase cross-database (wallet, shop).
+func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -115,9 +142,25 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 	e.Line("var uow %s.UnitOfWork", runtimeAlias)
 	emitUOWWireFunc(e, runtimeAlias)
 
+	anyNeeds2PC := false
+	for _, decl := range decls {
+		if _, ok := usecase2PCPlan(decl, aggregates, prog); ok {
+			anyNeeds2PC = true
+			break
+		}
+	}
+	if anyNeeds2PC {
+		e.Line("")
+		e.Line("// uow2pc é a unit of work de duas fases (G1, REQ-20.5, §design 3.8) usada")
+		e.Line("// pelos UseCases deste pacote que tocam Aggregates de bancos XA distintos —")
+		e.Line("// só a declaração; a instância real vem do wiring (Wire2PC abaixo).")
+		e.Line("var uow2pc %s.UnitOfWork2PC", runtimeAlias)
+		emitUOW2PCWireFunc(e, runtimeAlias)
+	}
+
 	for _, decl := range decls {
 		e.Line("")
-		if err := emitUseCaseDecl(e, decl, aggregates, model, tab, module, reg, adapters, ctxAlias, runtimeAlias); err != nil {
+		if err := emitUseCaseDecl(e, decl, aggregates, prog, model, tab, module, reg, adapters, ctxAlias, runtimeAlias); err != nil {
 			return nil, err
 		}
 	}
@@ -126,13 +169,29 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 }
 
 // emitUseCaseDecl emite a função de um único UseCaseDecl (ver a doc do
-// arquivo para as decisões de timeout/caller/uow).
-func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string) error {
+// arquivo para as decisões de timeout/caller/uow). Quando usecase2PCPlan
+// reconhece que decl toca Aggregates de 2+ Databases XA distintos (G1), emite
+// o caminho 2PC (uow2pc.Run com "txs map[string]runtime.Tx", cada dispatch/
+// load roteado ao Tx do Database certo — ver lower.WithHandleDispatchRouted/
+// BuiltinLowerer.WithPerAggregateStore); senão, o caminho de sempre (uow.Run
+// com um "tx" só, Marco E/F, byte a byte inalterado).
+func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string) error {
 	env := lower.New(model, tab, module)
 	env.SeedUseCaseExecute(decl.Handles)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
 	l.BindGoName("caller", "caller")
-	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "tx"))
+
+	dbNames, needs2PC := usecase2PCPlan(decl, aggregates, prog)
+	var txGoNameFor func(string) string
+	if needs2PC {
+		txGoNameFor = func(aggName string) string {
+			db := prog.DatabaseOfAggregate(aggName)
+			return fmt.Sprintf("txs[%s]", strconv.Quote(db.Name))
+		}
+		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "txs").WithPerAggregateStore(txGoNameFor))
+	} else {
+		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "tx"))
+	}
 
 	var timeoutGo string
 	if decl.Timeout != nil {
@@ -158,8 +217,24 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 		e.Line("caller, _ := %s.CallerFrom(ctx)", runtimeAlias)
 
 		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
-		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithHandleDispatch(aggregates, "tx").WithNotifyAdapters(adapters, "ctx")
 
+		if needs2PC {
+			sl := lower.NewStmtLowerer(l, e, stmtCtx).WithHandleDispatchRouted(aggregates, txGoNameFor).WithNotifyAdapters(adapters, "ctx")
+			dbNamesGo := make([]string, len(dbNames))
+			for i, name := range dbNames {
+				dbNamesGo[i] = strconv.Quote(name)
+			}
+			header := fmt.Sprintf("return uow2pc.Run(ctx, []string{%s}, func(txs map[string]%s.Tx) error", strings.Join(dbNamesGo, ", "), runtimeAlias)
+			e.BlockSuffix(header, ")", func() {
+				if bodyErr = sl.Block(decl.Execute); bodyErr != nil {
+					return
+				}
+				e.Line("return nil")
+			})
+			return
+		}
+
+		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithHandleDispatch(aggregates, "tx").WithNotifyAdapters(adapters, "ctx")
 		e.BlockSuffix(fmt.Sprintf("return uow.Run(ctx, func(tx %s.Tx) error", runtimeAlias), ")", func() {
 			if bodyErr = sl.Block(decl.Execute); bodyErr != nil {
 				return
@@ -171,4 +246,140 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 		return fmt.Errorf("codegen: UseCase %s: %w", decl.Name, bodyErr)
 	}
 	return nil
+}
+
+// --- G1: detecção estática de UseCase cross-database (REQ-20.5, §design 3.8). ---
+
+// usecase2PCPlan decide se decl precisa do caminho 2PC: toca (via
+// touchedAggregates) 2+ Aggregates cujos Databases (prog.DatabaseOfAggregate)
+// são TODOS supportsXA e providos por um adapter real que este gerador sabe
+// coordenar 2PC de verdade sobre (hoje só "sqlite" — ver
+// program.Database.Provider/codegen/sqlrt), e esses Databases são 2+
+// DISTINTOS por nome. Devolve os nomes (ordenados, NFR-13) e ok=true só
+// nesse caso — em QUALQUER outro (prog nil, menos de 2 Aggregates tocados,
+// bancos não-XA, provider não reconhecido, ou um único Database mesmo que
+// XA) o UseCase segue o caminho de sempre: uma unit of work só, que Marco E
+// já documenta como "degenera em commit local" quando o backend é in-memory
+// (§design 3.8) — o front-end (REQ-5.9) já barrou o único caso realmente
+// perigoso (bancos distintos SEM XA universal), então esta função só decide
+// QUAL implementação de unit of work usar, nunca se é seguro prosseguir.
+func usecase2PCPlan(decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program) (dbNames []string, ok bool) {
+	if prog == nil {
+		return nil, false
+	}
+	touched := touchedAggregates(decl.Execute, aggregates)
+	if len(touched) < 2 {
+		return nil, false
+	}
+
+	seen := make(map[string]bool, len(touched))
+	for _, agg := range touched {
+		db := prog.DatabaseOfAggregate(agg)
+		if db == nil || !db.SupportsXA || !strings.EqualFold(db.Provider, "sqlite") {
+			return nil, false
+		}
+		seen[db.Name] = true
+	}
+	if len(seen) < 2 {
+		return nil, false
+	}
+
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, true
+}
+
+// touchedAggregates varre ESTATICAMENTE (sem lowering) os statements de
+// nível superior de execute, reconhecendo o padrão "local = load Agg(...)"
+// seguido, em qualquer statement depois, de um dispatch "local.Handle(...)"
+// sobre um Handle conhecido de Agg — o MESMO padrão que
+// repairLoadDispatchExecute já normaliza (usecase_repair.go) e que
+// lower.StmtLowerer.handleDispatchCall reconhece na hora de emitir de
+// verdade; esta função só faz uma leitura antecipada, ANTES de emitir, para
+// decidir se decl precisa do caminho 2PC (usecase2PCPlan).
+//
+// Devolve os nomes de Aggregate tocados, ordenados e sem repetição
+// (determinismo, NFR-13). É deliberadamente conservadora: um corpo que ela
+// não reconheça (formas que repairLoadDispatchExecute não normaliza, ou
+// dispatch sobre uma expressão que não é um Ident simples) simplesmente não
+// conta como "tocando" aquele Aggregate — no pior caso SUBESTIMA o conjunto
+// e mantém o UseCase no caminho de commit único (o comportamento seguro de
+// sempre), nunca superestima a ponto de forçar 2PC indevidamente.
+func touchedAggregates(execute *ast.Block, aggregates map[string]*ast.AggregateDecl) []string {
+	if execute == nil || len(aggregates) == 0 {
+		return nil
+	}
+
+	locals := make(map[string]string) // nome do local -> nome do Aggregate
+	touched := make(map[string]bool)
+
+	for _, s := range execute.Stmts {
+		switch st := s.(type) {
+		case *ast.AssignStmt:
+			id, ok := st.Target.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			qe, ok := st.Value.(*ast.QueryExpr)
+			if !ok || qe.Op != "load" {
+				continue
+			}
+			call, ok := qe.Target.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			aggIdent, ok := call.Fn.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			if _, known := aggregates[aggIdent.Name]; known {
+				locals[id.Name] = aggIdent.Name
+			}
+		case *ast.ExprStmt:
+			call, ok := st.X.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			mem, ok := call.Fn.(*ast.MemberExpr)
+			if !ok {
+				continue
+			}
+			recv, ok := mem.X.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			aggName, ok := locals[recv.Name]
+			if !ok {
+				continue
+			}
+			if aggDeclHasHandle(aggregates[aggName], mem.Name) {
+				touched[aggName] = true
+			}
+		}
+	}
+
+	names := make([]string, 0, len(touched))
+	for name := range touched {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// aggDeclHasHandle devolve true se decl declara um Handle chamado name —
+// espelha lower.findHandleDecl (não-exportado do pacote lower), reimplantado
+// aqui pela mesma razão de queryClauseExtra em decl_query.go.
+func aggDeclHasHandle(decl *ast.AggregateDecl, name string) bool {
+	if decl == nil {
+		return false
+	}
+	for _, h := range decl.Handlers {
+		if h != nil && h.Name == name {
+			return true
+		}
+	}
+	return false
 }

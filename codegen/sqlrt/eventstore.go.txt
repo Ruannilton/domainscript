@@ -1,0 +1,177 @@
+package sqlruntime
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"domainscript/generated/runtime"
+)
+
+// EventFactory constrói um novo ponteiro zero-value de um tipo de evento,
+// pronto para json.Unmarshal — uma entrada por struct de Event que o módulo
+// declara. O registry (mapa EventType() -> EventFactory) é o que permite a
+// EventStore.Load decodificar um payload JSON de volta ao tipo Go concreto
+// que gravou o evento, sem reflection sobre tipos desconhecidos deste
+// pacote. É um ALIAS (não um tipo novo, note o "="): cada módulo gerado já
+// declara "var eventRegistry map[string]func() runtime.Event" e o expõe via
+// EventRegistry() (codegen/decl_event.go, G1) — um alias faz
+// map[string]EventFactory e o mapa devolvido por EventRegistry() serem o
+// MESMO tipo Go, então o wiring gerado (cmd/<service>/main.go) passa
+// "<pkg>.EventRegistry()" direto a NewEventStore/NewUnitOfWork sem nenhuma
+// conversão.
+type EventFactory = func() runtime.Event
+
+// EventStore é um runtime.EventStore de verdade sobre database/sql (G1,
+// §design 3.11, REQ-26.2): a MESMA interface que
+// runtime.NewMemoryEventStore() já satisfaz (codegen/rtsrc/eventstore.go.txt)
+// — todo Load<Agg>/UseCase/Query gerado contra runtime.EventStore funciona
+// inalterado aqui; só a implementação injetada pelo wiring
+// (cmd/<service>/main.go) muda.
+type EventStore struct {
+	db       *sql.DB
+	registry map[string]EventFactory
+}
+
+// NewEventStore embrulha db (já aberto via Open) como um runtime.EventStore,
+// decodificando eventos via registry, e garante que a tabela "events" existe
+// (idempotente — seguro chamar a cada início de processo).
+func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFactory) (*EventStore, error) {
+	s := &EventStore{db: db, registry: registry}
+	if err := s.ensureSchema(ctx); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// ensureSchema cria a tabela "events" quando ainda não existe: uma linha por
+// evento, chaveada por (aggregate_id, sequence) — o mesmo par que
+// memoryEventStore usa como posição no stream em memória.
+func (s *EventStore) ensureSchema(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS events (
+	aggregate_id TEXT NOT NULL,
+	sequence     INTEGER NOT NULL,
+	event_type   TEXT NOT NULL,
+	payload      TEXT NOT NULL,
+	recorded_at  TIMESTAMP NOT NULL,
+	PRIMARY KEY (aggregate_id, sequence)
+)`)
+	if err != nil {
+		return fmt.Errorf("sqlruntime: criar tabela events: %w", err)
+	}
+	return nil
+}
+
+// Append implementa runtime.EventStore: carimba AggregateID/Sequence/
+// Timestamp (espelhando memoryEventStore) e persiste cada evento numa
+// transação local — atômica para ESTE store, o mesmo contrato "tudo ou nada"
+// que memoryEventStore já dá a uma chamada de Append. Atomicidade ENTRE dois
+// EventStore é o que UnitOfWork/UnitOfWork2PC (uow.go.txt/twophase.go.txt)
+// acrescentam por cima.
+func (s *EventStore) Append(ctx context.Context, aggregateID string, events []runtime.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlruntime: Append: begin: %w", err)
+	}
+	if err := appendWithinTx(ctx, tx, aggregateID, events); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlruntime: Append: commit: %w", err)
+	}
+	return nil
+}
+
+// Load implementa runtime.EventStore: um aggregateID desconhecido devolve um
+// slice vazio não-nil e nenhum erro (mesmo contrato de memoryEventStore) —
+// uma consulta sem linhas já produz exatamente isso naturalmente.
+func (s *EventStore) Load(ctx context.Context, aggregateID string) ([]runtime.Event, error) {
+	return loadWithinQuerier(ctx, s.db, s.registry, aggregateID)
+}
+
+// --- helpers compartilhados com uow.go.txt/twophase.go.txt. ---
+
+// appendWithinTx executa o INSERT de cada evento de events dentro de tx já
+// aberta — reusada por EventStore.Append (transação local de 1 chamada) e
+// por Tx.Append (uow.go.txt/twophase.go.txt: a transação de uma unit of work
+// inteira, que só comita/rollbacka quando Run termina). ev.SetMeta roda ANTES
+// do encode para que o payload persistido já reflita a metadata carimbada
+// (Load volta a carimbar a partir das colunas — autoritativas — na leitura,
+// então isso é redundante mas fiel, nunca incorreto).
+func appendWithinTx(ctx context.Context, tx *sql.Tx, aggregateID string, events []runtime.Event) error {
+	var next int64
+	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?`, aggregateID)
+	if err := row.Scan(&next); err != nil {
+		return fmt.Errorf("sqlruntime: Append: próxima sequência: %w", err)
+	}
+
+	now := time.Now().UTC()
+	for _, ev := range events {
+		next++
+		ev.SetMeta(runtime.EventMeta{AggregateID: aggregateID, Sequence: next, Timestamp: now})
+		payload, err := json.Marshal(ev)
+		if err != nil {
+			return fmt.Errorf("sqlruntime: Append: encode %s: %w", ev.EventType(), err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO events (aggregate_id, sequence, event_type, payload, recorded_at) VALUES (?, ?, ?, ?, ?)`,
+			aggregateID, next, ev.EventType(), string(payload), now,
+		); err != nil {
+			return fmt.Errorf("sqlruntime: Append: insert %s: %w", ev.EventType(), err)
+		}
+	}
+	return nil
+}
+
+// querier é o subconjunto de *sql.DB/*sql.Tx que scanEvents/loadWithinQuerier
+// precisam — deixa a leitura reusável tanto fora de uma unit of work
+// (EventStore.Load, sobre s.db) quanto dentro de uma (Tx.Load, sobre o
+// *sql.Tx corrente da unit of work — leitura "read-your-writes" das escritas
+// ainda não comitadas do próprio Run).
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// loadWithinQuerier lê o stream de aggregateID via q (um *sql.DB ou a *sql.Tx
+// corrente) e decodifica cada linha usando registry — o corpo de
+// EventStore.Load e de Tx.Load (uow.go.txt/twophase.go.txt).
+func loadWithinQuerier(ctx context.Context, q querier, registry map[string]EventFactory, aggregateID string) ([]runtime.Event, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT sequence, event_type, payload, recorded_at FROM events WHERE aggregate_id = ? ORDER BY sequence`,
+		aggregateID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlruntime: Load: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]runtime.Event, 0)
+	for rows.Next() {
+		var seq int64
+		var eventType, payload string
+		var recordedAt time.Time
+		if err := rows.Scan(&seq, &eventType, &payload, &recordedAt); err != nil {
+			return nil, fmt.Errorf("sqlruntime: Load: scan: %w", err)
+		}
+		factory, ok := registry[eventType]
+		if !ok {
+			return nil, fmt.Errorf("sqlruntime: Load: tipo de evento %q não registrado (registry incompleto — bug de geração)", eventType)
+		}
+		ev := factory()
+		if err := json.Unmarshal([]byte(payload), ev); err != nil {
+			return nil, fmt.Errorf("sqlruntime: Load: decode %s: %w", eventType, err)
+		}
+		ev.SetMeta(runtime.EventMeta{AggregateID: aggregateID, Sequence: seq, Timestamp: recordedAt})
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlruntime: Load: %w", err)
+	}
+	return events, nil
+}

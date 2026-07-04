@@ -88,8 +88,25 @@ func EmitEvents(pkg string, decls []*ast.EventDecl) ([]byte, error) {
 
 	e.Line("")
 	emitEventRegistry(e, runtimeAlias, decls)
+	e.Line("")
+	emitEventRegistryAccessor(e, runtimeAlias)
 
 	return e.Bytes()
+}
+
+// emitEventRegistryAccessor emite EventRegistry(), a única forma EXPORTADA de
+// ler eventRegistry (minúsculo, de propósito — mesmo espírito de "uow" em
+// decl_usecase.go) de fora do pacote do módulo. Existe para o wiring gerado
+// (cmd/<service>/main.go, G1, §design 3.11) montar o
+// map[string]func() runtime.Event que codegen/sqlrt.EventStore/UnitOfWork
+// esperam, quando ao menos um Database do módulo é sqlite-backed — sem essa
+// função, "eventRegistry" seria inacessível a main (pacote diferente).
+func emitEventRegistryAccessor(e *emit.Emitter, runtimeAlias string) {
+	e.Line("// EventRegistry expõe eventRegistry a quem monta o adapter de persistência")
+	e.Line("// real (G1, §design 3.11) — cmd/<service>/main.go, pacote diferente deste.")
+	e.Block(fmt.Sprintf("func EventRegistry() map[string]func() %s.Event", runtimeAlias), func() {
+		e.Line("return eventRegistry")
+	})
 }
 
 // EmitPublicEvents gera contracts/events.go: um ALIAS DE TIPO Go por
