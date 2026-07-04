@@ -428,7 +428,7 @@
   `perIp`, retry idempotente não consome cota (integra G2). _(REQ-28.4, spec §16)_
   **Commit:** `feat(codegen): rate limiting`
 
-- [ ] **G5** Multi-tenancy: `tenant` em `context.Context`, filtro automático por
+- [x] **G5** Multi-tenancy: `tenant` em `context.Context`, filtro automático por
   estratégia (`row_level`/`schema`/`database`), acesso a aggregate de outro tenant
   → 404, tenant ausente na borda → fail-closed **400**, `cross_tenant` opt-in
   (`UseCaseDecl.Tenancy`) + auditoria. *(O receptor `tenant.*` em corpos e

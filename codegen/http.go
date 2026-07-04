@@ -11,6 +11,7 @@ import (
 	"domainscript/codegen/goname"
 	"domainscript/program"
 	"domainscript/symbols"
+	"domainscript/token"
 	"domainscript/types"
 )
 
@@ -86,9 +87,10 @@ import (
 // G2 — aqui é só o carrier). writeBusinessError distingue o erro por
 // errors.As(&runtime.BusinessError): negócio -> 422, exceto ErrForbidden
 // (403) e ErrNotFound (404); qualquer outro error (infra) -> 503. Rate-limit
-// (429, G4, ver emitRateLimitGate acima e codegen/ratelimit.go) já está
-// coberto; tenant ausente (400) e sunset (410) continuam marcos G5/G6 —
-// nem mencionados aqui de propósito, para não travar a extensão futura.
+// (429, G4, ver emitRateLimitGate acima e codegen/ratelimit.go) e tenant
+// ausente (400 fail-closed, G5, ver emitTenantGate abaixo) já estão
+// cobertos; sunset (410) continua marco G6 — nem mencionado aqui de
+// propósito, para não travar a extensão futura.
 //
 // --- Forma do corpo de resposta (decisão desta task) ---
 //
@@ -98,6 +100,141 @@ import (
 // de emitir "{}" só empurraria um corpo vazio sem significado para o
 // cliente). Query: sucesso vira "200" + o valor de retorno serializado como
 // JSON (Content-Type: application/json).
+//
+// --- Multi-tenancy na borda (G5, REQ-27, spec §13) ---
+//
+// "tenant { from: ... }" na Interface (ast.InterfaceDecl.Settings, §13.1) é o
+// ÚNICO gatilho: uma Interface SEM esse bloco (o caso do wallet/shop, nenhum
+// dos dois declara tenancy) nunca chama parseInterfaceTenantPlan em nada além
+// de devolver (nil, nil), e toda linha de tenant-edge abaixo
+// (emitTenantGate/emitTenantHelpers) fica OMITIDA — o Go gerado permanece
+// byte a byte igual ao de antes de G5 para qualquer service sem tenancy.
+// Quando presente, TODA rota do grupo exige tenant resolvido, EXCETO uma que
+// declare "{ tenancy: none }" (routeOptsTenancyNone) — o "rotas sem tenant"
+// do spec (login/register/health). tenantIDFromRequest (emitido por
+// emitTenantHelpers) materializa a estratégia resolvida em tempo de GERAÇÃO
+// (subdomain: 1º rótulo do Host; header(NAME): header nomeado — ver
+// parseInterfaceTenantPlan) — nenhuma comparação de string em tempo de
+// execução, o Go gerado já sabe qual estratégia usar. Tenant ausente numa
+// rota que o exige -> 400 (fail-closed, §13.4, emitTenantGate) ANTES de
+// qualquer decode de corpo/dispatch; resolvido -> runtime.WithTenant(ctx,
+// ...) ANTES do rate-limit gate (G4 lê TenantFrom(ctx) para perTenant/
+// byTier) e antes de qualquer Load/Append (G1/G5, row_level — ver
+// rtsrc/eventstore.go.txt) rodar. Tier vem do header dev-placeholder
+// "X-Tenant-Tier" (mesmo espírito de "X-Caller-Id"/devCallerFromRequest —
+// nenhum diretório de tenants/planos de verdade existe ainda). jwt_claim/
+// path (§13.1 os lista como alternativas de "from:") não são implementados
+// por este gerador — parseInterfaceTenantPlan falha explicitamente
+// (erro de geração, nunca um extractor silenciosamente vazio) quando
+// declarados, em vez de fingir suportá-los.
+
+// httpTenantPlan é a config "tenant { from: ... }" de UMA Interface (§13.1),
+// já resolvida — nil (via parseInterfaceTenantPlan) quando a Interface não
+// declara tenancy nenhuma (ver a doc do arquivo).
+type httpTenantPlan struct {
+	kind   string // "subdomain" | "header"
+	header string // só quando kind == "header": o nome do header (ex. "X-Tenant-Id")
+}
+
+// parseInterfaceTenantPlan lê iface.Settings["tenant"] — nil, nil quando a
+// chave está ausente (o caso comum, ver a doc do arquivo). Formas
+// reconhecidas (§13.1): "from: subdomain" (Ident nu) e "from:
+// header(\"Nome-Do-Header\")" (CallExpr de 1 arg string). "from: path" e
+// "from: jwt_claim(...)" são sintaxe reconhecida do spec mas SEM
+// implementação nesta task (ver a doc do arquivo) — erro de geração claro.
+func parseInterfaceTenantPlan(iface *ast.InterfaceDecl) (*httpTenantPlan, error) {
+	if iface == nil {
+		return nil, nil
+	}
+	var raw ast.Expr
+	found := false
+	for _, e := range iface.Settings {
+		if e.Key == "tenant" {
+			raw, found = e.Value, true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	obj, ok := raw.(*ast.ObjectExpr)
+	if !ok {
+		return nil, fmt.Errorf("Interface %s: %q: esperava um objeto (\"tenant { from: ... }\", spec §13.1), veio %T", iface.Kind, "tenant", raw)
+	}
+	var fromExpr ast.Expr
+	hasFrom := false
+	for _, e := range obj.Entries {
+		if e.Key == "from" {
+			fromExpr, hasFrom = e.Value, true
+		}
+	}
+	if !hasFrom {
+		return nil, fmt.Errorf(`Interface %s: "tenant": falta "from:" (spec §13.1: subdomain/header(...)/jwt_claim(...)/path)`, iface.Kind)
+	}
+
+	switch v := fromExpr.(type) {
+	case *ast.Ident:
+		switch v.Name {
+		case "subdomain":
+			return &httpTenantPlan{kind: "subdomain"}, nil
+		case "path":
+			return nil, fmt.Errorf(`Interface %s: "tenant { from: path }": resolução de tenant por segmento de path não é suportada por este gerador (G5) — nenhuma convenção de nome de path param foi fixada por uma fixture real; falha explícita em vez de gerar um extractor que nunca resolveria nada`, iface.Kind)
+		default:
+			return nil, fmt.Errorf(`Interface %s: "tenant { from: %s }": forma não reconhecida (spec §13.1: subdomain/header(...)/jwt_claim(...)/path)`, iface.Kind, v.Name)
+		}
+	case *ast.CallExpr:
+		fn, ok := v.Fn.(*ast.Ident)
+		if !ok || len(v.Args) != 1 {
+			return nil, fmt.Errorf(`Interface %s: "tenant { from: ... }": forma de chamada inesperada (esperava "nome(\"literal\")")`, iface.Kind)
+		}
+		lit, ok := v.Args[0].Value.(*ast.Literal)
+		if !ok || lit.Kind != token.STRING {
+			return nil, fmt.Errorf(`Interface %s: "tenant { from: %s(...) }": esperava um único literal string`, iface.Kind, fn.Name)
+		}
+		switch fn.Name {
+		case "header":
+			return &httpTenantPlan{kind: "header", header: lit.Value}, nil
+		case "jwt_claim":
+			return nil, fmt.Errorf(`Interface %s: "tenant { from: jwt_claim(%q) }": resolução de tenant por claim JWT não é suportada por este gerador (G5) — nenhuma infraestrutura de autenticação JWT existe neste codebase (fora do orçamento desta task); falha explícita em vez de um extractor silenciosamente vazio`, iface.Kind, lit.Value)
+		default:
+			return nil, fmt.Errorf(`Interface %s: "tenant { from: %s(...) }": forma não reconhecida (spec §13.1: subdomain/header(...)/jwt_claim(...)/path)`, iface.Kind, fn.Name)
+		}
+	default:
+		return nil, fmt.Errorf(`Interface %s: "tenant { from: ... }": forma não reconhecida (%T)`, iface.Kind, fromExpr)
+	}
+}
+
+// routeOptsTenancyNone reporta se route declara "{ tenancy: none }" (§13.1:
+// "Rotas sem tenant" — login/register/health no exemplo do spec) — a ÚNICA
+// forma de uma rota escapar da exigência de tenant quando a Interface
+// declara "tenant { from: ... }" (ver a doc do arquivo).
+func routeOptsTenancyNone(route *ast.Route) bool {
+	for _, e := range route.Options {
+		if e.Key != "tenancy" {
+			continue
+		}
+		id, ok := e.Value.(*ast.Ident)
+		return ok && id.Name == "none"
+	}
+	return false
+}
+
+// emitTenantGate emite, dentro do handler de route (logo após
+// emitCallerAndIdempotency, ANTES do rate-limit gate — ver a doc do
+// arquivo), a resolução fail-closed de tenant (§13.4): nada quando plan==nil
+// ou a rota declara "tenancy: none" (Go gerado idêntico ao de antes de G5);
+// senão, "ctx, tenantOK := requireTenant(ctx, r)" e um 400 imediato quando
+// tenantOK é false — ANTES de qualquer decode de corpo/path param, mesmo
+// espírito de emitRateLimitGate rodar antes do trabalho de decodificação.
+func emitTenantGate(e *emit.Emitter, plan *httpTenantPlan, route *ast.Route, httpAlias string) {
+	if plan == nil || routeOptsTenancyNone(route) {
+		return
+	}
+	e.Line("ctx, tenantOK := requireTenant(ctx, r)")
+	e.Block("if !tenantOK", func() {
+		e.Line(`%s.Error(w, "tenant required", %s.StatusBadRequest)`, httpAlias, httpAlias)
+		e.Line("return")
+	})
+}
 
 // emitHTTPRoutes emite, na posição ATUAL de e (chamado de dentro de func
 // main(), logo após "mux := http.NewServeMux()" — ver
@@ -105,24 +242,31 @@ import (
 // iface. iface nil ou sem Routes não emite nada (hadRoutes=false) — o
 // chamador usa hadRoutes para decidir se emite os helpers de borda
 // (devCaller/writeBusinessError, emitHTTPHelpers): não faz sentido importar
-// "errors"/"encoding/json" num service sem nenhuma rota. rlPending acumula as
-// declarações de rate limit (G4, spec §16) que ALGUMA rota enfileirou —
-// vazio quando nenhuma rota configura "rateLimit"; o chamador
-// (generateCmdMainFile) as renderiza de volta no nível de pacote depois que
-// este bloco (newMux) fecha (ver a doc de pendingRateLimitPlan,
+// "errors"/"encoding/json" num service sem nenhuma rota. tenantPlan (G5,
+// nil quando a Interface não declara "tenant { ... }") é resolvido UMA vez
+// aqui e repassado a cada rota — o chamador usa tenantPlan != nil para
+// decidir se emite tenantIDFromRequest/requireTenant (emitTenantHelpers).
+// rlPending acumula as declarações de rate limit (G4, spec §16) que ALGUMA
+// rota enfileirou — vazio quando nenhuma rota configura "rateLimit"; o
+// chamador (generateCmdMainFile) as renderiza de volta no nível de pacote
+// depois que este bloco (newMux) fecha (ver a doc de pendingRateLimitPlan,
 // codegen/ratelimit.go, sobre por que isso não pode ser emitido aqui
 // dentro).
-func emitHTTPRoutes(e *emit.Emitter, muxVar string, iface *ast.InterfaceDecl, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) (hadRoutes bool, rlPending []pendingRateLimitPlan, err error) {
+func emitHTTPRoutes(e *emit.Emitter, muxVar string, iface *ast.InterfaceDecl, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) (hadRoutes bool, tenantPlan *httpTenantPlan, rlPending []pendingRateLimitPlan, err error) {
 	if iface == nil || len(iface.Routes) == 0 {
-		return false, nil, nil
+		return false, nil, nil, nil
+	}
+	tenantPlan, err = parseInterfaceTenantPlan(iface)
+	if err != nil {
+		return true, nil, nil, err
 	}
 	rlEnv := newHTTPRateLimitEnv(prog, iface)
 	for _, route := range iface.Routes {
-		if err := emitRoute(e, muxVar, route, buckets, modules, model, tab, rlEnv); err != nil {
-			return true, *rlEnv.pending, fmt.Errorf("rota %s %q -> %s: %w", route.Method, route.Path, route.Target, err)
+		if err := emitRoute(e, muxVar, route, buckets, modules, model, tab, rlEnv, tenantPlan); err != nil {
+			return true, tenantPlan, *rlEnv.pending, fmt.Errorf("rota %s %q -> %s: %w", route.Method, route.Path, route.Target, err)
 		}
 	}
-	return true, *rlEnv.pending, nil
+	return true, tenantPlan, *rlEnv.pending, nil
 }
 
 // routeTarget é o resultado de resolveRouteTarget: exatamente um dos dois
@@ -162,16 +306,17 @@ func resolveRouteTarget(buckets map[string]moduleBucket, modules []string, targe
 // emitRoute despacha para emitUseCaseRoute ou emitQueryRoute conforme
 // resolveRouteTarget achou. rlEnv (G4, spec §16) resolve/enfileira o rate
 // limiting da rota, quando configurado — ver a doc de httpRateLimitEnv
-// (codegen/ratelimit.go).
-func emitRoute(e *emit.Emitter, muxVar string, route *ast.Route, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv) error {
+// (codegen/ratelimit.go). tenantPlan (G5, §13) repassa a config de tenancy da
+// Interface, se houver — ver a doc do arquivo.
+func emitRoute(e *emit.Emitter, muxVar string, route *ast.Route, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan) error {
 	target, err := resolveRouteTarget(buckets, modules, route.Target)
 	if err != nil {
 		return err
 	}
 	if target.usecase != nil {
-		return emitUseCaseRoute(e, muxVar, route, target.usecase, target.ucModule, buckets, modules, model, tab, rlEnv)
+		return emitUseCaseRoute(e, muxVar, route, target.usecase, target.ucModule, buckets, modules, model, tab, rlEnv, tenantPlan)
 	}
-	return emitQueryRoute(e, muxVar, route, target.query, target.qModule, model, tab, rlEnv)
+	return emitQueryRoute(e, muxVar, route, target.query, target.qModule, model, tab, rlEnv, tenantPlan)
 }
 
 // findCommandInBuckets procura um CommandDecl de nome name entre TODOS os
@@ -480,7 +625,15 @@ func emitRateLimitGate(e *emit.Emitter, checksFuncName, runtimeAlias string) {
 //
 // Uma rota sem "rateLimit" configurado (checksFuncName == "") não muda
 // NADA: o handler continua byte a byte igual ao de antes desta task.
-func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.UseCaseDecl, ucModule string, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv) error {
+//
+// --- Tenant (G5, §13) ---
+//
+// emitTenantGate roda logo após emitCallerAndIdempotency e ANTES do rate
+// limit gate (para que "perTenant"/"byTier", G4, já enxerguem o tenant
+// resolvido) — 400 fail-closed antes de qualquer decode de corpo/path param
+// quando a rota exige tenant e a borda não consegue resolvê-lo. Uma rota sem
+// tenancy configurada em lugar nenhum (tenantPlan == nil) não muda NADA.
+func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.UseCaseDecl, ucModule string, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan) error {
 	cmdDecl, cmdModule, ok := findCommandInBuckets(buckets, modules, uc.Handles)
 	if !ok {
 		return fmt.Errorf("UseCase %s: Command %q (handles) não encontrado nos módulos do grupo", uc.Name, uc.Handles)
@@ -515,6 +668,7 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
 		emitCallerAndIdempotency(e, runtimeAlias)
+		emitTenantGate(e, tenantPlan, route, httpAlias)
 		if checksFuncName != "" && !hasIdempotency {
 			emitRateLimitGate(e, checksFuncName, runtimeAlias)
 		}
@@ -568,8 +722,10 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 // writeBusinessError). rlEnv (G4, spec §16) resolve/enfileira o rate
 // limiting da rota, quando configurado — ver emitRateLimitGate. Query não
 // tem conceito de idempotência (REQ-20.4/G2 só cobre Command), então a
-// checagem sempre roda ANTES de tudo, sem exceção.
-func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.QueryDecl, qModule string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv) error {
+// checagem sempre roda ANTES de tudo, sem exceção. tenantPlan (G5, §13) roda
+// logo após emitCallerAndIdempotency e ANTES do rate limit gate, mesma ordem
+// e mesmo motivo de emitUseCaseRoute.
+func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.QueryDecl, qModule string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan) error {
 	pp := routePathParams(route.Path)
 	pathSet := make(map[string]bool, len(pp))
 	for _, p := range pp {
@@ -594,6 +750,7 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
 		emitCallerAndIdempotency(e, runtimeAlias)
+		emitTenantGate(e, tenantPlan, route, httpAlias)
 		if checksFuncName != "" {
 			emitRateLimitGate(e, checksFuncName, runtimeAlias)
 		}
@@ -637,6 +794,58 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 		})
 	})
 	return bodyErr
+}
+
+// emitTenantHelpers emite, como declarações de PACOTE, tenantIDFromRequest
+// (a estratégia de extração resolvida em tempo de GERAÇÃO — ver
+// parseInterfaceTenantPlan) e requireTenant (o fail-closed §13.4: resolve o
+// tenant e devolve ctx com ele, runtime.WithTenant, ou ok=false quando não
+// consegue) — chamado no máximo 1 vez por cmd/<group>/main.go, só quando a
+// Interface HTTP do grupo de fato declara "tenant { from: ... }"
+// (generateCmdMainFile, codegen.go, tenantPlan != nil).
+func emitTenantHelpers(e *emit.Emitter, plan *httpTenantPlan, runtimeAlias, httpAlias string) {
+	ctxAlias := e.Import("context")
+
+	e.Line("")
+	e.Line("// tenantIDFromRequest extrai o tenant ambiente da requisição (spec §13.1),")
+	switch plan.kind {
+	case "subdomain":
+		stringsAlias := e.Import("strings")
+		e.Line(`// estratégia "subdomain": o primeiro rótulo do Host (antes do primeiro`)
+		e.Line(`// "."), sem a porta — "" quando o Host não tem nenhum rótulo separado por`)
+		e.Line(`// ponto (ex. "localhost", "127.0.0.1:8080").`)
+		e.Block(fmt.Sprintf("func tenantIDFromRequest(r *%s.Request) string", httpAlias), func() {
+			e.Line("host := r.Host")
+			e.Block(fmt.Sprintf("if i := %s.IndexByte(host, ':'); i >= 0", stringsAlias), func() {
+				e.Line("host = host[:i]")
+			})
+			e.Block(fmt.Sprintf("if i := %s.IndexByte(host, '.'); i >= 0", stringsAlias), func() {
+				e.Line("return host[:i]")
+			})
+			e.Line(`return ""`)
+		})
+	case "header":
+		e.Line("// estratégia %q: o header %q.", "header", plan.header)
+		e.Block(fmt.Sprintf("func tenantIDFromRequest(r *%s.Request) string", httpAlias), func() {
+			e.Line("return r.Header.Get(%s)", strconv.Quote(plan.header))
+		})
+	}
+
+	e.Line("")
+	e.Line("// requireTenant resolve o tenant ambiente de r (spec §13.1) e devolve ctx com")
+	e.Line("// ele (runtime.WithTenant) — ok=false (fail-closed, §13.4) quando a borda não")
+	e.Line("// consegue resolver nenhum tenant; o chamador escreve 400 e não despacha. Tier")
+	e.Line(`// vem do header dev-placeholder "X-Tenant-Tier" (mesmo espírito de`)
+	e.Line(`// "X-Caller-Id"/devCallerFromRequest, abaixo — nenhum diretório de`)
+	e.Line("// tenants/planos de verdade existe ainda; habilita \"rateLimit: byTier\"")
+	e.Line("// (G4) a de fato diferenciar tenants reais, quando presente).")
+	e.Block(fmt.Sprintf("func requireTenant(ctx %s.Context, r *%s.Request) (%s.Context, bool)", ctxAlias, httpAlias, ctxAlias), func() {
+		e.Line("id := tenantIDFromRequest(r)")
+		e.Block(`if id == ""`, func() {
+			e.Line("return ctx, false")
+		})
+		e.Line(`return %s.WithTenant(ctx, %s.Tenant{ID: id, Tier: r.Header.Get("X-Tenant-Tier")}), true`, runtimeAlias, runtimeAlias)
+	})
 }
 
 // emitHTTPHelpers emite, como declarações de PACOTE (fora de func main()), o
@@ -689,11 +898,14 @@ func emitHTTPHelpers(e *emit.Emitter, runtimeAlias string) {
 	e.Line("// (G2) caem no default (422) DE PROPÓSITO — REQ-20.4 pede 422 para o")
 	e.Line("// conflito, que já é o que o default produz; não precisam de um case à")
 	e.Line("// parte, ao contrário de Forbidden/NotFound/InFlight, que DEVIAM do default.")
-	e.Line("// Rate-limit (429, G4) é resolvido À PARTE, ANTES desta função sequer ser")
-	e.Line("// chamada (writeRateLimitExceeded, ver as rotas com \"rateLimit\" acima) —")
-	e.Line("// nunca chega a err aqui. Tenant ausente (400) e sunset (410) continuam")
-	e.Line("// marcos posteriores (G5/G6) — deliberadamente não tratados aqui, para não")
-	e.Line("// travar a extensão futura com suposições erradas.")
+	e.Line("// runtime.ErrNotFound (404) também é o que um Load/Query devolve para um")
+	e.Line("// aggregate de OUTRO tenant (G5, spec §13.2, row_level) — o mesmo caminho de")
+	e.Line("// \"não encontrado\", de propósito: cross-tenant nunca deve vazar um 403 (evita")
+	e.Line("// enumeração). Rate-limit (429, G4) e tenant ausente (400 fail-closed, G5) são")
+	e.Line("// resolvidos À PARTE, ANTES desta função sequer ser chamada (writeRateLimitExceeded/")
+	e.Line("// requireTenant, ver as rotas acima) — nenhum dos dois chega a err aqui. Sunset")
+	e.Line("// (410) continua marco posterior (G6) — deliberadamente não tratado aqui, para")
+	e.Line("// não travar a extensão futura com suposições erradas.")
 	e.Block(fmt.Sprintf("func writeBusinessError(w %s.ResponseWriter, err error)", httpAlias), func() {
 		e.Line("var be %s.BusinessError", runtimeAlias)
 		e.Block(fmt.Sprintf("if %s.As(err, &be)", errorsAlias), func() {

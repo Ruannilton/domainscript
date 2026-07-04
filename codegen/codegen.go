@@ -82,6 +82,9 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	if bag.HasErrors() {
 		return nil, ErrHasDiagnostics
 	}
+	if err := rejectUnsupportedTenancyStrategies(prog); err != nil {
+		return nil, err
+	}
 
 	needsSQL := programNeedsSQLAdapter(prog) // G1, NFR-12 — true só quando ao menos um Database é provider:"sqlite"
 
@@ -156,6 +159,48 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+// rejectUnsupportedTenancyStrategies recusa a geração (erro claro, ANTES de
+// escrever qualquer arquivo) quando algum Database do programa declara
+// "tenancy: { strategy: ... }" (§13.1, G5) com um valor que este gerador
+// ainda não sabe honrar de verdade: "row_level" é o único totalmente
+// implementado (tag+filtro uniforme em runtime.EventStore/Repository,
+// codegen/rtsrc, e sqlruntime.EventStore, codegen/sqlrt — ver a doc de
+// program.Database.Tenancy); "schema_per_tenant"/"database_per_tenant"
+// exigiriam provisionar um schema/banco POR TENANT (CREATE SCHEMA/CREATE
+// DATABASE via a built-in "provision tenant(id)", §13.4) — que o front-end
+// explicitamente não modela neste ciclo (ver tasks.md G5, nota de escopo) —
+// então este gerador não tem NENHUM caminho real para as duas. Gerar mesmo
+// assim produziria um Database que finge isolar por tenant e na prática usa
+// o MESMO schema/conexão para todos — pior que recusar (postura fail-closed
+// desta task: nunca uma isolação silenciosamente ausente). Qualquer outro
+// valor (incl. "" — nenhuma tenancy declarada) passa despercebido.
+func rejectUnsupportedTenancyStrategies(prog *program.Program) error {
+	moduleNames := make([]string, 0, len(prog.Modules))
+	for name := range prog.Modules {
+		moduleNames = append(moduleNames, name)
+	}
+	sort.Strings(moduleNames)
+
+	for _, modName := range moduleNames {
+		mod := prog.Modules[modName]
+		dbNames := make([]string, 0, len(mod.Databases))
+		for name := range mod.Databases {
+			dbNames = append(dbNames, name)
+		}
+		sort.Strings(dbNames)
+		for _, dbName := range dbNames {
+			db := mod.Databases[dbName]
+			switch db.Tenancy {
+			case "", "row_level":
+				// suportado (ou nenhuma tenancy declarada).
+			default:
+				return fmt.Errorf("codegen: módulo %s: Database %s: tenancy.strategy %q não é suportada por este gerador (G5 implementa só \"row_level\" — \"schema_per_tenant\"/\"database_per_tenant\" exigem provisionamento por tenant, \"provision tenant(id)\" §13.4, que o front-end não modela neste ciclo; ver tasks.md G5)", modName, dbName, db.Tenancy)
+			}
+		}
+	}
+	return nil
 }
 
 // generateRuntimeFiles copia rtsrc.Sources() (verbatim, REQ-16) para
@@ -950,10 +995,11 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	e.Line("// para poder ser exercitada por teste via httptest, sem subir um socket real.")
 	var bodyErr error
 	var hadRoutes bool
+	var tenantPlan *httpTenantPlan
 	var rlPending []pendingRateLimitPlan
 	e.Block(fmt.Sprintf("func newMux(store %s.EventStore) *%s.ServeMux", runtimeAlias, httpAlias), func() {
 		e.Line("mux := %s.NewServeMux()", httpAlias)
-		hadRoutes, rlPending, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab, prog)
+		hadRoutes, tenantPlan, rlPending, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab, prog)
 		if bodyErr != nil {
 			return
 		}
@@ -964,6 +1010,13 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	}
 	if hadRoutes {
 		emitHTTPHelpers(e, runtimeAlias)
+	}
+	// tenantIDFromRequest/requireTenant (G5, spec §13) — só quando a Interface
+	// HTTP do grupo de fato declara "tenant { from: ... }" (tenantPlan != nil);
+	// mesma razão de posição (depois que newMux fecha) que emitHTTPHelpers/
+	// emitRateLimitHelpers abaixo já documentam.
+	if tenantPlan != nil {
+		emitTenantHelpers(e, tenantPlan, runtimeAlias, httpAlias)
 	}
 	// Declarações de rate limit (G4, spec §16) — vars de Limiter + a função
 	// "<rota>RateLimitChecks" de CADA rota que configura "rateLimit" — só

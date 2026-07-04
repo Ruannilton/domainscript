@@ -1,0 +1,354 @@
+package main
+
+import (
+	context "context"
+	notes "domainscript/generated/notes"
+	runtime "domainscript/generated/runtime"
+	json "encoding/json"
+	errors "errors"
+	fmt "fmt"
+	log "log"
+	net "net"
+	http "net/http"
+	strconv "strconv"
+	strings "strings"
+	time "time"
+)
+
+// main é o ponto de entrada do service "notes" — wiring in-memory a partir de
+// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada
+// geração, não editar à mão.
+func main() {
+	store := runtime.NewMemoryEventStore()
+	dispatcher := runtime.NewDispatcher()
+	uow := runtime.NewUnitOfWork(store, dispatcher)
+
+	notes.Wire(uow)
+	notes.WireQueryCache(dispatcher)
+
+	port := "8080"
+	server := &http.Server{Addr: fmt.Sprintf(":%s", port), Handler: newMux(store)}
+	log.Fatal(server.ListenAndServe())
+}
+
+// newMux constrói o *http.ServeMux do service "notes", registrando cada rota de
+// Interface HTTP (§design 3.12) — função à parte de main() (ver a doc acima)
+// para poder ser exercitada por teste via httptest, sem subir um socket real.
+func newMux(store runtime.EventStore) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /notes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		ctx, tenantOK := requireTenant(ctx, r)
+		if !tenantOK {
+			http.Error(w, "tenant required", http.StatusBadRequest)
+			return
+		}
+		rlOK, rlResult := runtime.CheckRateLimits(ctx, createNoteRateLimitChecks(ctx, r))
+		if !rlOK {
+			writeRateLimitExceeded(w, rlResult)
+			return
+		}
+		writeRateLimitHeaders(w, rlResult)
+		var cmd notes.CreateNoteCmd
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+				http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+				return
+			}
+		}
+		idVal, err := notes.NewNoteId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		cmd.NoteId = idVal
+		if err := notes.CreateNote(ctx, cmd); err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /notes/{id}/view", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		ctx, tenantOK := requireTenant(ctx, r)
+		if !tenantOK {
+			http.Error(w, "tenant required", http.StatusBadRequest)
+			return
+		}
+		rlOK, rlResult := runtime.CheckRateLimits(ctx, peekNoteViewRateLimitChecks(ctx, r))
+		if !rlOK {
+			writeRateLimitExceeded(w, rlResult)
+			return
+		}
+		writeRateLimitHeaders(w, rlResult)
+		if strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
+			ctx = runtime.WithNoCache(ctx)
+		}
+		idVal, err := notes.NewNoteId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		result, err := notes.PeekNoteView(ctx, store, idVal)
+		if err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
+		}
+	})
+	mux.HandleFunc("POST /notes/{id}/admin-touch", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		ctx, tenantOK := requireTenant(ctx, r)
+		if !tenantOK {
+			http.Error(w, "tenant required", http.StatusBadRequest)
+			return
+		}
+		rlOK, rlResult := runtime.CheckRateLimits(ctx, adminTouchNoteRateLimitChecks(ctx, r))
+		if !rlOK {
+			writeRateLimitExceeded(w, rlResult)
+			return
+		}
+		writeRateLimitHeaders(w, rlResult)
+		var cmd notes.AdminTouchNoteCmd
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+				http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+				return
+			}
+		}
+		idVal, err := notes.NewNoteId(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
+			return
+		}
+		cmd.NoteId = idVal
+		if err := notes.AdminTouchNote(ctx, cmd); err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		rlOK, rlResult := runtime.CheckRateLimits(ctx, pingRateLimitChecks(ctx, r))
+		if !rlOK {
+			writeRateLimitExceeded(w, rlResult)
+			return
+		}
+		writeRateLimitHeaders(w, rlResult)
+		result, err := notes.Ping(ctx, store)
+		if err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
+		}
+	})
+	return mux
+}
+
+// devCallerFromRequest constrói um runtime.Caller de DESENVOLVIMENTO a partir
+// do header "X-Caller-Id" (§design 3.12): presente e não-vazio ->
+// Authenticated()==true, ID()==valor do header; ausente -> Authenticated()==
+// false, ID()=="". Placeholder até a borda de auth real chegar; HasRole
+// sempre devolve false.
+func devCallerFromRequest(r *http.Request) runtime.Caller {
+	id := r.Header.Get("X-Caller-Id")
+	return devCaller{authenticated: id != "", id: id}
+}
+
+// devCaller implementa runtime.Caller para o caller de dev acima.
+type devCaller struct {
+	authenticated bool
+	id            string
+}
+
+func (c devCaller) Authenticated() bool {
+	return c.authenticated
+}
+
+func (c devCaller) ID() string {
+	return c.id
+}
+
+func (c devCaller) HasRole(role string) bool {
+	return false
+}
+
+// writeBusinessError mapeia err a um status HTTP (§design 3.12, REQ-28.2):
+// distingue por errors.As(&runtime.BusinessError) — negócio -> 422, exceto
+// runtime.ErrForbidden (403), runtime.ErrNotFound (404) e
+// runtime.ErrIdempotencyInFlight (409, G2, spec §14 — corrida da mesma
+// Idempotency-Key sob "concurrentRetry: reject"); qualquer outro error
+// (infra) -> 503. runtime.ErrIdempotencyKeyConflict/ErrIdempotencyKeyRequired
+// (G2) caem no default (422) DE PROPÓSITO — REQ-20.4 pede 422 para o
+// conflito, que já é o que o default produz; não precisam de um case à
+// parte, ao contrário de Forbidden/NotFound/InFlight, que DEVIAM do default.
+// runtime.ErrNotFound (404) também é o que um Load/Query devolve para um
+// aggregate de OUTRO tenant (G5, spec §13.2, row_level) — o mesmo caminho de
+// "não encontrado", de propósito: cross-tenant nunca deve vazar um 403 (evita
+// enumeração). Rate-limit (429, G4) e tenant ausente (400 fail-closed, G5) são
+// resolvidos À PARTE, ANTES desta função sequer ser chamada (writeRateLimitExceeded/
+// requireTenant, ver as rotas acima) — nenhum dos dois chega a err aqui. Sunset
+// (410) continua marco posterior (G6) — deliberadamente não tratado aqui, para
+// não travar a extensão futura com suposições erradas.
+func writeBusinessError(w http.ResponseWriter, err error) {
+	var be runtime.BusinessError
+	if errors.As(err, &be) {
+		switch {
+		case errors.Is(err, runtime.ErrForbidden):
+			http.Error(w, be.Msg, http.StatusForbidden)
+		case errors.Is(err, runtime.ErrNotFound):
+			http.Error(w, be.Msg, http.StatusNotFound)
+		case errors.Is(err, runtime.ErrIdempotencyInFlight):
+			http.Error(w, be.Msg, http.StatusConflict)
+		default:
+			http.Error(w, be.Msg, http.StatusUnprocessableEntity)
+		}
+		return
+	}
+	http.Error(w, "internal error", http.StatusServiceUnavailable)
+}
+
+// tenantIDFromRequest extrai o tenant ambiente da requisição (spec §13.1),
+// estratégia "header": o header "X-Tenant-Id".
+func tenantIDFromRequest(r *http.Request) string {
+	return r.Header.Get("X-Tenant-Id")
+}
+
+// requireTenant resolve o tenant ambiente de r (spec §13.1) e devolve ctx com
+// ele (runtime.WithTenant) — ok=false (fail-closed, §13.4) quando a borda não
+// consegue resolver nenhum tenant; o chamador escreve 400 e não despacha. Tier
+// vem do header dev-placeholder "X-Tenant-Tier" (mesmo espírito de
+// "X-Caller-Id"/devCallerFromRequest, abaixo — nenhum diretório de
+// tenants/planos de verdade existe ainda; habilita "rateLimit: byTier"
+// (G4) a de fato diferenciar tenants reais, quando presente).
+func requireTenant(ctx context.Context, r *http.Request) (context.Context, bool) {
+	id := tenantIDFromRequest(r)
+	if id == "" {
+		return ctx, false
+	}
+	return runtime.WithTenant(ctx, runtime.Tenant{ID: id, Tier: r.Header.Get("X-Tenant-Tier")}), true
+}
+
+// rateLimitClientIP extrai o identificador de rede do chamador para a
+// dimensão perIp (spec §16): prioriza "X-Forwarded-For" (1º endereço da
+// lista — convenção padrão de proxy reverso) e cai para r.RemoteAddr (só o
+// host, sem a porta) na ausência do header. Nenhum dos dois é validado
+// contra spoofing — confiar (ou não) num proxy é decisão de deploy, fora do
+// escopo deste gerador.
+func rateLimitClientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if i := strings.IndexByte(fwd, ','); i >= 0 {
+			fwd = fwd[:i]
+		}
+		return strings.TrimSpace(fwd)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// rateLimitAPIKey extrai a chave de API para a dimensão perApiKey (spec
+// §16) do header "X-Api-Key" — placeholder documentado até o projeto ter
+// um sistema de autenticação por API key de verdade (nenhum existe ainda;
+// mesmo espírito do X-Caller-Id de dev, devCallerFromRequest acima).
+func rateLimitAPIKey(r *http.Request) string {
+	return r.Header.Get("X-Api-Key")
+}
+
+// writeRateLimitHeaders escreve os headers "X-RateLimit-*" (spec §16) a
+// partir do resultado MAIS RESTRITIVO entre as dimensões checadas
+// (runtime.CheckRateLimits já resolve qual) — emitido tanto no caminho de
+// sucesso quanto no 429, para o chamador sempre poder ver sua cota.
+func writeRateLimitHeaders(w http.ResponseWriter, res runtime.RateLimitResult) {
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(res.ResetAt.Unix(), 10))
+}
+
+// writeRateLimitExceeded escreve a resposta automática do spec §16: os
+// mesmos headers X-RateLimit-* de sempre, mais "Retry-After" (segundos,
+// arredondado para cima) e 429.
+func writeRateLimitExceeded(w http.ResponseWriter, res runtime.RateLimitResult) {
+	writeRateLimitHeaders(w, res)
+	retryAfterSeconds := int64(res.RetryAfter / time.Second)
+	if res.RetryAfter%time.Second != 0 {
+		retryAfterSeconds++
+	}
+	if retryAfterSeconds < 0 {
+		retryAfterSeconds = 0
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+}
+
+// createNotePerTenantLimiter é o limitador perTenant de POST "/notes/{id}" -> CreateNote (spec §16, G4).
+var createNotePerTenantLimiter runtime.Limiter = runtime.NewLimiter("token_bucket", 2, time.Duration(60000000000), 0)
+
+// createNoteRateLimitChecks monta as dimensões de rate limit de POST "/notes/{id}" -> CreateNote (spec §16, G4).
+func createNoteRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	if tenant, ok := runtime.TenantFrom(ctx); ok {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: createNotePerTenantLimiter, Key: tenant.ID, FailOpen: true})
+	}
+	return checks
+}
+
+// peekNoteViewPerTenantLimiter é o limitador perTenant de GET "/notes/{id}/view" -> PeekNoteView (spec §16, G4).
+var peekNoteViewPerTenantLimiter runtime.Limiter = runtime.NewLimiter("token_bucket", 2, time.Duration(60000000000), 0)
+
+// peekNoteViewRateLimitChecks monta as dimensões de rate limit de GET "/notes/{id}/view" -> PeekNoteView (spec §16, G4).
+func peekNoteViewRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	if tenant, ok := runtime.TenantFrom(ctx); ok {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: peekNoteViewPerTenantLimiter, Key: tenant.ID, FailOpen: true})
+	}
+	return checks
+}
+
+// adminTouchNotePerTenantLimiter é o limitador perTenant de POST "/notes/{id}/admin-touch" -> AdminTouchNote (spec §16, G4).
+var adminTouchNotePerTenantLimiter runtime.Limiter = runtime.NewLimiter("token_bucket", 2, time.Duration(60000000000), 0)
+
+// adminTouchNoteRateLimitChecks monta as dimensões de rate limit de POST "/notes/{id}/admin-touch" -> AdminTouchNote (spec §16, G4).
+func adminTouchNoteRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	if tenant, ok := runtime.TenantFrom(ctx); ok {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: adminTouchNotePerTenantLimiter, Key: tenant.ID, FailOpen: true})
+	}
+	return checks
+}
+
+// pingPerTenantLimiter é o limitador perTenant de GET "/ping" -> Ping (spec §16, G4).
+var pingPerTenantLimiter runtime.Limiter = runtime.NewLimiter("token_bucket", 2, time.Duration(60000000000), 0)
+
+// pingRateLimitChecks monta as dimensões de rate limit de GET "/ping" -> Ping (spec §16, G4).
+func pingRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	if tenant, ok := runtime.TenantFrom(ctx); ok {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: pingPerTenantLimiter, Key: tenant.ID, FailOpen: true})
+	}
+	return checks
+}

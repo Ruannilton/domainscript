@@ -37,8 +37,31 @@ type Database struct {
 	// adapter real, ex. um caminho de arquivo sqlite) — "" quando ausente ou
 	// não-literal (ex. env(...), não resolvido estaticamente aqui, mesmo
 	// espírito de httpPortGo em codegen/codegen.go).
-	DSN  string
-	Decl *ast.ConfigBlock
+	DSN string
+	// Tenancy é a estratégia de "tenancy: { strategy: ..., column: \"...\" }"
+	// (§13.1, G5) — "" quando o bloco/chave estão ausentes (nenhuma
+	// multi-tenancy para este Database, a postura no-op padrão, mesma
+	// convenção de Provider/DSN acima). Livre no front-end como Provider
+	// (qualquer string é aceita); é o codegen (G5) quem dá semântica a
+	// "row_level" (o único totalmente implementado — tag+filtro em
+	// runtime.EventStore/Repository, codegen/rtsrc, e sqlruntime.EventStore,
+	// codegen/sqlrt) e REJEITA "schema_per_tenant"/"database_per_tenant" com
+	// um erro de geração claro (ver rejectUnsupportedTenancyStrategies,
+	// codegen.go): as duas exigem provisionamento por tenant (CREATE SCHEMA/
+	// CREATE DATABASE via "provision tenant(id)", §13.4) que o front-end
+	// explicitamente não modela neste ciclo (ver tasks.md G5) — falhar
+	// fechado (recusar gerar) é preferível a gerar um adapter que finge
+	// isolar e não isola.
+	Tenancy string
+	// TenancyColumn é o valor textual de "tenancy: { ..., column: \"...\" }"
+	// — só faz sentido para Tenancy=="row_level"; "" quando ausente. O
+	// adapter SQL real (codegen/sqlrt) usa um nome de coluna FIXO
+	// ("tenant_id") independente deste valor — ver a doc de
+	// sqlrt/eventstore.go.txt/ensureSchema sobre essa simplificação
+	// documentada (só o RÓTULO não é configurável; a SEMÂNTICA de filtro é a
+	// mesma qualquer que seja o valor aqui).
+	TenancyColumn string
+	Decl          *ast.ConfigBlock
 }
 
 // FileStorage é um seam de armazenamento de arquivo configurado num mod.ds
@@ -131,14 +154,17 @@ func newModule(m *ast.ModuleDecl) *Module {
 	for _, b := range m.Blocks {
 		switch b.Kind {
 		case "Database":
+			tenancy, tenancyColumn := tenancyStrategy(entry(b.Entries, "tenancy"))
 			mod.Databases[b.Name] = &Database{
-				Name:       b.Name,
-				Module:     m.Name,
-				SupportsXA: boolValue(entry(b.Entries, "supportsXA")),
-				Manages:    identList(entry(b.Entries, "manages")),
-				Provider:   stringValue(entry(b.Entries, "provider")),
-				DSN:        stringValue(entry(b.Entries, "dsn")),
-				Decl:       b,
+				Name:          b.Name,
+				Module:        m.Name,
+				SupportsXA:    boolValue(entry(b.Entries, "supportsXA")),
+				Manages:       identList(entry(b.Entries, "manages")),
+				Provider:      stringValue(entry(b.Entries, "provider")),
+				DSN:           stringValue(entry(b.Entries, "dsn")),
+				Tenancy:       tenancy,
+				TenancyColumn: tenancyColumn,
+				Decl:          b,
 			}
 		case "FileStorage":
 			mod.FileStorages[b.Name] = &FileStorage{
@@ -247,4 +273,20 @@ func identList(expr ast.Expr) []string {
 		}
 	}
 	return out
+}
+
+// tenancyStrategy lê "tenancy: { strategy: row_level, column: \"tenant_id\" }"
+// (§13.1, G5) de um bloco Database — devolve ("", "") quando a chave está
+// ausente ou não é o objeto esperado (mesma tolerância de Provider/DSN acima:
+// o front-end nunca valida esse valor, então uma forma inesperada aqui vira
+// Tenancy=="", não um erro — o codegen (Generate, codegen.go) é quem recusa
+// gerar quando Tenancy é um valor que não sabe honrar).
+func tenancyStrategy(expr ast.Expr) (strategy, column string) {
+	obj, ok := expr.(*ast.ObjectExpr)
+	if !ok {
+		return "", ""
+	}
+	strategy = identName(entry(obj.Entries, "strategy"))
+	column = stringValue(entry(obj.Entries, "column"))
+	return strategy, column
 }

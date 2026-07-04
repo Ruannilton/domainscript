@@ -48,7 +48,17 @@ func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFac
 
 // ensureSchema cria a tabela "events" quando ainda não existe: uma linha por
 // evento, chaveada por (aggregate_id, sequence) — o mesmo par que
-// memoryEventStore usa como posição no stream em memória.
+// memoryEventStore usa como posição no stream em memória. "tenant_id"
+// (G5, spec §13.1/13.2, row_level) carrega a mesma tag por-stream que
+// memoryEventStore mantém em memória (ver tenantStream, rtsrc/
+// eventstore.go.txt) — "" para todo evento gravado fora de um contexto de
+// tenant, o que preserva o schema/comportamento de antes de G5 byte a byte
+// para qualquer módulo sem tenancy. O nome literal da coluna é fixo aqui
+// (não configurável pelo "column:" de tenancy{} do mod.ds, ver
+// program.Database.TenancyColumn) — este adapter serve UMA tabela de
+// domínio por Database, então parametrizar o nome da coluna não muda a
+// SEMÂNTICA de isolamento, só a rotulagem; documentado como simplificação
+// desta task, não uma limitação de segurança.
 func (s *EventStore) ensureSchema(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS events (
@@ -57,6 +67,7 @@ CREATE TABLE IF NOT EXISTS events (
 	event_type   TEXT NOT NULL,
 	payload      TEXT NOT NULL,
 	recorded_at  TIMESTAMP NOT NULL,
+	tenant_id    TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (aggregate_id, sequence)
 )`)
 	if err != nil {
@@ -91,9 +102,31 @@ func (s *EventStore) Append(ctx context.Context, aggregateID string, events []ru
 
 // Load implementa runtime.EventStore: um aggregateID desconhecido devolve um
 // slice vazio não-nil e nenhum erro (mesmo contrato de memoryEventStore) —
-// uma consulta sem linhas já produz exatamente isso naturalmente.
+// uma consulta sem linhas já produz exatamente isso naturalmente. Um
+// aggregateID que EXISTE mas foi gravado sob um tenant DIFERENTE do de ctx
+// (G5, §13.2) devolve (nil, runtime.ErrNotFound) em vez de vazio-e-ok — ver
+// a doc de loadWithinQuerier/tenantVisible.
 func (s *EventStore) Load(ctx context.Context, aggregateID string) ([]runtime.Event, error) {
 	return loadWithinQuerier(ctx, s.db, s.registry, aggregateID)
+}
+
+// tenantIDOf/tenantVisible espelham as funções homônimas não-exportadas do
+// pacote runtime (rtsrc/eventstore.go.txt) — mesma regra de row_level
+// (§13.2/13.3), reimplementada aqui porque são privadas àquele pacote;
+// domainscript/generated/runtime já exporta os dois acessores de que
+// precisamos (TenantFrom/CrossTenantBypassed) para replicá-la sem acoplar os
+// dois pacotes além do necessário.
+func tenantIDOf(ctx context.Context) string {
+	t, _ := runtime.TenantFrom(ctx)
+	return t.ID
+}
+
+func tenantVisible(ctx context.Context, tag string) bool {
+	if tag == "" || runtime.CrossTenantBypassed(ctx) {
+		return true
+	}
+	t, ok := runtime.TenantFrom(ctx)
+	return ok && t.ID == tag
 }
 
 // --- helpers compartilhados com uow.go.txt/twophase.go.txt. ---
@@ -105,11 +138,23 @@ func (s *EventStore) Load(ctx context.Context, aggregateID string) ([]runtime.Ev
 // do encode para que o payload persistido já reflita a metadata carimbada
 // (Load volta a carimbar a partir das colunas — autoritativas — na leitura,
 // então isso é redundante mas fiel, nunca incorreto).
+//
+// Tag de tenant (G5, §13.2, row_level): a PRIMEIRA escrita de um stream (next
+// == 0 antes de incrementar) carimba tenant_id com o Tenant.ID ativo em ctx
+// ("" se nenhum) — escritas SEGUINTES ao MESMO stream reusam a tag JÁ
+// gravada (lida abaixo via MAX(tenant_id), constante entre linhas do mesmo
+// aggregate_id), nunca a de ctx nessa chamada: um stream não muda de dono no
+// meio da vida, mesma regra de memoryEventStore.Append.
 func appendWithinTx(ctx context.Context, tx *sql.Tx, aggregateID string, events []runtime.Event) error {
 	var next int64
-	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM events WHERE aggregate_id = ?`, aggregateID)
-	if err := row.Scan(&next); err != nil {
+	var existingTenant sql.NullString
+	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0), MAX(tenant_id) FROM events WHERE aggregate_id = ?`, aggregateID)
+	if err := row.Scan(&next, &existingTenant); err != nil {
 		return fmt.Errorf("sqlruntime: Append: próxima sequência: %w", err)
+	}
+	tenantID := existingTenant.String
+	if next == 0 {
+		tenantID = tenantIDOf(ctx)
 	}
 
 	now := time.Now().UTC()
@@ -121,8 +166,8 @@ func appendWithinTx(ctx context.Context, tx *sql.Tx, aggregateID string, events 
 			return fmt.Errorf("sqlruntime: Append: encode %s: %w", ev.EventType(), err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO events (aggregate_id, sequence, event_type, payload, recorded_at) VALUES (?, ?, ?, ?, ?)`,
-			aggregateID, next, ev.EventType(), string(payload), now,
+			`INSERT INTO events (aggregate_id, sequence, event_type, payload, recorded_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?)`,
+			aggregateID, next, ev.EventType(), string(payload), now, tenantID,
 		); err != nil {
 			return fmt.Errorf("sqlruntime: Append: insert %s: %w", ev.EventType(), err)
 		}
@@ -142,9 +187,17 @@ type querier interface {
 // loadWithinQuerier lê o stream de aggregateID via q (um *sql.DB ou a *sql.Tx
 // corrente) e decodifica cada linha usando registry — o corpo de
 // EventStore.Load e de Tx.Load (uow.go.txt/twophase.go.txt).
+//
+// Filtro de tenant (G5, §13.2, row_level): tenant_id é constante entre todas
+// as linhas de um mesmo aggregate_id (ver appendWithinTx), então a PRIMEIRA
+// linha lida já basta para decidir visibilidade — tenantVisible reprova,
+// devolve (nil, runtime.ErrNotFound) IMEDIATAMENTE, sem decodificar o resto
+// do stream (mesmo raciocínio do memoryEventStore.Load: nunca vazio-e-ok
+// para um stream que EXISTE mas pertence a outro tenant — ver a doc do tipo
+// EventStore em rtsrc/eventstore.go.txt).
 func loadWithinQuerier(ctx context.Context, q querier, registry map[string]EventFactory, aggregateID string) ([]runtime.Event, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT sequence, event_type, payload, recorded_at FROM events WHERE aggregate_id = ? ORDER BY sequence`,
+		`SELECT sequence, event_type, payload, recorded_at, tenant_id FROM events WHERE aggregate_id = ? ORDER BY sequence`,
 		aggregateID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlruntime: Load: %w", err)
@@ -152,12 +205,19 @@ func loadWithinQuerier(ctx context.Context, q querier, registry map[string]Event
 	defer rows.Close()
 
 	events := make([]runtime.Event, 0)
+	tenantChecked := false
 	for rows.Next() {
 		var seq int64
-		var eventType, payload string
+		var eventType, payload, tenantID string
 		var recordedAt time.Time
-		if err := rows.Scan(&seq, &eventType, &payload, &recordedAt); err != nil {
+		if err := rows.Scan(&seq, &eventType, &payload, &recordedAt, &tenantID); err != nil {
 			return nil, fmt.Errorf("sqlruntime: Load: scan: %w", err)
+		}
+		if !tenantChecked {
+			tenantChecked = true
+			if !tenantVisible(ctx, tenantID) {
+				return nil, runtime.ErrNotFound
+			}
 		}
 		factory, ok := registry[eventType]
 		if !ok {

@@ -225,11 +225,14 @@ func (c devCaller) HasRole(role string) bool {
 // (G2) caem no default (422) DE PROPÓSITO — REQ-20.4 pede 422 para o
 // conflito, que já é o que o default produz; não precisam de um case à
 // parte, ao contrário de Forbidden/NotFound/InFlight, que DEVIAM do default.
-// Rate-limit (429, G4) é resolvido À PARTE, ANTES desta função sequer ser
-// chamada (writeRateLimitExceeded, ver as rotas com "rateLimit" acima) —
-// nunca chega a err aqui. Tenant ausente (400) e sunset (410) continuam
-// marcos posteriores (G5/G6) — deliberadamente não tratados aqui, para não
-// travar a extensão futura com suposições erradas.
+// runtime.ErrNotFound (404) também é o que um Load/Query devolve para um
+// aggregate de OUTRO tenant (G5, spec §13.2, row_level) — o mesmo caminho de
+// "não encontrado", de propósito: cross-tenant nunca deve vazar um 403 (evita
+// enumeração). Rate-limit (429, G4) e tenant ausente (400 fail-closed, G5) são
+// resolvidos À PARTE, ANTES desta função sequer ser chamada (writeRateLimitExceeded/
+// requireTenant, ver as rotas acima) — nenhum dos dois chega a err aqui. Sunset
+// (410) continua marco posterior (G6) — deliberadamente não tratado aqui, para
+// não travar a extensão futura com suposições erradas.
 func writeBusinessError(w http.ResponseWriter, err error) {
 	var be runtime.BusinessError
 	if errors.As(err, &be) {

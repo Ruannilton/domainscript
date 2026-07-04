@@ -203,6 +203,30 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 	return e.Bytes()
 }
 
+// emitCrossTenantBypass emite, logo após "caller, _ := runtime.CallerFrom(ctx)",
+// as duas linhas que materializam "tenancy: cross_tenant" (G5, REQ-27.3,
+// spec §13.3) para UM UseCase que declara esse opt-in: uma entrada de
+// auditoria via log/slog (tenant ativo, caller, nome do UseCase — o mínimo
+// estrutural que "trilha de auditoria" pede, mesmo estilo simples de
+// slog já usado por uow.go.txt/twophase.go.txt para outros eventos
+// relevantes de runtime) e "ctx = runtime.WithCrossTenantBypass(ctx)" —
+// dali em diante, TODO Load/Append desta unit of work (via tx, que carrega
+// este MESMO ctx internamente — ver uow.go.txt/rtsrc/eventstore.go.txt)
+// enxerga aggregates de QUALQUER tenant, não só o do caller (§13.2: o
+// filtro row_level é isso que fica suspenso). A exigência de "role
+// privilegiada" do REQ-27.3 já é responsabilidade do bloco "access {
+// requires caller.hasRole(...) }" que o UseCase declara (E7.2/§23,
+// inalterado por esta task) — não duplicada aqui.
+func emitCrossTenantBypass(e *emit.Emitter, decl *ast.UseCaseDecl, runtimeAlias string) {
+	slogAlias := e.Import("log/slog")
+	e.Line("tenant, _ := %s.TenantFrom(ctx)", runtimeAlias)
+	e.Line(
+		"%s.Warn(%q, \"usecase\", %q, \"tenant\", tenant.ID, \"caller\", caller.ID())",
+		slogAlias, "cross-tenant access (spec §13.3)", decl.Name,
+	)
+	e.Line("ctx = %s.WithCrossTenantBypass(ctx)", runtimeAlias)
+}
+
 // emitUseCaseDecl emite a função de um único UseCaseDecl (ver a doc do
 // arquivo para as decisões de timeout/caller/uow). Quando usecase2PCPlan
 // reconhece que decl toca Aggregates de 2+ Databases XA distintos (G1), emite
@@ -277,6 +301,9 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 			e.Line("defer cancel()")
 		}
 		e.Line("caller, _ := %s.CallerFrom(ctx)", runtimeAlias)
+		if decl.Tenancy == "cross_tenant" {
+			emitCrossTenantBypass(e, decl, runtimeAlias)
+		}
 
 		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
 

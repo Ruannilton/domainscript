@@ -11,8 +11,9 @@ const (
 	callerCtxKey ctxKey = iota
 	tenantCtxKey
 	idempotencyKeyCtxKey
-	traceCtxKey   // accessor pair (WithTrace/TraceFrom) lands with observability, H2.
-	noCacheCtxKey // G3, spec §15 — Cache-Control: no-cache bypass, see WithNoCache/NoCacheFrom.
+	traceCtxKey       // accessor pair (WithTrace/TraceFrom) lands with observability, H2.
+	noCacheCtxKey     // G3, spec §15 — Cache-Control: no-cache bypass, see WithNoCache/NoCacheFrom.
+	crossTenantCtxKey // G5, spec §13.3 — cross_tenant opt-in bypass, see WithCrossTenantBypass/CrossTenantBypassed.
 )
 
 // WithCaller returns a copy of ctx carrying caller, retrievable via
@@ -28,14 +29,22 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 }
 
 // Tenant identifies the tenant a request belongs to in a multi-tenant
-// deployment. Filtering/enforcement by Tenant is a no-op until
-// multi-tenancy lands (Marco G5) — for now it is only a context carrier.
-// Tier names the tenant's RateLimitTier (spec §16: "resolve do
-// tenant.tier") — like ID, nobody sets it yet (WithTenant is never called
-// by generated code until G5's edge lands); a "rateLimit: byTier" route
-// (codegen/ratelimit.go, G4) simply finds no Tenant and skips tier-based
-// limiting entirely, the same documented no-op posture as every other
-// TenantFrom consumer (G3's cache key, this file's own doc history).
+// deployment (spec §13). The generated HTTP edge (codegen/http.go, G5) sets
+// this from a real request (header/subdomain — see tenantIDFromRequest in
+// generated code) whenever the Interface declares "tenant { from: ... }";
+// services/routes that never declare tenancy never call WithTenant, so
+// TenantFrom keeps returning (Tenant{}, false) for them — the original no-op
+// posture (G1..G4) is preserved unchanged. Tier names the tenant's
+// RateLimitTier (spec §16: "resolve do tenant.tier") — populated from the
+// dev-placeholder header "X-Tenant-Tier" until a real tenant/plan directory
+// exists (same documented-placeholder spirit as devCaller's "X-Caller-Id").
+//
+// Enforcement (G5, spec §13.2): EventStore/Repository (this package) and
+// sqlruntime.EventStore (codegen/sqlrt) tag every aggregate stream/state with
+// the Tenant.ID active in ctx at write time and, on read, treat a mismatch
+// exactly like an unknown aggregate id (empty stream / ErrNotFound) — see
+// memoryEventStore.Load below and WithCrossTenantBypass for the
+// "tenancy: cross_tenant" (§13.3) escape hatch.
 type Tenant struct {
 	ID   string
 	Tier string
@@ -51,6 +60,26 @@ func WithTenant(ctx context.Context, tenant Tenant) context.Context {
 func TenantFrom(ctx context.Context) (Tenant, bool) {
 	tenant, ok := ctx.Value(tenantCtxKey).(Tenant)
 	return tenant, ok
+}
+
+// WithCrossTenantBypass marks ctx so the row_level tenant filter enforced by
+// EventStore/Repository.Load (this package) and sqlruntime.EventStore.Load
+// (codegen/sqlrt) is bypassed for calls made through it — the mechanics
+// behind "tenancy: cross_tenant" (spec §13.3): a UseCaseDecl.Tenancy ==
+// "cross_tenant" is generated to call this once, up front, before opening its
+// unit of work (see codegen/decl_usecase.go), after emitting the audit trail
+// entry the spec requires. It never affects Append: writes are always tagged
+// with whatever Tenant is (or isn't) active in ctx, bypass or not — the
+// bypass only widens what a subsequent Load is allowed to SEE.
+func WithCrossTenantBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, crossTenantCtxKey, true)
+}
+
+// CrossTenantBypassed reports whether ctx carries the cross-tenant bypass set
+// by WithCrossTenantBypass.
+func CrossTenantBypassed(ctx context.Context) bool {
+	v, _ := ctx.Value(crossTenantCtxKey).(bool)
+	return v
 }
 
 // WithIdempotencyKey returns a copy of ctx carrying the client-supplied

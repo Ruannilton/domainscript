@@ -9,30 +9,61 @@ import (
 // EventStore is the seam for durable event storage, keyed by aggregate
 // stream id — not by any "id" field inside an event's own payload, which is
 // business data the store never inspects.
+//
+// Multi-tenancy (G5, spec §13.2, row_level): every stream is tagged, on its
+// first Append, with the Tenant.ID active in ctx (TenantFrom) — "" when ctx
+// carries none, which is the ENTIRE contract for a service that never
+// declares tenancy (no tag ever written, no mismatch ever possible, Load
+// behaves exactly as it always has). An aggregateID that has NEVER been
+// written still returns an empty, non-nil slice and no error, same as
+// always — but a stream that DOES exist, tagged for a DIFFERENT tenant than
+// ctx's, is a different case: returning it empty-but-ok would let the
+// caller silently treat someone else's aggregate as freshly nonexistent
+// (e.g. re-create/deposit into it), which is worse than returning an error.
+// So Load returns ErrNotFound for that case instead — deliberately
+// indistinguishable, from the CALLER's side, from "this id was never used"
+// (§13.2: "evita enumeração"), but never silently empty-and-ok.
+// WithCrossTenantBypass (§13.3) lifts the check for one call.
 type EventStore interface {
 	// Append records events for the aggregate stream aggregateID, stamping
 	// each event's AggregateID/Sequence/Timestamp (via Event.SetMeta)
 	// before storing it.
 	Append(ctx context.Context, aggregateID string, events []Event) error
 	// Load returns every event recorded for aggregateID, in the order they
-	// were appended. An unknown aggregateID returns an empty, non-nil slice
-	// and no error.
+	// were appended. An aggregateID that was never written returns an
+	// empty, non-nil slice and no error; one written under a DIFFERENT
+	// tenant than ctx's (§13.2), unless WithCrossTenantBypass is set,
+	// returns (nil, ErrNotFound) instead — see the type doc above.
 	Load(ctx context.Context, aggregateID string) ([]Event, error)
+}
+
+// tenantStream pairs an event stream with the tenant ID it was first
+// written under ("" for a stream created outside any tenant context) — the
+// row_level tag §13.2 asks for, stored alongside the data rather than
+// changing the map's key, so a stream is always addressed by its plain
+// aggregateID regardless of tenancy.
+type tenantStream struct {
+	tenantID string
+	events   []Event
 }
 
 // memoryEventStore is a thread-safe, in-process EventStore backed by a map
 // keyed by aggregate id.
 type memoryEventStore struct {
 	mu      sync.Mutex
-	streams map[string][]Event
+	streams map[string]*tenantStream
 }
 
 // NewMemoryEventStore creates an empty in-memory EventStore.
 func NewMemoryEventStore() EventStore {
-	return &memoryEventStore{streams: make(map[string][]Event)}
+	return &memoryEventStore{streams: make(map[string]*tenantStream)}
 }
 
-// Append implements EventStore.
+// Append implements EventStore. The stream's tenant tag is set from ctx the
+// first time aggregateID is written; later Appends to the same stream keep
+// that original tag regardless of ctx (a stream does not change owner
+// mid-life) — see the type doc for why this never affects a non-tenant
+// service.
 func (s *memoryEventStore) Append(ctx context.Context, aggregateID string, events []Event) error {
 	if len(events) == 0 {
 		return nil
@@ -41,27 +72,61 @@ func (s *memoryEventStore) Append(ctx context.Context, aggregateID string, event
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	stream := s.streams[aggregateID]
+	ts := s.streams[aggregateID]
+	if ts == nil {
+		ts = &tenantStream{tenantID: tenantIDOf(ctx)}
+		s.streams[aggregateID] = ts
+	}
+
 	now := time.Now().UTC()
 	for _, ev := range events {
 		ev.SetMeta(EventMeta{
 			AggregateID: aggregateID,
-			Sequence:    int64(len(stream)) + 1,
+			Sequence:    int64(len(ts.events)) + 1,
 			Timestamp:   now,
 		})
-		stream = append(stream, ev)
+		ts.events = append(ts.events, ev)
 	}
-	s.streams[aggregateID] = stream
 	return nil
 }
 
-// Load implements EventStore.
+// Load implements EventStore. See the type doc for the row_level filter: a
+// stream that DOES exist but is tagged for a different tenant than ctx's
+// returns (nil, ErrNotFound) — never empty-and-ok, which would let the
+// caller mistake someone else's aggregate for a fresh one — unless
+// CrossTenantBypassed(ctx).
 func (s *memoryEventStore) Load(ctx context.Context, aggregateID string) ([]Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	stream := s.streams[aggregateID]
-	out := make([]Event, len(stream))
-	copy(out, stream)
+	ts := s.streams[aggregateID]
+	if ts == nil {
+		return make([]Event, 0), nil
+	}
+	if !tenantVisible(ctx, ts.tenantID) {
+		return nil, ErrNotFound
+	}
+
+	out := make([]Event, len(ts.events))
+	copy(out, ts.events)
 	return out, nil
+}
+
+// tenantIDOf returns the Tenant.ID active in ctx, or "" when ctx carries no
+// Tenant — the tag a newly created stream/state is stamped with (§13.2).
+func tenantIDOf(ctx context.Context) string {
+	t, _ := TenantFrom(ctx)
+	return t.ID
+}
+
+// tenantVisible reports whether data tagged with tag may be read through
+// ctx (§13.2/§13.3): unTagged data ("") is always visible (never tenant-
+// scoped to begin with); otherwise ctx needs the SAME tenant, or the
+// cross_tenant bypass.
+func tenantVisible(ctx context.Context, tag string) bool {
+	if tag == "" || CrossTenantBypassed(ctx) {
+		return true
+	}
+	t, ok := TenantFrom(ctx)
+	return ok && t.ID == tag
 }
