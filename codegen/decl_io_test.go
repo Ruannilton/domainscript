@@ -354,7 +354,7 @@ func TestEmitPolicyNotifyGolden(t *testing.T) {
 	model := types.NewModel(prog.Symbols)
 	reg := goname.NewVOOperatorRegistry()
 
-	got, err := codegen.EmitPolicy("reactions", policy, model, prog.Symbols, "Reactions", reg, adaptersByNameIO(prog))
+	got, err := codegen.EmitPolicy("reactions", policy, model, prog.Symbols, prog, "Reactions", reg, adaptersByNameIO(prog))
 	if err != nil {
 		t.Fatalf("EmitPolicy(SendDepositNotification): erro inesperado: %v", err)
 	}
@@ -487,7 +487,7 @@ func ioSmokeFiles(t *testing.T) map[string][]byte {
 	}
 	files[filepath.Join("notify", "adapter_deposit.go")] = adapterGo
 
-	policyGo, err := codegen.EmitPolicy("notify", policy, model, prog.Symbols, "Reactions", reg, notifyAdapters)
+	policyGo, err := codegen.EmitPolicy("notify", policy, model, prog.Symbols, prog, "Reactions", reg, notifyAdapters)
 	if err != nil {
 		t.Fatalf("EmitPolicy(SendDepositNotification): erro inesperado: %v", err)
 	}

@@ -21,7 +21,9 @@ func SendDepositNotification(ctx context.Context, ev runtime.Event) error {
 	return nil
 }
 
-// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox —
+// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,
+// para uma Policy cross-service via canal "queue" da topologia, no seu
+// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —
 // chamada por cmd/<service>/main.go na inicialização (wiring in-memory,
 // §design 3.11).
 func Wire(d runtime.Dispatcher) {

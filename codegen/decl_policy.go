@@ -3,11 +3,13 @@ package codegen
 import (
 	"fmt"
 	"path"
+	"strings"
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/codegen/lower"
+	"domainscript/program"
 	"domainscript/symbols"
 	"domainscript/types"
 )
@@ -69,15 +71,27 @@ import (
 // (Marco F2+: Worker/Saga/Notification vão precisar do mesmo seam) precisar
 // disso. Nem o wallet nem o shop de hoje combinam as duas categorias no
 // mesmo módulo (Orders só tem UseCase, Shipping só tem Policy).
+//
+// NEM TODA Policy do pacote acaba assinada em "d" (F5, REQ-26.5): uma Policy
+// cross-service via um canal "queue" da topologia assina no seu PRÓPRIO
+// runtime.ChannelTransport (construído dentro do próprio Wire) em vez de em
+// "d"/Outbox(d) — "d" continua o parâmetro, mas fica sem uso para essa
+// Policy específica. Ver a doc de emitPolicyWireFunc para os detalhes de
+// como cada Policy decide seu alvo de Subscribe.
 
 // policyEventInfo é a forma já resolvida do Event/PublicEvent de
-// PolicyDecl.On: o *ast.EventDecl e o tipo Go de referência já qualificado,
+// PolicyDecl.On: o *ast.EventDecl, o tipo Go de referência já qualificado,
 // SEMPRE um ponteiro (ver a doc do arquivo) — "*OrderPlaced" (mesmo pacote,
 // Event privado) ou "*contracts.OrderPlaced" (import próprio, pacote
-// compartilhado §design 3.4, PublicEvent).
+// compartilhado §design 3.4, PublicEvent) — e originModule, o módulo que
+// DECLARA o evento (symbols.Symbol.Module), usado por
+// emitPolicyWireFunc (F5, REQ-26.5) para decidir se esta Policy é
+// cross-service e, se for, qual *program.Channel da topologia rege a
+// entrega (prog.ChannelBetween(originModule, module)).
 type policyEventInfo struct {
-	decl      *ast.EventDecl
-	goPtrType string
+	decl         *ast.EventDecl
+	goPtrType    string
+	originModule string
 }
 
 // resolvePolicyEvent resolve PolicyDecl.On a um Event/PublicEvent conhecido —
@@ -85,9 +99,10 @@ type policyEventInfo struct {
 // (resolver.resolveOn, resolver/resolver.go) já validou que o nome existe em
 // algum módulo do programa antes deste emissor rodar (Lookup local, fallback
 // Find cross-module — a MESMA ordem de resolver.resolveOn); aqui só se
-// reconsulta a SymbolTable para decidir o pacote Go de referência. Um evento
-// não resolvido ou que não seja EventDecl é bug de geração (REQ-9 já deveria
-// ter barrado), não caminho normal.
+// reconsulta a SymbolTable para decidir o pacote Go de referência e o módulo
+// de origem (symbols.Symbol.Module — F5). Um evento não resolvido ou que
+// não seja EventDecl é bug de geração (REQ-9 já deveria ter barrado), não
+// caminho normal.
 func resolvePolicyEvent(e *emit.Emitter, tab *symbols.SymbolTable, module, eventName string) (policyEventInfo, error) {
 	sym, ok := tab.Lookup(module, eventName)
 	if !ok {
@@ -102,10 +117,10 @@ func resolvePolicyEvent(e *emit.Emitter, tab *symbols.SymbolTable, module, event
 	}
 
 	if !ed.Public {
-		return policyEventInfo{decl: ed, goPtrType: "*" + ed.Name}, nil
+		return policyEventInfo{decl: ed, goPtrType: "*" + ed.Name, originModule: sym.Module}, nil
 	}
 	contractsAlias := e.Import(path.Join(domainModuleRoot, "contracts"))
-	return policyEventInfo{decl: ed, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ed.Name)}, nil
+	return policyEventInfo{decl: ed, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ed.Name), originModule: sym.Module}, nil
 }
 
 // policyIsAtLeastOnce reporta se decl declara a garantia de entrega
@@ -119,9 +134,14 @@ func policyIsAtLeastOnce(decl *ast.PolicyDecl) bool {
 // EmitPolicies, mantendo o contrato uniforme entre as duas funções (mesmo
 // padrão de EmitUseCase/EmitUseCases). adapters (F4, REQ-25.3) é o registry
 // de Notification/Adapter do módulo — nil preserva o comportamento anterior
-// a F4 (nenhum notify/call reconhecido no corpo).
-func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
-	return EmitPolicies(pkg, []*ast.PolicyDecl{decl}, model, tab, module, reg, adapters)
+// a F4 (nenhum notify/call reconhecido no corpo). prog (F5, REQ-26.5) é o
+// programa agregado — usado só para decidir, por Policy, se ela é
+// cross-service via um canal da topologia (ver a doc de
+// emitPolicyWireFunc); nil é seguro sobre um programa sem topology.ds (todo
+// prog.ChannelBetween devolve nil), o mesmo efeito de nenhum canal
+// declarado.
+func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+	return EmitPolicies(pkg, []*ast.PolicyDecl{decl}, model, tab, prog, module, reg, adapters)
 }
 
 // EmitPolicies gera o Go de várias PolicyDecl num único arquivo
@@ -130,8 +150,8 @@ func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbo
 // adapters (F4) é repassado a cada corpo via StmtLowerer.WithNotifyAdapters
 // (ver emitPolicyDecl) — habilita "DepositNotification(...)" dentro de
 // execute a reconhecer notify (Mode async)/call (Mode sync) do Adapter
-// parceiro (§9.1/9.3, REQ-25.3).
-func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+// parceiro (§9.1/9.3, REQ-25.3). prog é repassado a emitPolicyWireFunc (F5).
+func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -146,7 +166,9 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 	}
 
 	e.Line("")
-	emitPolicyWireFunc(e, runtimeAlias, decls)
+	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg); err != nil {
+		return nil, fmt.Errorf("codegen: Policy Wire: %w", err)
+	}
 
 	return e.Bytes()
 }
@@ -219,28 +241,136 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 	return nil
 }
 
+// policyWireInfo é o resultado, já resolvido, de UMA Policy para
+// emitPolicyWireFunc: o evento (policyEventInfo, com originModule) e, se
+// esta Policy é cross-service via canal "queue" (prog.ChannelBetween(
+// originModule, module), REQ-26.5), o *program.Channel e o nome do var de
+// pacote que vai carregar seu runtime.ChannelTransport. channel == nil
+// significa "caminho de sempre" (F1): Subscribe direto em d/Outbox(d).
+type policyWireInfo struct {
+	decl    *ast.PolicyDecl
+	evt     policyEventInfo
+	channel *program.Channel
+	varName string
+}
+
+// resolvePolicyWireInfos resolve, para cada decl, se é cross-service via um
+// canal "queue" da topologia (ver a doc de policyWireInfo) — UMA ÚNICA vez,
+// reusado tanto para declarar os vars de canal no nível de pacote quanto
+// para montar o corpo de Wire (emitPolicyWireFunc), evitando resolver
+// prog.ChannelBetween duas vezes por Policy.
+func resolvePolicyWireInfos(e *emit.Emitter, tab *symbols.SymbolTable, prog *program.Program, module string, decls []*ast.PolicyDecl) ([]policyWireInfo, error) {
+	infos := make([]policyWireInfo, 0, len(decls))
+	for _, decl := range decls {
+		evt, err := resolvePolicyEvent(e, tab, module, decl.On)
+		if err != nil {
+			return nil, err
+		}
+		info := policyWireInfo{decl: decl, evt: evt}
+		if prog != nil {
+			if ch := prog.ChannelBetween(evt.originModule, module); ch != nil {
+				switch channelViaKind(ch) {
+				case "direct":
+					// Caminho de sempre (F1) — sem mudança.
+				case "queue":
+					info.channel = ch
+					info.varName = strings.ToLower(decl.Name[:1]) + decl.Name[1:] + "Channel"
+				default:
+					return nil, unsupportedChannelKindError(ch)
+				}
+			}
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
 // emitPolicyWireFunc emite "func Wire(d runtime.Dispatcher)": um
 // d.Subscribe/o.Subscribe por Policy, conforme a garantia de entrega de cada
 // uma (ver a doc do arquivo sobre Dispatcher vs. Outbox) — chamada por
 // cmd/<service>/main.go na inicialização (E9.1/§design 3.11), mesmo
 // papel/mesmo nome de emitUOWWireFunc (decl_usecase.go).
-func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl) {
-	e.Line("// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox —")
+//
+// --- Canais da topologia (F5, REQ-25.3, REQ-26.1/26.5, §design 3.11) ---
+//
+// resolvePolicyWireInfos decide, por Policy, se ela é cross-service via um
+// canal "queue" da topologia. policyWireInfo.channel == nil (sem topologia,
+// nenhum canal entre os módulos, ou um canal "direct") segue o caminho de
+// SEMPRE — Subscribe direto em "d"/Outbox(d), exatamente o que F1 já
+// gerava, SEM NENHUMA mudança. Um canal "queue" faz esta Policy construir
+// seu PRÓPRIO runtime.ChannelTransport e assinar nele em vez de em
+// "d"/Outbox(d) — "d" simplesmente fica sem uso para essa Policy específica
+// (parâmetro não utilizado é válido em Go; só variável local não é).
+//
+// O var do transporte é declarado no nível de PACOTE (var %s
+// runtime.ChannelTransport, ANTES de Wire) e só ATRIBUÍDO dentro de Wire
+// ("%s = runtime.NewQueueChannel(...)", nunca ":=") — o MESMO padrão de
+// "uow"/Wire em decl_usecase.go: uma var de pacote que só Wire escreve.
+// Isso existe para permitir que um teste do MESMO pacote gerado (ex.
+// policies_behavior_test.go, "package shipping") publique um evento
+// DIRETAMENTE no transporte após chamar Wire e observe a Policy rodar de
+// verdade — a alternativa (var só local dentro de Wire) tornaria essa
+// entrega inteiramente inacessível de fora, sem forma de provar
+// comportamento (só compilação).
+//
+// Cada canal "queue" ganha seu PRÓPRIO Outbox quando a Policy é
+// AtLeastOnce (não pode reusar o "o" que embrulha "d" — são transportes
+// diferentes); o var de canal é nomeado a partir do NOME da Policy
+// (garantidamente único dentro do módulo, mesma convenção de sourceVar em
+// decl_worker.go:emitContinuous).
+func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry) error {
+	infos, err := resolvePolicyWireInfos(e, tab, prog, module, decls)
+	if err != nil {
+		return err
+	}
+
+	for _, info := range infos {
+		if info.channel == nil {
+			continue
+		}
+		e.Line("// %s é o runtime.ChannelTransport que %s consome (canal %s -> %s via", info.varName, info.decl.Name, info.channel.From, info.channel.To)
+		e.Line("// queue, REQ-26.5) — só Wire (abaixo) escreve nele; var de pacote para um")
+		e.Line("// teste do mesmo pacote poder publicar direto e observar a Policy rodar.")
+		e.Line("var %s %s.ChannelTransport", info.varName, runtimeAlias)
+	}
+
+	e.Line("// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,")
+	e.Line("// para uma Policy cross-service via canal \"queue\" da topologia, no seu")
+	e.Line("// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —")
 	e.Line("// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,")
 	e.Line("// §design 3.11).")
 
 	var outboxDeclared bool
+	var funcErr error
 	e.Block(fmt.Sprintf("func Wire(d %s.Dispatcher)", runtimeAlias), func() {
-		for _, decl := range decls {
+		for _, info := range infos {
+			decl := info.decl
 			target := "d"
-			if policyIsAtLeastOnce(decl) {
-				if !outboxDeclared {
-					e.Line("o := %s.NewOutbox(d)", runtimeAlias)
-					outboxDeclared = true
+			if info.channel != nil {
+				candidates := []channelEventCandidate{{evtDecl: info.evt.decl, goPtrType: info.evt.goPtrType}}
+				if err := emitChannelQueueVar(e, info.varName, "=", info.channel, candidates, model, tab, module, reg, runtimeAlias); err != nil {
+					funcErr = fmt.Errorf("Policy %s: canal %s -> %s: %w", decl.Name, info.channel.From, info.channel.To, err)
+					return
 				}
-				target = "o"
+				target = info.varName
 			}
-			e.Line("%s.Subscribe(%q, %s)", target, decl.On, decl.Name)
+
+			if policyIsAtLeastOnce(decl) {
+				if target == "d" {
+					if !outboxDeclared {
+						e.Line("o := %s.NewOutbox(d)", runtimeAlias)
+						outboxDeclared = true
+					}
+					e.Line("o.Subscribe(%q, %s)", decl.On, decl.Name)
+				} else {
+					outboxVar := target + "Outbox"
+					e.Line("%s := %s.NewOutbox(%s)", outboxVar, runtimeAlias, target)
+					e.Line("%s.Subscribe(%q, %s)", outboxVar, decl.On, decl.Name)
+				}
+			} else {
+				e.Line("%s.Subscribe(%q, %s)", target, decl.On, decl.Name)
+			}
 		}
 	})
+	return funcErr
 }

@@ -21,10 +21,25 @@ func NotifyShipping(ctx context.Context, ev runtime.Event) error {
 	return nil
 }
 
-// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox —
+// notifyShippingChannel é o runtime.ChannelTransport que NotifyShipping consome (canal Orders -> Shipping via
+// queue, REQ-26.5) — só Wire (abaixo) escreve nele; var de pacote para um
+// teste do mesmo pacote poder publicar direto e observar a Policy rodar.
+var notifyShippingChannel runtime.ChannelTransport
+
+// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,
+// para uma Policy cross-service via canal "queue" da topologia, no seu
+// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —
 // chamada por cmd/<service>/main.go na inicialização (wiring in-memory,
 // §design 3.11).
 func Wire(d runtime.Dispatcher) {
-	o := runtime.NewOutbox(d)
-	o.Subscribe("OrderPlaced", NotifyShipping)
+	notifyShippingChannel = runtime.NewQueueChannel(runtime.QueueChannelConfig{Concurrency: 1, MaxRate: 0, BatchSize: 1}, func(ev runtime.Event) string {
+		switch e := ev.(type) {
+		case *contracts.OrderPlaced:
+			return fmt.Sprint(e.Id)
+		default:
+			return ""
+		}
+	})
+	notifyShippingChannelOutbox := runtime.NewOutbox(notifyShippingChannel)
+	notifyShippingChannelOutbox.Subscribe("OrderPlaced", NotifyShipping)
 }

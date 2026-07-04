@@ -1,0 +1,390 @@
+package runtime
+
+import (
+	"context"
+	"hash/fnv"
+	"log/slog"
+	"sync"
+	"time"
+)
+
+// channel.go.txt materializes the topology channels a cross-module Policy
+// dispatch travels through (topology.ds, §11; Marco F5, REQ-25.3, REQ-26.1/
+// 26.5, §design codegen 3.11).
+//
+// "direct" (the default when a channel declares no `via`, or declares
+// `via: direct` explicitly) needs NOTHING from this file: it is exactly the
+// existing in-process Dispatcher/Outbox (dispatcher.go.txt/outbox.go.txt,
+// Marco F1) — same-process Subscribe/Publish, unchanged. "queue" is
+// QueueChannel below: a real ordered-per-key, worker-pooled, rate-limited,
+// timeout-and-circuit-breaker-protected in-memory queue. Both satisfy the
+// SAME 2-method shape as Dispatcher (Subscribe/Publish) — ChannelTransport
+// names that shape for documentation; a generated Policy/UseCase call site
+// never needs to know or care which concrete kind it is talking to
+// (structural typing: a *queueChannel is already a valid runtime.Dispatcher
+// argument, e.g. to NewUnitOfWork/NewOutbox, with zero extra glue).
+//
+// Any OTHER `via` (grpc/http/stream, or a real broker provider like
+// rabbitmq) is explicitly OUT of scope for Marco F5 — codegen refuses to
+// generate one (see codegen/channel.go's unsupportedChannelKindError) rather
+// than silently falling back to in-process delivery over a network boundary
+// that was never actually crossed. A real provider slots in later behind
+// this SAME seam (NFR-12): a future NewXxxChannel constructor with the
+// identical ChannelTransport shape.
+//
+// --- Known, documented Marco F limitation: single-process delivery only ---
+//
+// A QueueChannel only delivers within the SAME process: there is no real
+// broker behind it yet. Two different service binaries (e.g. cmd/sales and
+// cmd/delivery in the shop example) each construct their OWN independent
+// QueueChannel instance for "the same" topology channel — nothing crosses
+// between separate OS processes until a real provider (rabbitmq, Marco G+)
+// slots in behind this seam. This is NOT an oversight to patch around: two
+// separately deployed OS processes cannot share an in-memory Go value at
+// all without SOME wire transport between them, and building an ad hoc one
+// here (rather than a real, documented provider) would misrepresent exactly
+// the boundary this task deliberately leaves to Marco G. Within one process
+// (every behavioral test here exercises exactly this shape, and it is also
+// the shape a monolith service actually runs), delivery fully works:
+// orderBy/workers/timeout/circuitBreaker are all real, not stubs.
+type ChannelTransport interface {
+	// Subscribe registers handler to run for every event whose EventType()
+	// equals eventType — identical contract to Dispatcher.Subscribe.
+	Subscribe(eventType string, handler func(ctx context.Context, ev Event) error)
+	// Publish delivers ev through the transport. QueueChannel's Publish
+	// enqueues and returns immediately (asynchronous, §design 3.11) — unlike
+	// Dispatcher.Publish's synchronous fan-out, it does NOT wait for
+	// delivery to complete. It blocks ONLY for backpressure (see
+	// QueueChannelConfig.BatchSize) — a deliberate, documented trade-off of
+	// a bounded queue (protects memory over unconditionally accepting
+	// unbounded backlog), not a defect; size BatchSize generously when a
+	// caller must never block on a slow/stuck subscriber.
+	Publish(ctx context.Context, ev Event) error
+}
+
+// A Dispatcher is already a valid ChannelTransport ("direct" needs no
+// wrapping) — this assertion documents that fact and catches, at compile
+// time, ChannelTransport ever drifting from Dispatcher's shape.
+var _ ChannelTransport = NewDispatcher()
+
+// --- CircuitBreaker: a minimal closed/open/half-open state machine. ---
+
+// CircuitBreakerState is one of the 3 states a CircuitBreaker can be in.
+type CircuitBreakerState int
+
+const (
+	// CircuitClosed is the normal state: every call is allowed.
+	CircuitClosed CircuitBreakerState = iota
+	// CircuitOpen fails every call immediately, without attempting it, until
+	// cooldown elapses.
+	CircuitOpen
+	// CircuitHalfOpen allows exactly one in-flight probe call after cooldown
+	// elapses; its outcome decides whether the breaker closes or reopens.
+	CircuitHalfOpen
+)
+
+// CircuitBreaker is the mechanism behind a channel's `circuitBreaker:
+// { threshold, cooldown }` setting (spec §11): after `threshold` consecutive
+// failures it opens (Allow returns false, failing fast without even
+// attempting delivery); after `cooldown` elapses it half-opens and admits
+// EXACTLY ONE in-flight probe call (Allow returns true to exactly one
+// caller — any other concurrent caller during that same window gets false,
+// avoiding a thundering herd against a downstream that just started
+// recovering); a probe success closes it again, a probe failure reopens it.
+// Safe for concurrent use.
+type CircuitBreaker struct {
+	threshold int64
+	cooldown  time.Duration
+
+	mu       sync.Mutex
+	state    CircuitBreakerState
+	failures int64
+	openedAt time.Time
+	probing  bool // true while a HalfOpen probe is in flight (Allow admitted it, Record hasn't reported back yet)
+}
+
+// NewCircuitBreaker creates a closed CircuitBreaker. threshold < 1 is
+// clamped to 1 (opens after the very first failure) — the most conservative
+// interpretation, never a generation error over a value the front-end
+// already accepted.
+func NewCircuitBreaker(threshold int64, cooldown time.Duration) *CircuitBreaker {
+	if threshold < 1 {
+		threshold = 1
+	}
+	return &CircuitBreaker{threshold: threshold, cooldown: cooldown}
+}
+
+// Allow reports whether a call should proceed now. Transitions Open ->
+// HalfOpen once cooldown has elapsed since the breaker opened, admitting
+// exactly the FIRST caller to observe that transition as the probe; any
+// other caller arriving while a probe is already in flight (HalfOpen,
+// probing == true) is refused until Record reports the probe's outcome.
+func (b *CircuitBreaker) Allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch b.state {
+	case CircuitOpen:
+		if time.Since(b.openedAt) < b.cooldown {
+			return false
+		}
+		b.state = CircuitHalfOpen
+		b.probing = true
+		return true
+	case CircuitHalfOpen:
+		if b.probing {
+			return false
+		}
+		b.probing = true
+		return true
+	default: // CircuitClosed
+		return true
+	}
+}
+
+// Record reports the outcome of a call permitted by Allow: success closes
+// the breaker and resets the failure count; failure increments it, opening
+// the breaker once `threshold` consecutive failures accumulate — or
+// immediately when the failure is the HalfOpen probe itself (a failed probe
+// reopens without needing a fresh run of threshold failures). Always clears
+// the in-flight probe flag, whichever way it resolves.
+func (b *CircuitBreaker) Record(success bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probing = false
+	if success {
+		b.state = CircuitClosed
+		b.failures = 0
+		return
+	}
+	b.failures++
+	if b.state == CircuitHalfOpen || b.failures >= b.threshold {
+		b.state = CircuitOpen
+		b.openedAt = time.Now()
+	}
+}
+
+// State reports the breaker's current state — a test/observability seam.
+func (b *CircuitBreaker) State() CircuitBreakerState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.state
+}
+
+// --- QueueChannel: the `via: queue` channel transport (REQ-26.5). ---
+
+// KeyFunc extracts the ordering-partition key from an event — the mechanism
+// behind a channel's `orderBy` setting (spec §11): events with the same key
+// are delivered strictly in Publish order; events with different keys may
+// be delivered concurrently (bounded by QueueChannelConfig.Concurrency). A
+// nil KeyFunc (no `orderBy` declared — REQ-5.16 only warns, it never blocks
+// generation) is treated as "every event shares one key": a single, fully
+// ordered queue — the safest conservative default.
+type KeyFunc func(ev Event) string
+
+// QueueChannelConfig configures a QueueChannel from a topology channel's
+// `workers { concurrency, maxRate, batchSize }`, `timeout` and
+// `circuitBreaker { threshold, cooldown }` settings (spec §11, REQ-26.5).
+type QueueChannelConfig struct {
+	// Concurrency is both the shard count (see queueChannel's doc) and the
+	// bound on how many deliveries run at once. < 1 is clamped to 1.
+	Concurrency int64
+	// MaxRate bounds overall deliveries per second across every shard
+	// combined. <= 0 disables rate limiting (see NewRateLimiter).
+	MaxRate int64
+	// BatchSize bounds how many items may be enqueued-but-undelivered per
+	// shard before Publish blocks (backpressure). < 1 is clamped to 1.
+	BatchSize int64
+	// Timeout bounds each individual handler invocation via
+	// context.WithTimeout. <= 0 disables the timeout.
+	Timeout time.Duration
+	// BreakerThreshold/BreakerCooldown configure a CircuitBreaker guarding
+	// handler invocations. BreakerThreshold <= 0 disables the breaker
+	// entirely — every delivery is always attempted.
+	BreakerThreshold int64
+	BreakerCooldown  time.Duration
+}
+
+// queueShard is one of a QueueChannel's FIXED, bounded set of ordered,
+// buffered streams (see queueChannel's doc for why the shard count is fixed
+// rather than one goroutine per KeyFunc key): a single goroutine
+// (queueChannel.drain) reads it strictly in receive order, so ordering
+// within a key falls out of plain channel semantics — no extra locking
+// needed, as long as every event for the same key always maps to the same
+// shard (shardFor, deterministic hashing).
+type queueShard struct {
+	items chan Event
+}
+
+// queueChannel is the `via: queue` ChannelTransport. See the Marco F
+// limitation documented at the top of this file: it only delivers within
+// the process that constructed it.
+//
+// --- Why a fixed shard count, not one goroutine per KeyFunc key ---
+//
+// An earlier version of this file spawned one persistent drain goroutine
+// per DISTINCT key ever published, keyed in a map. For a KeyFunc like the
+// shop's `orderBy: id` (an order id — unbounded cardinality over a
+// long-running process), that leaks one goroutine (plus its buffered
+// channel and map entry) per distinct key FOREVER: nothing ever reaps them.
+// Instead, NewQueueChannel creates exactly Concurrency shards UP FRONT,
+// each with its own persistent goroutine — a fixed, bounded resource
+// footprint regardless of how many distinct keys are ever seen. Every event
+// for a given key always hashes (shardFor) to the SAME shard, so ordering
+// within a key is preserved exactly as before; events for DIFFERENT keys
+// that happen to land on the same shard are simply processed sequentially
+// relative to each other too (a strictly stronger guarantee than required,
+// never a violation of it). Concurrency now bounds shard count directly
+// instead of needing a separate Semaphore layered on top of unbounded
+// per-key goroutines.
+type queueChannel struct {
+	mu       sync.RWMutex
+	handlers map[string][]func(ctx context.Context, ev Event) error
+
+	keyFunc KeyFunc
+	shards  []*queueShard
+
+	limiter *RateLimiter
+	timeout time.Duration
+	breaker *CircuitBreaker
+}
+
+// NewQueueChannel creates a `via: queue` channel transport per cfg, starting
+// its (fixed, bounded — see queueChannel's doc) shard goroutines
+// immediately. keyFunc may be nil (see KeyFunc's doc — every event then
+// shares a single ordering partition).
+func NewQueueChannel(cfg QueueChannelConfig, keyFunc KeyFunc) ChannelTransport {
+	shardCount := int(cfg.Concurrency)
+	if shardCount < 1 {
+		shardCount = 1
+	}
+	batchSize := cfg.BatchSize
+	if batchSize < 1 {
+		batchSize = 1
+	}
+	var breaker *CircuitBreaker
+	if cfg.BreakerThreshold > 0 {
+		breaker = NewCircuitBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown)
+	}
+
+	q := &queueChannel{
+		handlers: make(map[string][]func(ctx context.Context, ev Event) error),
+		keyFunc:  keyFunc,
+		shards:   make([]*queueShard, shardCount),
+		limiter:  NewRateLimiter(cfg.MaxRate),
+		timeout:  cfg.Timeout,
+		breaker:  breaker,
+	}
+	for i := range q.shards {
+		shard := &queueShard{items: make(chan Event, batchSize)}
+		q.shards[i] = shard
+		go q.drain(shard)
+	}
+	return q
+}
+
+// Subscribe implements ChannelTransport — identical contract to
+// Dispatcher.Subscribe.
+func (q *queueChannel) Subscribe(eventType string, handler func(ctx context.Context, ev Event) error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.handlers[eventType] = append(q.handlers[eventType], handler)
+}
+
+// shardFor deterministically maps key to one of q.shards: every Publish for
+// the same key always lands on the same shard, which is what preserves
+// per-key ordering (see queueChannel's doc). FNV-1a is a stable,
+// well-distributed, stdlib-only hash — good enough to spread arbitrary
+// string keys (order ids, aggregate ids, ...) roughly evenly across shards.
+func (q *queueChannel) shardFor(key string) *queueShard {
+	if len(q.shards) == 1 {
+		return q.shards[0]
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key)) // hash.Hash.Write never returns an error
+	return q.shards[h.Sum32()%uint32(len(q.shards))]
+}
+
+// Publish enqueues ev onto its KeyFunc partition's shard and returns as soon
+// as the event is enqueued: delivery itself happens asynchronously, in that
+// shard's persistent goroutine (the "queue" in `via: queue`). It blocks
+// only for backpressure (an already-saturated shard, bounded by
+// BatchSize) — see the doc on ChannelTransport.Publish about that being a
+// deliberate trade-off, not a defect.
+func (q *queueChannel) Publish(ctx context.Context, ev Event) error {
+	key := ""
+	if q.keyFunc != nil {
+		key = q.keyFunc(ev)
+	}
+	shard := q.shardFor(key)
+
+	select {
+	case shard.items <- ev:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// drain runs for the entire lifetime of the queueChannel, one goroutine per
+// shard (a FIXED, bounded count — see queueChannel's doc): it delivers
+// items strictly in receive order (ordering within a key — REQ-26.5's
+// `orderBy`, given shardFor's determinism), gated by limiter so the whole
+// channel never exceeds MaxRate combined across every shard.
+func (q *queueChannel) drain(shard *queueShard) {
+	ctx := context.Background()
+	for ev := range shard.items {
+		_ = q.limiter.Wait(ctx) // context.Background() never cancels
+		q.deliver(ev)
+	}
+}
+
+// deliver calls every handler subscribed for ev.EventType(), guarded by the
+// circuit breaker (if configured) and bounded by the configured timeout (if
+// any) — the "timeout/circuitBreaker no cliente de canal" half of REQ-26.5.
+// Recovers from a panicking handler (logged, counted as a breaker failure)
+// so one bad delivery can never take down the shard's goroutine — and with
+// it, every future delivery for every key that hashes to that shard — let
+// alone the whole process. Errors (returned or panicked) are logged, never
+// returned to a caller: Publish already returned successfully once the
+// event was enqueued, so there is no caller left to propagate a delivery
+// failure to (the same "durable the moment Append returns" spirit as
+// memoryUnitOfWork, uow.go.txt).
+func (q *queueChannel) deliver(ev Event) {
+	if q.breaker != nil && !q.breaker.Allow() {
+		slog.Warn("channel: circuito aberto, entrega pulada", "eventType", ev.EventType())
+		return
+	}
+
+	success := false
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("channel: handler entrou em panic, entrega descartada", "eventType", ev.EventType(), "panic", r)
+			success = false
+		}
+		if q.breaker != nil {
+			q.breaker.Record(success)
+		}
+	}()
+
+	ctx := context.Background()
+	if q.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, q.timeout)
+		defer cancel()
+	}
+
+	q.mu.RLock()
+	handlers := append([]func(ctx context.Context, ev Event) error(nil), q.handlers[ev.EventType()]...)
+	q.mu.RUnlock()
+
+	var err error
+	for _, h := range handlers {
+		if err = h(ctx, ev); err != nil {
+			break
+		}
+	}
+	success = err == nil
+	if err != nil {
+		slog.Error("channel: entrega falhou", "eventType", ev.EventType(), "error", err)
+	}
+}

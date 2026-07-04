@@ -3,6 +3,9 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -846,5 +849,684 @@ func TestMemorySagaStoreGetPut(t *testing.T) {
 	got, found, err = store.Get(ctx, "saga-1")
 	if err != nil || !found || got.State != SagaCompleted {
 		t.Fatalf("Put deveria substituir o status anterior: got %+v", got)
+	}
+}
+
+// --- Unit of work publishing (Marco F5): emit -> dispatcher tie-in. ---
+
+func TestUnitOfWorkPublishesAppendedEventsOnSuccess(t *testing.T) {
+	store := NewMemoryEventStore()
+	d := NewDispatcher()
+	var got []string
+	d.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		got = append(got, ev.(*testEvent).Msg)
+		return nil
+	})
+	uow := NewUnitOfWork(store, d)
+
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		if err := tx.Append("agg-1", []Event{&testEvent{Msg: "first"}}); err != nil {
+			return err
+		}
+		return tx.Append("agg-1", []Event{&testEvent{Msg: "second"}})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("esperava publicar [first second] em ordem de append, got %v", got)
+	}
+}
+
+func TestUnitOfWorkDoesNotPublishWhenRunFails(t *testing.T) {
+	store := NewMemoryEventStore()
+	d := NewDispatcher()
+	called := false
+	d.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		called = true
+		return nil
+	})
+	uow := NewUnitOfWork(store, d)
+
+	sentinel := errors.New("falha de negócio")
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		if err := tx.Append("agg-1", []Event{&testEvent{Msg: "x"}}); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("esperava propagar o erro de fn, got %v", err)
+	}
+	if called {
+		t.Fatal("NÃO esperava publicação: fn retornou erro (Run nunca chega a publicar)")
+	}
+}
+
+func TestUnitOfWorkWithoutPublisherBehavesLikeBeforeF5(t *testing.T) {
+	store := NewMemoryEventStore()
+	uow := NewUnitOfWork(store) // sem publisher (o formato do wallet/Marco E)
+
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		return tx.Append("agg-1", []Event{&testEvent{Msg: "x"}})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.Load(context.Background(), "agg-1")
+	if err != nil || len(events) != 1 {
+		t.Fatalf("esperava 1 evento durável mesmo sem publisher, got %v err=%v", events, err)
+	}
+}
+
+func TestUnitOfWorkAcceptsChannelTransportAsPublisher(t *testing.T) {
+	// Publisher é satisfeito estruturalmente por qualquer ChannelTransport
+	// (mesmo formato de Dispatcher) — o mesmo mecanismo que permite ao lado
+	// produtor de um canal "queue" (cmd/<service>/main.go, F5) passar um
+	// *queueChannel direto para NewUnitOfWork sem nenhum adaptador.
+	store := NewMemoryEventStore()
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1}, nil)
+	delivered := make(chan string, 1)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		delivered <- ev.(*testEvent).Msg
+		return nil
+	})
+	uow := NewUnitOfWork(store, ch)
+
+	err := uow.Run(context.Background(), func(tx Tx) error {
+		return tx.Append("agg-1", []Event{&testEvent{Msg: "via-channel"}})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-delivered:
+		if msg != "via-channel" {
+			t.Fatalf("Msg = %q, want %q", msg, "via-channel")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("esperava que o evento fosse publicado no ChannelTransport após o commit")
+	}
+}
+
+// --- CircuitBreaker (Marco F5, REQ-26.5): closed/open/half-open. ---
+
+func TestCircuitBreakerOpensAfterThresholdFailuresAndBlocksUntilCooldown(t *testing.T) {
+	b := NewCircuitBreaker(2, 30*time.Millisecond)
+	if !b.Allow() {
+		t.Fatal("esperava Allow=true no estado inicial (Closed)")
+	}
+	b.Record(false)
+	if b.State() != CircuitClosed {
+		t.Fatalf("esperava Closed após 1 falha (threshold=2), got %v", b.State())
+	}
+	b.Record(false)
+	if b.State() != CircuitOpen {
+		t.Fatalf("esperava Open após 2 falhas (threshold=2), got %v", b.State())
+	}
+	if b.Allow() {
+		t.Fatal("esperava Allow=false logo após abrir, antes do cooldown")
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if !b.Allow() {
+		t.Fatal("esperava Allow=true após o cooldown (probe de HalfOpen)")
+	}
+	if b.State() != CircuitHalfOpen {
+		t.Fatalf("esperava HalfOpen logo após o probe, got %v", b.State())
+	}
+}
+
+func TestCircuitBreakerHalfOpenProbeSuccessCloses(t *testing.T) {
+	b := NewCircuitBreaker(1, 10*time.Millisecond)
+	b.Record(false) // abre (threshold=1)
+	time.Sleep(25 * time.Millisecond)
+	if !b.Allow() {
+		t.Fatal("esperava probe permitido após o cooldown")
+	}
+	b.Record(true) // probe sucede
+	if b.State() != CircuitClosed {
+		t.Fatalf("esperava Closed após sucesso do probe, got %v", b.State())
+	}
+	if !b.Allow() {
+		t.Fatal("esperava Allow=true fechado")
+	}
+}
+
+func TestCircuitBreakerHalfOpenProbeFailureReopens(t *testing.T) {
+	b := NewCircuitBreaker(1, 10*time.Millisecond)
+	b.Record(false)
+	time.Sleep(25 * time.Millisecond)
+	if !b.Allow() {
+		t.Fatal("esperava probe permitido após o cooldown")
+	}
+	b.Record(false) // probe falha
+	if b.State() != CircuitOpen {
+		t.Fatalf("esperava Open após falha do probe, got %v", b.State())
+	}
+	if b.Allow() {
+		t.Fatal("esperava Allow=false logo após reabrir")
+	}
+}
+
+func TestNewCircuitBreakerClampsThresholdBelowOne(t *testing.T) {
+	b := NewCircuitBreaker(0, time.Second)
+	b.Record(false)
+	if b.State() != CircuitOpen {
+		t.Fatalf("esperava threshold<1 tratado como 1 (abre na 1ª falha), got %v", b.State())
+	}
+}
+
+func TestCircuitBreakerHalfOpenAdmitsOnlyOneConcurrentProbe(t *testing.T) {
+	b := NewCircuitBreaker(1, 10*time.Millisecond)
+	b.Record(false) // abre (threshold=1)
+	time.Sleep(25 * time.Millisecond)
+
+	const callers = 20
+	var admitted int32
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			if b.Allow() {
+				atomic.AddInt32(&admitted, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&admitted); got != 1 {
+		t.Fatalf("esperava exatamente 1 probe admitido concorrentemente durante HalfOpen, got %d", got)
+	}
+}
+
+// --- QueueChannel (Marco F5, `via: queue`, REQ-26.5): orderBy/workers/timeout/circuitBreaker. ---
+
+func TestQueueChannelPreservesOrderPerKeyUnderConcurrency(t *testing.T) {
+	// Concurrency 4, mas keyFunc devolve a MESMA chave para tudo — prova
+	// que a ordem dentro de uma partição é estrita mesmo quando o canal
+	// permitiria concorrência entre partições diferentes.
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 4}, func(ev Event) string {
+		return "same-key"
+	})
+
+	const n = 25
+	var mu sync.Mutex
+	var order []string
+	var wg sync.WaitGroup
+	wg.Add(n)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		mu.Lock()
+		order = append(order, ev.(*testEvent).Msg)
+		mu.Unlock()
+		wg.Done()
+		return nil
+	})
+
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		if err := ch.Publish(ctx, &testEvent{Msg: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	waitDone := make(chan struct{})
+	go func() { wg.Wait(); close(waitDone) }()
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout esperando as entregas")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != n {
+		t.Fatalf("esperava %d entregas, got %d: %v", n, len(order), order)
+	}
+	for i, msg := range order {
+		if msg != fmt.Sprint(i) {
+			t.Fatalf("ordem quebrada em order[%d] = %q, want %q (ordem completa: %v)", i, msg, fmt.Sprint(i), order)
+		}
+	}
+}
+
+func TestQueueChannelNilKeyFuncIsOneGlobalOrderedPartition(t *testing.T) {
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 8}, nil)
+
+	const n = 15
+	var mu sync.Mutex
+	var order []string
+	var wg sync.WaitGroup
+	wg.Add(n)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		mu.Lock()
+		order = append(order, ev.(*testEvent).Msg)
+		mu.Unlock()
+		wg.Done()
+		return nil
+	})
+
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		if err := ch.Publish(ctx, &testEvent{Msg: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	waitDone := make(chan struct{})
+	go func() { wg.Wait(); close(waitDone) }()
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout esperando as entregas")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, msg := range order {
+		if msg != fmt.Sprint(i) {
+			t.Fatalf("ordem quebrada (keyFunc nil deveria ser uma única partição global) em order[%d] = %q, want %q", i, msg, fmt.Sprint(i))
+		}
+	}
+}
+
+func TestQueueChannelConcurrencyBoundsSimultaneousDeliveries(t *testing.T) {
+	const concurrency = 3
+	// keys >> concurrency: com Concurrency shards fixos (ver a doc de
+	// queueChannel, channel.go.txt) e chaves DISTINTAS hasheadas por
+	// FNV-1a, muito mais chaves que shards torna praticamente certo que
+	// todo shard recebe ao menos um item cedo (o que o poll abaixo espera
+	// — não é uma suposição de timing, é aritmética de hashing: com só
+	// `concurrency` chaves haveria risco real de um shard ficar ocioso).
+	const keys = 60
+
+	var inFlight int32
+	var maxObserved int32
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(keys)
+
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: concurrency}, func(ev Event) string {
+		return ev.(*testEvent).Msg // cada evento tem uma chave DISTINTA
+	})
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		n := atomic.AddInt32(&inFlight, 1)
+		for {
+			cur := atomic.LoadInt32(&maxObserved)
+			if n <= cur || atomic.CompareAndSwapInt32(&maxObserved, cur, n) {
+				break
+			}
+		}
+		<-release // segura a entrega até o teste liberar, forçando sobreposição
+		atomic.AddInt32(&inFlight, -1)
+		wg.Done()
+		return nil
+	})
+
+	// Publish roda em goroutine própria: com BatchSize default (1) cada
+	// shard só cabe 1 item em voo (bloqueado em <-release) + 1 no buffer —
+	// publicar as `keys` chaves de uma vez na goroutine do teste
+	// AUTO-DEADLOCKARIA (Publish bloqueia no shard cheio, e só o teste,
+	// depois de terminar de publicar, chega ao close(release) que libera
+	// espaço). Rodar em background deixa o teste seguir para o poll de
+	// inFlight abaixo enquanto o shard vai esvaziando (1 em voo + 1 em
+	// buffer) conforme cada Publish consegue enfileirar.
+	ctx := context.Background()
+	publishDone := make(chan struct{})
+	go func() {
+		defer close(publishDone)
+		for i := 0; i < keys; i++ {
+			if err := ch.Publish(ctx, &testEvent{Msg: fmt.Sprintf("key-%d", i)}); err != nil {
+				t.Errorf("Publish: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Espera inFlight estabilizar em exatamente `concurrency` (um shard
+	// cada, o resto bloqueado atrás no buffer do próprio shard) — poll em
+	// vez de um sleep fixo, robusto a máquinas mais lentas.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&inFlight) != concurrency {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&inFlight); got != concurrency {
+		t.Fatalf("esperava exatamente %d entregas simultâneas em voo (Concurrency, um shard cada), got %d", concurrency, got)
+	}
+	close(release)
+
+	waitDone := make(chan struct{})
+	go func() { wg.Wait(); close(waitDone) }()
+	select {
+	case <-waitDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout esperando as entregas restantes")
+	}
+	if got := atomic.LoadInt32(&maxObserved); got != concurrency {
+		t.Fatalf("maxObserved = %d, want exatamente %d (Concurrency)", got, concurrency)
+	}
+
+	select {
+	case <-publishDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout esperando a goroutine de publish terminar")
+	}
+}
+
+func TestQueueChannelRespectsMaxRateAcrossPartitions(t *testing.T) {
+	// 100/s => 10ms de intervalo mínimo entre entregas, através do canal
+	// INTEIRO (o RateLimiter é compartilhado por todas as partições) —
+	// mesmo com chaves distintas (que poderiam rodar em paralelo, já que
+	// Concurrency permite).
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 5, MaxRate: 100}, func(ev Event) string {
+		return ev.(*testEvent).Msg
+	})
+
+	const n = 4
+	done := make(chan struct{}, n)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		done <- struct{}{}
+		return nil
+	})
+
+	start := time.Now()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		if err := ch.Publish(ctx, &testEvent{Msg: fmt.Sprintf("key-%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout esperando as entregas")
+		}
+	}
+	// n=4 entregas => pelo menos 3 intervalos de 10ms.
+	if elapsed := time.Since(start); elapsed < 25*time.Millisecond {
+		t.Fatalf("esperava pelo menos ~30ms de espaçamento entre %d entregas a 100/s, levou %s", n, elapsed)
+	}
+}
+
+func TestQueueChannelPublishBlocksWhenPartitionSaturatedThenUnblocks(t *testing.T) {
+	block := make(chan struct{})
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1, BatchSize: 1}, func(ev Event) string {
+		return "k" // uma única partição, cuja capacidade é exatamente BatchSize=1
+	})
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		<-block // segura o consumidor indefinidamente até o teste liberar
+		return nil
+	})
+
+	ctx := context.Background()
+	if err := ch.Publish(ctx, &testEvent{Msg: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	// dá tempo do drain pegar o item 1 e travar no handler, esvaziando o buffer.
+	time.Sleep(50 * time.Millisecond)
+	if err := ch.Publish(ctx, &testEvent{Msg: "2"}); err != nil {
+		t.Fatal(err) // enche o buffer (capacidade 1)
+	}
+
+	publish3 := make(chan error, 1)
+	go func() { publish3 <- ch.Publish(ctx, &testEvent{Msg: "3"}) }()
+
+	select {
+	case <-publish3:
+		t.Fatal("Publish deveria bloquear com a partição saturada (BatchSize=1) e o consumidor preso no handler")
+	case <-time.After(100 * time.Millisecond):
+		// esperado: ainda bloqueado (backpressure).
+	}
+
+	close(block)
+	select {
+	case err := <-publish3:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Publish deveria destravar assim que o consumidor for liberado")
+	}
+}
+
+func TestQueueChannelTimeoutGivesHandlerADeadline(t *testing.T) {
+	sawDeadline := make(chan bool, 1)
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1, Timeout: 50 * time.Millisecond}, nil)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		_, ok := ctx.Deadline()
+		sawDeadline <- ok
+		return nil
+	})
+	if err := ch.Publish(context.Background(), &testEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ok := <-sawDeadline:
+		if !ok {
+			t.Fatal("esperava ctx com deadline quando QueueChannelConfig.Timeout > 0")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout esperando a entrega")
+	}
+}
+
+func TestQueueChannelNoTimeoutMeansNoDeadline(t *testing.T) {
+	sawDeadline := make(chan bool, 1)
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1}, nil) // Timeout ausente (zero value)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		_, ok := ctx.Deadline()
+		sawDeadline <- ok
+		return nil
+	})
+	if err := ch.Publish(context.Background(), &testEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ok := <-sawDeadline:
+		if ok {
+			t.Fatal("NÃO esperava ctx com deadline quando Timeout está ausente")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout esperando a entrega")
+	}
+}
+
+func TestQueueChannelTimeoutCancelsSlowHandler(t *testing.T) {
+	sawCancel := make(chan bool, 1)
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1, Timeout: 20 * time.Millisecond}, nil)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		select {
+		case <-ctx.Done():
+			sawCancel <- true
+		case <-time.After(2 * time.Second):
+			sawCancel <- false
+		}
+		return nil
+	})
+	if err := ch.Publish(context.Background(), &testEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sawCancel:
+		if !got {
+			t.Fatal("esperava que o handler observasse ctx.Done() depois do timeout configurado")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout esperando a entrega")
+	}
+}
+
+func TestQueueChannelCircuitBreakerSkipsDeliveryWhenOpen(t *testing.T) {
+	var calls int32
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1, BreakerThreshold: 2, BreakerCooldown: time.Hour}, func(ev Event) string {
+		return "k" // uma única partição: entrega estritamente sequencial
+	})
+	sentinel := errors.New("falha")
+	handled := make(chan struct{}, 10)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		atomic.AddInt32(&calls, 1)
+		handled <- struct{}{}
+		return sentinel
+	})
+
+	ctx := context.Background()
+	// 2 falhas consecutivas abrem o circuito (threshold=2).
+	for i := 0; i < 2; i++ {
+		if err := ch.Publish(ctx, &testEvent{Msg: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-handled:
+		case <-time.After(time.Second):
+			t.Fatalf("timeout esperando a entrega %d", i)
+		}
+	}
+
+	// 3ª entrega: circuito já deveria estar aberto -> handler NÃO deveria rodar.
+	if err := ch.Publish(ctx, &testEvent{Msg: "3"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handled:
+		t.Fatal("NÃO esperava o handler rodar com o circuito aberto")
+	case <-time.After(200 * time.Millisecond):
+		// esperado: nada chamado (a 3ª entrega foi pulada, ver deliver em
+		// channel.go.txt).
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("calls = %d, want 2 (a 3ª entrega deveria ter sido pulada pelo circuito aberto)", got)
+	}
+}
+
+func TestQueueChannelSubscribeMultipleHandlersRunInOrderUntilFirstError(t *testing.T) {
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1}, nil)
+	var mu sync.Mutex
+	var order []string
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		mu.Lock()
+		order = append(order, "first")
+		mu.Unlock()
+		return nil
+	})
+	second := make(chan struct{}, 1)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		mu.Lock()
+		order = append(order, "second")
+		mu.Unlock()
+		second <- struct{}{}
+		return nil
+	})
+
+	if err := ch.Publish(context.Background(), &testEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-second:
+	case <-time.After(time.Second):
+		t.Fatal("timeout esperando os dois handlers rodarem")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "first" || order[1] != "second" {
+		t.Fatalf("order = %v, want [first second]", order)
+	}
+}
+
+func TestQueueChannelSkipsUnsubscribedEventType(t *testing.T) {
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1}, nil)
+	called := make(chan struct{}, 1)
+	ch.Subscribe("OutroEvento", func(ctx context.Context, ev Event) error {
+		called <- struct{}{}
+		return nil
+	})
+	if err := ch.Publish(context.Background(), &testEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+		t.Fatal("NÃO esperava chamada de handler de outro tipo de evento")
+	case <-time.After(200 * time.Millisecond):
+		// esperado: nenhuma chamada.
+	}
+}
+
+func TestQueueChannelRecoversFromPanickingHandlerAndKeepsProcessing(t *testing.T) {
+	// Mesma chave para as duas entregas: prova que o shard (a goroutine de
+	// drain) sobrevive ao panic da 1ª entrega e continua processando a 2ª
+	// em vez de travar o shard inteiro (e, com ele, toda futura entrega de
+	// qualquer chave que hasheie para o mesmo shard).
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1}, func(ev Event) string {
+		return "k"
+	})
+	processed := make(chan string, 1)
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		msg := ev.(*testEvent).Msg
+		if msg == "boom" {
+			panic("handler explodiu")
+		}
+		processed <- msg
+		return nil
+	})
+
+	ctx := context.Background()
+	if err := ch.Publish(ctx, &testEvent{Msg: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.Publish(ctx, &testEvent{Msg: "depois-do-panic"}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case msg := <-processed:
+		if msg != "depois-do-panic" {
+			t.Fatalf("Msg = %q, want %q", msg, "depois-do-panic")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("esperava que a entrega seguinte ao panic ainda fosse processada (isolamento por entrega, o shard não deveria travar)")
+	}
+}
+
+func TestQueueChannelPanicCountsAsCircuitBreakerFailure(t *testing.T) {
+	ch := NewQueueChannel(QueueChannelConfig{Concurrency: 1, BreakerThreshold: 1, BreakerCooldown: time.Hour}, func(ev Event) string {
+		return "k"
+	})
+	handled := make(chan struct{}, 10)
+	var secondCallSeen int32
+	ch.Subscribe("TestEvent", func(ctx context.Context, ev Event) error {
+		defer func() { handled <- struct{}{} }()
+		if ev.(*testEvent).Msg == "boom" {
+			panic("handler explodiu")
+		}
+		atomic.StoreInt32(&secondCallSeen, 1)
+		return nil
+	})
+
+	ctx := context.Background()
+	if err := ch.Publish(ctx, &testEvent{Msg: "boom"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handled:
+	case <-time.After(time.Second):
+		t.Fatal("timeout esperando a 1ª entrega (panic)")
+	}
+
+	// threshold=1: o panic sozinho já deveria ter aberto o circuito — a 2ª
+	// entrega (que NÃO teria dado panic) deveria ser pulada pelo breaker,
+	// então secondCallSeen nunca vira 1.
+	if err := ch.Publish(ctx, &testEvent{Msg: "nunca deveria rodar"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handled:
+		t.Fatal("NÃO esperava o handler rodar: o circuito deveria estar aberto depois do panic")
+	case <-time.After(200 * time.Millisecond):
+		// esperado: nada chamado.
+	}
+	if atomic.LoadInt32(&secondCallSeen) != 0 {
+		t.Fatal("NÃO esperava a 2ª entrega ser processada com o circuito aberto")
 	}
 }

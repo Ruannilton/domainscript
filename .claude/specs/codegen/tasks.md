@@ -374,7 +374,7 @@
   `notify` (async) de `call` (sync). _(REQ-25, §design 3.13)_
   **Commit:** `feat(codegen): Notifications, Adapters e FFI`
 
-- [ ] **F5** Outbox in-memory ligando `emit`→dispatcher/`notify` + **canais da
+- [x] **F5** Outbox in-memory ligando `emit`→dispatcher/`notify` + **canais da
   topologia** (REQ-26.5): `direct`→despacho in-process; `queue`→fila in-memory do
   runtime respeitando `orderBy` e `workers{concurrency,maxRate,batchSize}`;
   `timeout`/`circuitBreaker` no cliente de canal; provider real (`rabbitmq`) fica

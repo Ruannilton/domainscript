@@ -68,7 +68,7 @@ func emitShippingPolicies(t *testing.T) []byte {
 	model := types.NewModel(prog.Symbols)
 	policy := findPolicyDecl(t, prog, "NotifyShipping")
 
-	got, err := codegen.EmitPolicies("shipping", []*ast.PolicyDecl{policy}, model, prog.Symbols, "Shipping", goname.NewVOOperatorRegistry(), nil)
+	got, err := codegen.EmitPolicies("shipping", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Shipping", goname.NewVOOperatorRegistry(), nil)
 	if err != nil {
 		t.Fatalf("EmitPolicies: erro inesperado: %v", err)
 	}
@@ -81,9 +81,14 @@ func emitShippingPolicies(t *testing.T) []byte {
 // conclusão da task: NotifyShipping vira um handler com a assinatura EXATA
 // de runtime.Dispatcher/Outbox.Subscribe (func(ctx, ev runtime.Event) error),
 // faz o type assertion pro tipo concreto do evento via ponteiro qualificado
-// por pacote ("*contracts.OrderPlaced" — PublicEvent, pacote compartilhado),
-// e Wire regista o subscriber no seam certo para "delivery AtLeastOnce" —
-// runtime.Outbox, não runtime.Dispatcher direto.
+// por pacote ("*contracts.OrderPlaced" — PublicEvent, pacote compartilhado).
+// NotifyShipping é cross-service (topology.ds: "Orders -> Shipping { via:
+// queue orderBy: id }") — Wire (F5, REQ-26.5) constrói um
+// runtime.ChannelTransport de verdade (runtime.NewQueueChannel, var de
+// pacote notifyShippingChannel) em vez de assinar em "d" direto, com um
+// KeyFunc que extrai orderBy (campo "id" -> "Id") do evento, e regista
+// NotifyShipping nesse transporte via um Outbox PRÓPRIO (ainda
+// "delivery AtLeastOnce", REQ-23.1) — não mais o Outbox(d) que F1 gerava.
 func TestEmitPoliciesGolden(t *testing.T) {
 	got := emitShippingPolicies(t)
 	for _, want := range []string{
@@ -93,9 +98,14 @@ func TestEmitPoliciesGolden(t *testing.T) {
 		"caller, _ := runtime.CallerFrom(ctx)",
 		"_ = caller",
 		"_ = event",
+		"var notifyShippingChannel runtime.ChannelTransport",
 		"func Wire(d runtime.Dispatcher) {",
-		"o := runtime.NewOutbox(d)",
-		`o.Subscribe("OrderPlaced", NotifyShipping)`,
+		"notifyShippingChannel = runtime.NewQueueChannel(runtime.QueueChannelConfig{Concurrency: 1, MaxRate: 0, BatchSize: 1}, func(ev runtime.Event) string {",
+		"switch e := ev.(type) {",
+		"case *contracts.OrderPlaced:",
+		"return fmt.Sprint(e.Id)",
+		"notifyShippingChannelOutbox := runtime.NewOutbox(notifyShippingChannel)",
+		`notifyShippingChannelOutbox.Subscribe("OrderPlaced", NotifyShipping)`,
 	} {
 		if !strings.Contains(string(got), want) {
 			t.Fatalf("esperava a presença de %q no Go gerado, não achei:\n%s", want, got)
@@ -176,28 +186,49 @@ func TestEmitPoliciesSmokeCompile(t *testing.T) {
 // shippingPolicyBehaviorTest roda dentro do projeto isolado gerado no smoke
 // e prova, sobre o Go de fato gerado (não uma reimplementação), o critério
 // de conclusão literal da task: "NotifyShipping on OrderPlaced registra o
-// subscriber" — Wire(dispatcher) de fato inscreve NotifyShipping (via
-// runtime.Outbox, que só encaminha para o Dispatcher que embrulha, Marco F1)
-// tal que publicar um *contracts.OrderPlaced no MESMO dispatcher alcança o
-// handler sem erro (o type assertion pro tipo concreto casa, e o corpo
-// "execute { return }" devolve nil).
+// subscriber" — mas agora (F5, REQ-26.5) através do canal REAL da
+// topologia: Wire(dispatcher) assina NotifyShipping no runtime.
+// ChannelTransport que ele mesmo constrói (notifyShippingChannel, var de
+// pacote — ver decl_policy.go), não em "dispatcher" (que fica sem uso para
+// esta Policy cross-service). Publicar um *contracts.OrderPlaced
+// DIRETAMENTE em notifyShippingChannel — exatamente o que um produtor real
+// (cmd/sales/main.go) faria — alcança NotifyShipping sem erro; um segundo
+// Subscribe no MESMO transporte (um observador de teste, sem mudar
+// NotifyShipping) prova que a entrega REALMENTE aconteceu (não só que
+// Publish não retornou erro — Publish é assíncrono, "enfileira e retorna",
+// então só o retorno de Publish não provaria que o handler rodou).
 const shippingPolicyBehaviorTest = `package shipping
 
 import (
 	"context"
 	"testing"
+	"time"
 
 	"domainscript/generated/contracts"
 	"domainscript/generated/runtime"
 )
 
-func TestWireRegistersNotifyShippingOnOrderPlaced(t *testing.T) {
+func TestWireRegistersNotifyShippingOnQueueChannel(t *testing.T) {
 	dispatcher := runtime.NewDispatcher()
 	Wire(dispatcher)
 
-	ev := &contracts.OrderPlaced{}
-	if err := dispatcher.Publish(context.Background(), ev); err != nil {
-		t.Fatalf("Publish: erro inesperado (esperava NotifyShipping tratar o evento sem erro): %v", err)
+	delivered := make(chan struct{}, 1)
+	notifyShippingChannel.Subscribe("OrderPlaced", func(ctx context.Context, ev runtime.Event) error {
+		delivered <- struct{}{}
+		return nil
+	})
+
+	ev := &contracts.OrderPlaced{Id: "order-1"}
+	if err := notifyShippingChannel.Publish(context.Background(), ev); err != nil {
+		t.Fatalf("Publish: erro inesperado: %v", err)
+	}
+
+	select {
+	case <-delivered:
+		// NotifyShipping rodou sem erro (senão deliver, rtsrc/channel.go.txt,
+		// teria parado no primeiro handler e nunca chamado o observador).
+	case <-time.After(time.Second):
+		t.Fatal("esperava que notifyShippingChannel entregasse o evento a NotifyShipping (via Wire) dentro de 1s")
 	}
 }
 `
@@ -243,11 +274,18 @@ func generateShopProject(t *testing.T) []codegen.File {
 // conclusão literal da task, de ponta a ponta sobre o orquestrador completo
 // (Generate, não EmitPolicies isolado): "NotifyShipping on OrderPlaced
 // registra o subscriber e compila" — shipping/policies.go existe com o
-// handler e o Wire, cmd/delivery/main.go (o service Delivery, dono do módulo
-// Shipping — topology.ds) instancia o dispatcher e chama "shipping.
-// Wire(dispatcher)", cmd/sales/main.go (o service Sales, dono do módulo
-// Orders) continua só com uow (sem dispatcher, Orders não declara Policy), e
-// o projeto gerado INTEIRO — os dois services juntos — compila.
+// handler e o Wire (F5, REQ-26.5: Wire constrói o canal "queue" da
+// topologia — notifyShippingChannel — em vez de assinar em "d" direto),
+// cmd/delivery/main.go (o service Delivery, dono do módulo Shipping —
+// topology.ds) continua instanciando o dispatcher e chamando "shipping.
+// Wire(dispatcher)" (d fica sem uso PARA ESSA Policy especificamente, mas
+// Wire's assinatura não muda — ver a doc de emitPolicyWireFunc),
+// cmd/sales/main.go (o service Sales, dono do módulo Orders, produtor do
+// PublicEvent OrderPlaced que atravessa o MESMO canal) agora constrói sua
+// PRÓPRIA instância do canal e injeta como publisher da unit of work
+// (runtime.NewUnitOfWork(store, ordersChannel) — o "outbox in-memory
+// ligando emit->dispatcher/notify" do lado de quem publica), e o projeto
+// gerado INTEIRO — os dois services juntos — compila.
 func TestGenerateShopPolicyRegistersSubscriberAndCompiles(t *testing.T) {
 	files := generateShopProject(t)
 	m := filesToMap(files)
@@ -258,8 +296,11 @@ func TestGenerateShopPolicyRegistersSubscriberAndCompiles(t *testing.T) {
 	}
 	for _, want := range []string{
 		"func NotifyShipping(ctx context.Context, ev runtime.Event) error",
+		"var notifyShippingChannel runtime.ChannelTransport",
 		"func Wire(d runtime.Dispatcher) {",
-		`o.Subscribe("OrderPlaced", NotifyShipping)`,
+		"notifyShippingChannel = runtime.NewQueueChannel(runtime.QueueChannelConfig{Concurrency: 1, MaxRate: 0, BatchSize: 1}, func(ev runtime.Event) string {",
+		"notifyShippingChannelOutbox := runtime.NewOutbox(notifyShippingChannel)",
+		`notifyShippingChannelOutbox.Subscribe("OrderPlaced", NotifyShipping)`,
 	} {
 		if !strings.Contains(string(policiesGo), want) {
 			t.Errorf("esperava %q em shipping/policies.go, não achei:\n%s", want, policiesGo)
@@ -284,10 +325,18 @@ func TestGenerateShopPolicyRegistersSubscriberAndCompiles(t *testing.T) {
 		t.Fatalf("esperava cmd/sales/main.go (service Sales, módulo Orders), não achei:\n%v", filePathsForTest(files))
 	}
 	if strings.Contains(string(salesMain), "NewDispatcher") {
-		t.Errorf("NÃO esperava dispatcher em cmd/sales/main.go (Orders não declara Policy):\n%s", salesMain)
+		t.Errorf("NÃO esperava runtime.Dispatcher em cmd/sales/main.go (Orders não declara Policy — o canal de saída usa runtime.ChannelTransport, não Dispatcher):\n%s", salesMain)
 	}
-	if !strings.Contains(string(salesMain), "orders.Wire(uow)") {
-		t.Errorf("esperava %q em cmd/sales/main.go, não achei:\n%s", "orders.Wire(uow)", salesMain)
+	for _, want := range []string{
+		"ordersChannel := runtime.NewQueueChannel(runtime.QueueChannelConfig{Concurrency: 1, MaxRate: 0, BatchSize: 1}, func(ev runtime.Event) string {",
+		"case *contracts.OrderPlaced:",
+		"return fmt.Sprint(e.Id)",
+		"uow := runtime.NewUnitOfWork(store, ordersChannel)",
+		"orders.Wire(uow)",
+	} {
+		if !strings.Contains(string(salesMain), want) {
+			t.Errorf("esperava %q em cmd/sales/main.go, não achei:\n%s", want, salesMain)
+		}
 	}
 
 	gentest.SmokeCompile(t, m)

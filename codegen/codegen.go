@@ -108,7 +108,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	for _, name := range moduleNames {
 		b := bucketModuleDecls(prog, name)
 		buckets[name] = b
-		modFiles, marks, err := generateModuleFiles(b, name, model, tab)
+		modFiles, marks, err := generateModuleFiles(b, name, model, tab, prog)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: módulo %s: %w", name, err)
 		}
@@ -280,7 +280,7 @@ type moduleMarks struct {
 // coexiste com UseCase e/ou Policy no mesmo módulo: seu ponto de entrada é
 // "StartWorkers", um nome próprio que nunca colide com "Wire" (ver a doc de
 // decl_worker.go) — por isso não há guarda equivalente para Worker aqui.
-func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable) ([]File, moduleMarks, error) {
+func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) ([]File, moduleMarks, error) {
 	pkg := goname.PackageName(moduleName)
 	var files []File
 
@@ -408,7 +408,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	}
 
 	if hasPolicies {
-		content, err := EmitPolicies(pkg, b.policies, model, tab, moduleName, reg, adapterByName)
+		content, err := EmitPolicies(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
 		}
@@ -628,6 +628,19 @@ func defaultCmdDirName(modules []string) string {
 // glue de processo (wiring + ListenAndServe). Um grupo sem Interface HTTP
 // (findGroupInterface devolve nil) ainda sobe um servidor, só que com o mux
 // vazio (grupos só-worker).
+//
+// --- Produtor de canal de saída (F5, REQ-25.3, REQ-26.1/26.5, §design 3.11) ---
+//
+// Quando um módulo do grupo PRODUZ PublicEvent que atravessam um canal
+// "queue" da topologia (producerChannelFor), a unit of work do service
+// recebe esse transporte como publisher (runtime.NewUnitOfWork(store,
+// <canal>) em vez de "(store)" puro) — o lado "emissor" do mesmo mecanismo
+// que decl_policy.go:emitPolicyWireFunc já cuida do lado "assinante". Cada
+// service constrói sua PRÓPRIA instância (ver a doc de
+// rtsrc/channel.go.txt sobre o limite de Marco F: só entrega de verdade
+// dentro do MESMO processo). needsDispatcher (Policy local) e um canal de
+// saída no MESMO service ainda não têm wiring combinado suportado — erro de
+// geração claro (nem wallet nem shop combinam os dois hoje).
 func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers map[string]bool, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -665,6 +678,41 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 	}
 
+	// producerModule/producerChannel (F5, REQ-25.3, REQ-26.1/26.5, §design
+	// 3.11): o módulo do grupo (no máximo 1, ver producerChannelFor) que
+	// PRODUZ PublicEvent atravessando um canal de saída "queue" da
+	// topologia — precisa que a unit of work do service publique todo
+	// evento que emitir através desse transporte (runtime.NewUnitOfWork(
+	// store, <canal>), ver uow.go.txt), exatamente o mecanismo que liga
+	// "emit" a "dispatcher/notify" do lado de quem PUBLICA (o lado
+	// CONSUMIDOR, Policy cross-service, já é decl_policy.go:
+	// emitPolicyWireFunc). Um módulo que precise tanto de Dispatcher
+	// (Policy local) quanto de canal de saída no MESMO service ainda não
+	// tem wiring combinado suportado (não exercitado por wallet nem shop
+	// hoje) — erro de geração claro, mesmo espírito da guarda de
+	// generateModuleFiles sobre UseCase+Policy no mesmo módulo.
+	var producerModule string
+	var producerChannel *program.Channel
+	for _, m := range group.modules {
+		if !modulesWithUseCases[m] || len(buckets[m].pubEvents) == 0 {
+			continue
+		}
+		ch, err := producerChannelFor(prog, m)
+		if err != nil {
+			return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+		}
+		if ch == nil {
+			continue
+		}
+		if producerChannel != nil {
+			return File{}, fmt.Errorf("codegen: cmd/%s/main.go: mais de um módulo produtor de canal de saída via queue no mesmo service (%s, %s) — wiring combinado ainda não suportado (F5)", group.dirName, producerModule, m)
+		}
+		producerModule, producerChannel = m, ch
+	}
+	if producerChannel != nil && needsDispatcher {
+		return File{}, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5)", group.dirName)
+	}
+
 	var ctxAlias string
 	if anyWorkers {
 		ctxAlias = e.Import("context")
@@ -676,11 +724,34 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
 	e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
 	e.Line("// geração, não editar à mão.")
+	var mainErr error
 	e.Block("func main()", func() {
 		e.Line("store := %s.NewMemoryEventStore()", runtimeAlias)
-		e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
-		if needsDispatcher {
+
+		var channelVarName string
+		if producerChannel != nil {
+			channelVarName = strings.ToLower(producerModule[:1]) + producerModule[1:] + "Channel"
+			var candidates []channelEventCandidate
+			if channelOrderByField(producerChannel) != "" {
+				contractsAlias := e.Import(path.Join(domainModuleRoot, "contracts"))
+				for _, ev := range buckets[producerModule].pubEvents {
+					candidates = append(candidates, channelEventCandidate{evtDecl: ev, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ev.Name)})
+				}
+			}
+			if err := emitChannelQueueVar(e, channelVarName, ":=", producerChannel, candidates, model, tab, producerModule, goname.NewVOOperatorRegistry(), runtimeAlias); err != nil {
+				mainErr = fmt.Errorf("canal de saída do módulo %s: %w", producerModule, err)
+				return
+			}
+		}
+
+		switch {
+		case needsDispatcher:
 			e.Line("dispatcher := %s.NewDispatcher()", runtimeAlias)
+			e.Line("uow := %s.NewUnitOfWork(store, dispatcher)", runtimeAlias)
+		case producerChannel != nil:
+			e.Line("uow := %s.NewUnitOfWork(store, %s)", runtimeAlias, channelVarName)
+		default:
+			e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
 		}
 		if anyWorkers {
 			e.Line("workerCtx := %s.Background()", ctxAlias)
@@ -713,6 +784,9 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		e.Line("server := &%s.Server{Addr: %s.Sprintf(\":%%s\", port), Handler: newMux(store)}", httpAlias, fmtAlias)
 		e.Line("%s.Fatal(server.ListenAndServe())", logAlias)
 	})
+	if mainErr != nil {
+		return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, mainErr)
+	}
 
 	e.Line("")
 	e.Line("// newMux constrói o *http.ServeMux do service %q, registrando cada rota de", group.dirName)

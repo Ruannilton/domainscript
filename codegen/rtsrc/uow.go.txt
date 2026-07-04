@@ -1,6 +1,9 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
 // Tx is the mutation surface available inside a UnitOfWork.Run callback. It
 // is already bound to the context.Context the unit of work was started
@@ -26,6 +29,14 @@ type UnitOfWork interface {
 	Run(ctx context.Context, fn func(tx Tx) error) error
 }
 
+// Publisher is anything that can be handed every event a successful
+// UnitOfWork.Run appended — Dispatcher and ChannelTransport (channel.go.txt)
+// both already satisfy it (identical Publish signature), so either can be
+// passed to NewUnitOfWork with zero adapter code.
+type Publisher interface {
+	Publish(ctx context.Context, ev Event) error
+}
+
 // memoryUnitOfWork is the in-memory UnitOfWork. MemoryEventStore has no
 // staging area, so "commit" and "rollback" are both no-ops here: events
 // appended via Tx.Append during fn are already durable in the store the
@@ -33,30 +44,67 @@ type UnitOfWork interface {
 // (e.g. database/sql) UnitOfWork buffers writes and only makes them visible
 // on commit — that lands with the database/sql adapter (Marco G).
 type memoryUnitOfWork struct {
-	store EventStore
+	store     EventStore
+	publisher Publisher
 }
 
-// NewUnitOfWork creates a UnitOfWork backed by store.
-func NewUnitOfWork(store EventStore) UnitOfWork {
-	return &memoryUnitOfWork{store: store}
+// NewUnitOfWork creates a UnitOfWork backed by store. publisher is optional
+// (Marco F5, REQ-25.3, REQ-26.5, §design 3.11 — the "outbox in-memory
+// ligando emit->dispatcher/notify" tie-in): when given (publisher[0]),
+// every event appended via Tx.Append during a successful Run is ALSO handed
+// to publisher.Publish, in append order, right after fn returns nil — this
+// is what turns a plain `emit` (durable via Tx.Append alone) into an actual
+// Dispatcher/Outbox/ChannelTransport notification, without any
+// Handle/UseCase-generated code needing to know publishing even happens.
+// Omitting publisher (the Marco E/wallet shape — no Policy, nothing to
+// publish to) disables this entirely: Run behaves exactly as before F5.
+//
+// A publish failure is logged, never returned: the transaction already
+// committed (Append already made the events durable) by the time publishing
+// runs, so there is nothing left to roll back — the same "durable the
+// moment Append returns" spirit the type doc above already documents for
+// commit/rollback.
+func NewUnitOfWork(store EventStore, publisher ...Publisher) UnitOfWork {
+	u := &memoryUnitOfWork{store: store}
+	if len(publisher) > 0 {
+		u.publisher = publisher[0]
+	}
+	return u
 }
 
 // Run implements UnitOfWork.
 func (u *memoryUnitOfWork) Run(ctx context.Context, fn func(tx Tx) error) error {
 	tx := &memoryTx{ctx: ctx, store: u.store}
-	return fn(tx)
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if u.publisher != nil {
+		for _, ev := range tx.appended {
+			if pubErr := u.publisher.Publish(ctx, ev); pubErr != nil {
+				slog.Error("uow: falha ao publicar evento após commit", "eventType", ev.EventType(), "error", pubErr)
+			}
+		}
+	}
+	return nil
 }
 
 // memoryTx implements Tx over an EventStore, carrying the ctx it was opened
-// with so Append never needs it as an explicit parameter.
+// with so Append never needs it as an explicit parameter. appended records
+// every event Append durably stores, in order, so memoryUnitOfWork.Run can
+// publish them once fn succeeds (see NewUnitOfWork).
 type memoryTx struct {
-	ctx   context.Context
-	store EventStore
+	ctx      context.Context
+	store    EventStore
+	appended []Event
 }
 
 // Append implements Tx.
 func (tx *memoryTx) Append(aggregateID string, events []Event) error {
-	return tx.store.Append(tx.ctx, aggregateID, events)
+	if err := tx.store.Append(tx.ctx, aggregateID, events); err != nil {
+		return err
+	}
+	tx.appended = append(tx.appended, events...)
+	return nil
 }
 
 // Load implements Tx.
