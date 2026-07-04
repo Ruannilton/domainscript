@@ -93,6 +93,7 @@ type commandFieldInfo struct {
 // canal de erro através de e.Block.
 func emitCommandDecl(e *emit.Emitter, decl *ast.CommandDecl, model *types.Model, tab *symbols.SymbolTable, module string) error {
 	infos := make([]commandFieldInfo, 0, len(decl.Fields))
+	needsRuntime := false
 	for _, f := range decl.Fields {
 		if f == nil {
 			continue
@@ -101,11 +102,27 @@ func emitCommandDecl(e *emit.Emitter, decl *ast.CommandDecl, model *types.Model,
 		if err != nil {
 			return fmt.Errorf("codegen: Command %s: campo %s: %w", decl.Name, f.Name, err)
 		}
+		if strings.HasPrefix(goType, "runtime.") {
+			// Um campo File/FileRef/FileStream (G1a, §2.5) ou decimal (E3.1)
+			// resolve para "runtime.X" (goname.GoFieldType/GoOpaqueType/
+			// GoPrimitive — texto CRU, sem passar pelo alias de e.Import,
+			// mesma convenção assumida em todo o codegen: o import do runtime
+			// nunca colide/aliasa). Diferente de Event/Aggregate (decl_event.go/
+			// decl_aggregate.go), um Command nunca precisou do runtime ANTES
+			// de G1a (nenhum campo runtime.* — nem "decimal" bare, nunca
+			// exercitado por nenhuma fixture real até aqui) — o import só
+			// entra quando de fato necessário, para não sobrar não-usado
+			// (Emitter.Bytes recusa import registrado e nunca referenciado).
+			needsRuntime = true
+		}
 		infos = append(infos, commandFieldInfo{
 			field:      f,
 			goType:     goType,
 			exportName: goname.ExportField(f.Name),
 		})
+	}
+	if needsRuntime {
+		e.Import(RuntimeImportPath)
 	}
 
 	e.Line("// %s é o Command %s (§5.1): %s.", decl.Name, decl.Name, commandFieldSummary(decl.Fields))

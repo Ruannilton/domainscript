@@ -8,6 +8,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/codegen/goname"
+	"domainscript/symbols"
 	"domainscript/token"
 	"domainscript/types"
 )
@@ -225,10 +226,14 @@ func (l *Lowerer) ident(n *ast.Ident) (string, error) {
 
 // member traduz X.Name. "caller" é reconhecido por FORMA antes de qualquer
 // outra coisa (TypeEnv nunca o semeia com um tipo real — decisão documentada
-// em env.go); qualquer outro X é inferido via types.Model (o caminho comum:
-// idents/membros/chamadas) para decidir se Name é campo exportado (Shape/VO),
-// constante de Enum, ou — sobre um primitivo — uma forma inesperada (método
-// embutido deveria chegar aqui como CallExpr, não MemberExpr puro).
+// em env.go); "X.state" sobre um valor de Aggregate CARREGADO (ex. "doc.
+// state.content" num UseCase/Query, G1a — o mesmo padrão do exemplo do spec
+// §2.5, "person.state.document") é reconhecido logo em seguida (ver
+// stateFieldAccess); qualquer outro X é inferido via types.Model (o caminho
+// comum: idents/membros/chamadas) para decidir se Name é campo exportado
+// (Shape/VO), constante de Enum, ou — sobre um primitivo — uma forma
+// inesperada (método embutido deveria chegar aqui como CallExpr, não
+// MemberExpr puro).
 func (l *Lowerer) member(n *ast.MemberExpr) (string, error) {
 	if id, ok := n.X.(*ast.Ident); ok && id.Name == "caller" {
 		return l.callerMember(n.Name)
@@ -237,6 +242,9 @@ func (l *Lowerer) member(n *ast.MemberExpr) (string, error) {
 	xGo, err := l.Expr(n.X)
 	if err != nil {
 		return "", err
+	}
+	if goExpr, handled, err := l.stateFieldAccess(n, xGo); handled {
+		return goExpr, err
 	}
 	xType := l.inferType(n.X)
 	switch t := xType.(type) {
@@ -256,6 +264,37 @@ func (l *Lowerer) member(n *ast.MemberExpr) (string, error) {
 	default:
 		return "", fmt.Errorf("codegen: não sei traduzir %s.%s: tipo do receptor é %s", xGo, n.Name, xType.String())
 	}
+}
+
+// stateFieldAccess reconhece "X.state" quando X é um valor de Aggregate
+// CARREGADO (ex. "doc" de "doc = load Document(...)" num UseCase/Query, G1a
+// — o mesmo padrão do exemplo do spec §2.5, "person.state.document" dentro
+// de "Query GetDocumentUrl"): fora do Handle/Apply do próprio Aggregate (onde
+// "self"/"state" já resolvem via BindGoName para "<receiver>.state",
+// decl_aggregate.go), "doc" é um Ident comum, sem override — quem decide a
+// forma aqui é o nome literal "state" sobre um receptor cujo tipo é o shape
+// do PRÓPRIO Aggregate (types.Model.TypeOf de um símbolo Aggregate — o mesmo
+// shape que sema/rules_typecheck.go, REQ-12, também usa para self/state
+// DENTRO do Aggregate). Sem este caso especial, xType (o tipo desta
+// MemberExpr) seria types.ErrorType: types.Model.Members(ShapeType) devolve
+// os campos do state DIRETAMENTE (nunca um campo "state" a mais, ver
+// types/model.go) — então nem esta função nem inferType (abaixo, chamado
+// pelo ACESSO SEGUINTE, ex. ".content") saberiam o que fazer com "doc.state"
+// sem este reconhecimento.
+//
+// Devolve o texto Go "<xGo>.state" (o campo NÃO-exportado do struct do
+// Aggregate, decl_aggregate.go/emitAggregateStruct — legal porque o Go
+// gerado vive no MESMO pacote) quando reconhecido; handled=false (sem erro)
+// em qualquer outro caso — o chamador (member) segue o caminho normal.
+func (l *Lowerer) stateFieldAccess(n *ast.MemberExpr, xGo string) (goExpr string, handled bool, err error) {
+	if n.Name != "state" {
+		return "", false, nil
+	}
+	shape, ok := l.inferType(n.X).(*types.ShapeType)
+	if !ok || shape.Kind != symbols.KindAggregate {
+		return "", false, nil
+	}
+	return xGo + ".state", true, nil
 }
 
 // callerMember reconhece caller.id/caller.authenticated por FORMA (o nome
@@ -509,16 +548,31 @@ func (l *Lowerer) Lambda(le *ast.LambdaExpr, paramGoType string) (string, error)
 // types.Model.Infer (cobre literal/ident/membro/chamada/binário/índice/
 // lista), usando o TypeEnv como types.Scope; QueryExpr/MatchExpr/LambdaExpr —
 // que Model.Infer sempre devolve como ErrorType (types/infer.go, ramo
-// default) — passam por TypeEnv.InferAssignRHS, que os cobre. Nunca devolve
-// nil: no pior caso, types.ErrorType (o sentinela anti-cascata).
+// default) — passam por TypeEnv.InferAssignRHS, que os cobre. "X.state"
+// sobre um Aggregate carregado (G1a, ver stateFieldAccess/member) é o
+// terceiro caso especial: types.Model.Infer devolveria ErrorType (Members()
+// de um Aggregate nunca inclui um campo "state" a mais — só os campos do
+// state diretamente), mas o texto Go PRECISA da mesma forma type-checável de
+// X para que um acesso mais externo (ex. o ".content" de "doc.state.
+// content") resolva corretamente — self/state são tipados de forma
+// IDÊNTICA ao próprio Aggregate (mesma convenção de sema/rules_typecheck.go,
+// REQ-12), então "X.state" aqui devolve o MESMO ShapeType de X. Nunca
+// devolve nil: no pior caso, types.ErrorType (o sentinela anti-cascata).
 func (l *Lowerer) inferType(e ast.Expr) types.Type {
-	switch e.(type) {
+	switch n := e.(type) {
 	case *ast.QueryExpr, *ast.MatchExpr, *ast.LambdaExpr:
 		t, err := l.env.InferAssignRHS(e)
 		if err != nil || t == nil {
 			return types.ErrorType
 		}
 		return t
+	case *ast.MemberExpr:
+		if n.Name == "state" {
+			if shape, ok := l.inferType(n.X).(*types.ShapeType); ok && shape.Kind == symbols.KindAggregate {
+				return shape
+			}
+		}
+		return l.env.model.Infer(l.env.module, e, l.env)
 	default:
 		return l.env.model.Infer(l.env.module, e, l.env)
 	}

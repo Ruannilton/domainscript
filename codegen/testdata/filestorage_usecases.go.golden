@@ -1,0 +1,72 @@
+package docs
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+)
+
+// uow é a unit of work do módulo (§design 3.8), compartilhada por todos os
+// UseCases deste pacote — só a declaração de pacote; a instância de verdade
+// vem do wiring (E9.1, Wire abaixo).
+var uow runtime.UnitOfWork
+
+// Wire injeta a unit of work usada pelos UseCases deste pacote — chamada por
+// cmd/<service>/main.go na inicialização (wiring in-memory, §design 3.11).
+func Wire(u runtime.UnitOfWork) {
+	uow = u
+}
+
+// UploadContentUC é o UseCase UploadContentUC (§5.2): abre uma unit of work, executa
+// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.
+func UploadContentUC(ctx context.Context, cmd UploadContent) error {
+	caller, _ := runtime.CallerFrom(ctx)
+	return uow.Run(ctx, func(tx runtime.Tx) error {
+		tmp1, err := LoadDocument(tx, cmd.DocId)
+		if err != nil {
+			return err
+		}
+		doc := tmp1
+		if !(doc != nil) {
+			return ErrDocumentNotFound
+		}
+		tmp2, err := fileStorages["ContentStorage"].Store(ctx, cmd.Content)
+		if err != nil {
+			return err
+		}
+		events, err := doc.AttachContent(caller, tmp2)
+		if err != nil {
+			return err
+		}
+		if err := tx.Append(string(doc.id), events); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// DeleteContentUC é o UseCase DeleteContentUC (§5.2): abre uma unit of work, executa
+// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.
+func DeleteContentUC(ctx context.Context, cmd DeleteContent) error {
+	caller, _ := runtime.CallerFrom(ctx)
+	return uow.Run(ctx, func(tx runtime.Tx) error {
+		tmp1, err := LoadDocument(tx, cmd.DocId)
+		if err != nil {
+			return err
+		}
+		doc := tmp1
+		if !(doc != nil) {
+			return ErrDocumentNotFound
+		}
+		events, err := doc.RemoveContent(caller)
+		if err != nil {
+			return err
+		}
+		if err := tx.Append(string(doc.id), events); err != nil {
+			return err
+		}
+		if err := fileStorages["ContentStorage"].Delete(ctx, doc.state.Content); err != nil {
+			return err
+		}
+		return nil
+	})
+}

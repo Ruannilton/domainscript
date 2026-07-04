@@ -1,0 +1,140 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+// filestorage_test.go.txt prova o comportamento do seam FileStorage (G1a,
+// §2.5): store→load reproduz os mesmos bytes, signed_url tem a forma de URL
+// esperada, e delete→load subsequente falha limpo (ErrNotFound) — os 4
+// critérios pedidos pela task G1a.
+
+func TestMemoryFileStorage_StoreThenLoadRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+
+	original := File{
+		Name:        "avatar.png",
+		ContentType: "image/png",
+		Size:        4,
+		Metadata:    map[string]string{"uploadedBy": "u1"},
+		Buffer:      []byte{0xDE, 0xAD, 0xBE, 0xEF},
+	}
+
+	ref, err := fs.Store(ctx, original)
+	if err != nil {
+		t.Fatalf("Store: erro inesperado: %v", err)
+	}
+	if ref.ID == "" {
+		t.Fatal("Store: esperava um FileRef.ID não vazio")
+	}
+	if ref.Name != original.Name || ref.ContentType != original.ContentType || ref.Size != original.Size {
+		t.Fatalf("Store: FileRef não reflete o File original: %+v", ref)
+	}
+	if ref.StoredAt.IsZero() {
+		t.Fatal("Store: esperava FileRef.StoredAt preenchido")
+	}
+
+	loaded, err := fs.Load(ctx, ref)
+	if err != nil {
+		t.Fatalf("Load: erro inesperado: %v", err)
+	}
+	if string(loaded.Buffer) != string(original.Buffer) {
+		t.Fatalf("Load: bytes não batem — got %v, want %v", loaded.Buffer, original.Buffer)
+	}
+	if loaded.Name != original.Name || loaded.ContentType != original.ContentType {
+		t.Fatalf("Load: metadata não bate: got %+v, want name=%q contentType=%q", loaded, original.Name, original.ContentType)
+	}
+}
+
+func TestMemoryFileStorage_StoreTwiceProducesDistinctRefs(t *testing.T) {
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+	f := File{Name: "a.txt", Buffer: []byte("hello")}
+
+	ref1, err := fs.Store(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref2, err := fs.Store(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref1.ID == ref2.ID {
+		t.Fatalf("esperava IDs distintos para dois Store separados do mesmo conteúdo, ambos vieram %q", ref1.ID)
+	}
+}
+
+func TestMemoryFileStorage_SignedURLHasURLShape(t *testing.T) {
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+	ref, err := fs.Store(ctx, File{Name: "doc.pdf", Buffer: []byte("%PDF")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	url := fs.SignedURL(ctx, ref, 15*time.Minute)
+	if url == "" {
+		t.Fatal("SignedURL: esperava uma string não vazia")
+	}
+	if !strings.Contains(url, ref.ID) {
+		t.Fatalf("SignedURL: esperava a URL referenciar o ID %q, got %q", ref.ID, url)
+	}
+	if !strings.Contains(url, "expires=") {
+		t.Fatalf("SignedURL: esperava um parâmetro de expiração, got %q", url)
+	}
+}
+
+func TestMemoryFileStorage_SignedURLWorksEvenWithoutPriorStore(t *testing.T) {
+	// SignedURL nunca falha (ver a doc da interface): é derivada só de
+	// ref+expires, sem consultar o mapa de bytes — mesmo um ref nunca
+	// armazenado (ex. reconstruído de outro processo) produz uma URL.
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+	ref := FileRef{ID: "unknown-id"}
+	url := fs.SignedURL(ctx, ref, time.Hour)
+	if !strings.Contains(url, "unknown-id") {
+		t.Fatalf("esperava a URL referenciar o ID mesmo sem Store prévio, got %q", url)
+	}
+}
+
+func TestMemoryFileStorage_DeleteThenLoadFailsWithErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+	ref, err := fs.Store(ctx, File{Name: "x.bin", Buffer: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fs.Delete(ctx, ref); err != nil {
+		t.Fatalf("Delete: erro inesperado: %v", err)
+	}
+
+	if _, err := fs.Load(ctx, ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Load após Delete: esperava errors.Is(err, ErrNotFound), got %v", err)
+	}
+}
+
+func TestMemoryFileStorage_DeleteIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+	ref := FileRef{ID: "never-stored"}
+	if err := fs.Delete(ctx, ref); err != nil {
+		t.Fatalf("Delete de um ref nunca armazenado deveria ser um no-op de sucesso, got %v", err)
+	}
+	if err := fs.Delete(ctx, ref); err != nil {
+		t.Fatalf("2ª Delete do mesmo ref deveria continuar sendo sucesso, got %v", err)
+	}
+}
+
+func TestMemoryFileStorage_LoadUnknownRefFailsWithErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	fs := NewMemoryFileStorage()
+	if _, err := fs.Load(ctx, FileRef{ID: "does-not-exist"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("esperava errors.Is(err, ErrNotFound), got %v", err)
+	}
+}

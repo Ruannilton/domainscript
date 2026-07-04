@@ -303,8 +303,16 @@ func (env *TypeEnv) InferAssignRHS(rhs ast.Expr) (types.Type, error) {
 func (env *TypeEnv) inferQueryExpr(qe *ast.QueryExpr) (types.Type, error) {
 	switch qe.Op {
 	case "load":
-		// load T(id) → o tipo de T, resolvido via typeOfName.
+		// load T(id) → o tipo de T, resolvido via typeOfName. "load File(ref)"
+		// (§2.5, G1a) é o único caso especial: "File" é um tipo OPACO embutido
+		// (types/model.go: primitives), nunca um símbolo declarado — typeOfName
+		// nunca o resolveria (devolveria ErrorType, disparando o erro abaixo à
+		// toa). O runtime representa o resultado como runtime.File
+		// (goname.GoPrimitive), então o tipo aqui é o primitivo "File".
 		name := astutil.HeadName(qe.Target)
+		if name == "File" {
+			return &types.Primitive{Name: "File"}, nil
+		}
 		t := env.typeOfName(name)
 		if types.IsError(t) {
 			return nil, fmt.Errorf("lower: load: não consegui resolver o tipo de %q", name)

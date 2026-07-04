@@ -158,9 +158,22 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 		emitUOW2PCWireFunc(e, runtimeAlias)
 	}
 
+	// Roteamento de FileStorage (G1a, §2.5): calculado UMA VEZ para o módulo
+	// (independe de qual UseCase está sendo emitido) e anexado ao
+	// BuiltinLowerer de cada decl (ver emitUseCaseDecl) — só produz efeito
+	// quando o corpo de fato usa store/signed_url/delete file/load File(ref);
+	// um módulo sem storage{}/FileStorage nenhum (todo módulo antes de G1a)
+	// devolve (nil, "", nil) aqui, preservando o comportamento anterior.
+	mod := programModule(prog, module)
+	fsByField, err := moduleFileStorageRouting(aggregates, mod)
+	if err != nil {
+		return nil, fmt.Errorf("codegen: módulo %s: %w", module, err)
+	}
+	fsDefault := moduleFileStorageDefault(mod)
+
 	for _, decl := range decls {
 		e.Line("")
-		if err := emitUseCaseDecl(e, decl, aggregates, prog, model, tab, module, reg, adapters, ctxAlias, runtimeAlias); err != nil {
+		if err := emitUseCaseDecl(e, decl, aggregates, prog, model, tab, module, reg, adapters, ctxAlias, runtimeAlias, fsByField, fsDefault); err != nil {
 			return nil, err
 		}
 	}
@@ -175,7 +188,7 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 // load roteado ao Tx do Database certo — ver lower.WithHandleDispatchRouted/
 // BuiltinLowerer.WithPerAggregateStore); senão, o caminho de sempre (uow.Run
 // com um "tx" só, Marco E/F, byte a byte inalterado).
-func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string) error {
+func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string) error {
 	env := lower.New(model, tab, module)
 	env.SeedUseCaseExecute(decl.Handles)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
@@ -188,9 +201,9 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 			db := prog.DatabaseOfAggregate(aggName)
 			return fmt.Sprintf("txs[%s]", strconv.Quote(db.Name))
 		}
-		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "txs").WithPerAggregateStore(txGoNameFor))
+		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "txs").WithPerAggregateStore(txGoNameFor).WithFileStorage(fsByField, fsDefault))
 	} else {
-		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "tx"))
+		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "tx").WithFileStorage(fsByField, fsDefault))
 	}
 
 	var timeoutGo string
@@ -201,6 +214,13 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 			return fmt.Errorf("codegen: UseCase %s: timeout: %w", decl.Name, err)
 		}
 		timeoutGo = g
+	}
+	// signed_url(ref, expires: <duração>) (G1a, §2.5) pode aparecer dentro de
+	// um execute, não só de um Query.Body — mesmo motivo/mesma checagem que
+	// emitQueryDecl faz (decl_query.go, bodyUsesSignedURL): garante o import
+	// de "time" ANTES de lowerizar, mesmo quando Timeout é nil.
+	if bodyUsesSignedURL(decl.Execute) {
+		e.Import("time")
 	}
 
 	sig := fmt.Sprintf("func %s(ctx %s.Context, cmd %s) error", decl.Name, ctxAlias, decl.Handles)

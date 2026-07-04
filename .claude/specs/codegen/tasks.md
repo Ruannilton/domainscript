@@ -397,7 +397,7 @@
   o lowering. _(REQ-20.5, REQ-26.2/26.3, NFR-12, §design 3.8/3.9/3.11/4.4)_
   **Commit:** `feat(codegen): adapter database/sql plugável`
 
-- [ ] **G1a** **Ops de arquivo (adiadas de E5.3):** seam `FileStorage` do `mod.ds` +
+- [x] **G1a** **Ops de arquivo (adiadas de E5.3):** seam `FileStorage` do `mod.ds` +
   lowering de `store`/`signed_url`/`delete file`/`load File(ref)` e as structs
   built-in `File`/`FileRef`/`FileStream` do runtime; o bloco `storage` do Aggregate
   (`ast.StorageEntry`, spec §2.5) roteia cada campo `FileRef` para o `FileStorage`

@@ -6,9 +6,11 @@ import (
 	"strings"
 
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/codegen/lower"
+	"domainscript/program"
 	"domainscript/symbols"
 	"domainscript/types"
 )
@@ -63,24 +65,36 @@ import (
 // mantendo o contrato uniforme entre as duas funções (mesmo padrão de
 // EmitUseCase/EmitUseCases). aggregates é o mapa nome->decl de TODOS os
 // Aggregates conhecidos do módulo (mesmo padrão de EmitUseCase/E7.2) — usado
-// pela correlação de "list <VO>" (ver a doc do arquivo).
-func EmitQuery(pkg string, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
-	return EmitQueries(pkg, []*ast.QueryDecl{decl}, aggregates, model, tab, module, reg)
+// pela correlação de "list <VO>" (ver a doc do arquivo). prog (G1a) habilita
+// o roteamento de FileStorage (§2.5) para signed_url/load File(ref) no corpo
+// — nil preserva o comportamento anterior a G1a (nenhuma FileStorage
+// disponível; só relevante se o corpo de fato usar uma op de arquivo).
+func EmitQuery(pkg string, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+	return EmitQueries(pkg, []*ast.QueryDecl{decl}, aggregates, prog, model, tab, module, reg)
 }
 
 // EmitQueries gera o Go de vários QueryDecl num único arquivo — como um
 // módulo real tem mais de uma Query (o wallet declara 2: GetWallet,
 // ListEntries).
-func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
+
+	// Roteamento de FileStorage (G1a, §2.5) — ver a doc análoga em
+	// decl_usecase.go/EmitUseCases: calculado uma vez para o módulo.
+	mod := programModule(prog, module)
+	fsByField, err := moduleFileStorageRouting(aggregates, mod)
+	if err != nil {
+		return nil, fmt.Errorf("codegen: módulo %s: %w", module, err)
+	}
+	fsDefault := moduleFileStorageDefault(mod)
 
 	for i, decl := range decls {
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitQueryDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias); err != nil {
+		if err := emitQueryDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias, fsByField, fsDefault); err != nil {
 			return nil, err
 		}
 	}
@@ -92,11 +106,23 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 // — ctx/store sempre presentes (mesmo quando o corpo não os usa, ex. um
 // fallback puro), o mesmo espírito de UseCase sempre receber ctx mesmo sem
 // timeout (decl_usecase.go) — mais o corpo (ver queryBodyEmitter).
-func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string) error {
+func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string) error {
 	env := lower.New(model, tab, module)
 	env.SeedQuery(decl.Params)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
-	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "store"))
+	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "store").WithFileStorage(fsByField, fsDefault).WithEventLoaderWrapping())
+
+	// signed_url(ref, expires: <duração>) (G1a, §2.5) loweriza o argumento
+	// "expires" via lowerDurationLiteral (lower/expr.go), que produz o texto
+	// cru "time.Duration(...)" SEM jamais chamar e.Import sozinho (mesmo
+	// contrato que decl_usecase.go já respeita para UseCaseDecl.Timeout) — o
+	// EMISSOR precisa garantir o import ANTES de lowerizar o corpo, ou o Go
+	// gerado referencia "time" sem importá-lo (erro de compilação só visível
+	// no smoke, nunca em Emitter.Bytes, que só valida imports REGISTRADOS e
+	// não usados — nunca o inverso).
+	if bodyUsesSignedURL(decl.Body) {
+		e.Import("time")
+	}
 
 	returnGoType, err := goname.GoFieldType(decl.Return)
 	if err != nil {
@@ -377,6 +403,25 @@ func correlateListVOAggregate(aggregates map[string]*ast.AggregateDecl, voName s
 }
 
 // --- helpers compartilhados. ---
+
+// bodyUsesSignedURL reporta se b contém, em qualquer profundidade, uma
+// chamada "signed_url(...)" (§2.5, G1a) — ver a doc de emitQueryDecl sobre
+// por que isso precisa ser decidido ANTES de lowerizar o corpo (import de
+// "time"). Reusada por decl_usecase.go pela mesma razão (signed_url também
+// pode aparecer dentro de um UseCase.execute, não só de Query.Body).
+func bodyUsesSignedURL(b *ast.Block) bool {
+	found := false
+	astutil.ForEachExprInBlock(b, func(e ast.Expr) {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return
+		}
+		if id, ok := call.Fn.(*ast.Ident); ok && id.Name == "signed_url" {
+			found = true
+		}
+	})
+	return found
+}
 
 // listReturnElement devolve o nome do elemento de um TypeRef "List<Elem>",
 // ok=false para qualquer outra forma (incl. Args com aridade != 1).

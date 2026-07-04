@@ -31,10 +31,34 @@ import (
 // dentro de um `for`, mas o front-end aceita a resolução do NOME em
 // qualquer lugar; a validade posicional de `Nop` é responsabilidade de uma
 // regra semântica à parte, sema/rules_flow.go, não da resolução de nomes).
+//
+// Gap encontrado durante G1a (ops de arquivo, REQ-22.7(b)) e corrigido aqui:
+// as built-ins de FUNÇÃO do §2.5/§2.6 (`now`, `uuid`, `random`, `random_str`,
+// `signed_url`) nunca tiveram símbolo próprio nem entrada nesta tabela —
+// `resolveExpr` desce no `Fn` de todo `*ast.CallExpr` (incl. `now()`), então
+// um corpo de verdade usando qualquer uma delas falhava aqui com "nome não
+// declarado", apesar de codegen/lower/builtins.go (E5.3/G1a) já saber
+// traduzi-las. Isso nunca foi pego antes porque os testes de lowering dessas
+// built-ins (codegen/lower/builtins_test.go) montam a CallExpr à mão, sem
+// passar pelo resolver de verdade — só a fixture sintética de G1a (que usa
+// `signed_url` dentro de uma Query real, verificada via `dsc gen`) expôs o
+// gap. Mesmo raciocínio de `file`: o marcador fixo de `delete file(ref)`
+// (§2.5) nunca é um símbolo declarado — e `File`: o tipo opaco embutido
+// (`builtinTypes`, resolver.go) usado como CALLEE de `load File(ref)`, uma
+// posição de VALOR (não de tipo), que resolveIdent não conhecia. `call`/
+// `store`/`delete` (as próprias palavras-chave de operação) não passam por
+// aqui — só seus Target/Args, que resolvem normalmente pelo caminho comum.
 var builtinValues = map[string]bool{
 	"Nop":           true,
 	"_":             true,
 	"unrecoverable": true,
+	"now":           true,
+	"uuid":          true,
+	"random":        true,
+	"random_str":    true,
+	"signed_url":    true,
+	"file":          true,
+	"File":          true,
 }
 
 // resolveBodies executa a passagem de resolução de corpos sobre todas as unidades

@@ -55,7 +55,7 @@ func emitWalletQueries(t *testing.T) []byte {
 	t.Helper()
 	getWallet, listEntries, aggregates, model, reg, prog := walletQueriesAndAggregates(t)
 
-	got, err := codegen.EmitQueries("wallet", []*ast.QueryDecl{getWallet, listEntries}, aggregates, model, prog.Symbols, "Wallet", reg)
+	got, err := codegen.EmitQueries("wallet", []*ast.QueryDecl{getWallet, listEntries}, aggregates, prog, model, prog.Symbols, "Wallet", reg)
 	if err != nil {
 		t.Fatalf("EmitQueries: erro inesperado: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestEmitQueriesGolden(t *testing.T) {
 func TestEmitQueryGoldenSingle(t *testing.T) {
 	getWallet, _, aggregates, model, reg, prog := walletQueriesAndAggregates(t)
 
-	got, err := codegen.EmitQuery("wallet", getWallet, aggregates, model, prog.Symbols, "Wallet", reg)
+	got, err := codegen.EmitQuery("wallet", getWallet, aggregates, prog, model, prog.Symbols, "Wallet", reg)
 	if err != nil {
 		t.Fatalf("EmitQuery(GetWallet): erro inesperado: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestEmitQueryListVOZeroCandidatesFailsExplicitly(t *testing.T) {
 	model := types.NewModel(prog.Symbols)
 	reg := walletVOOperatorRegistryFromProgram(prog)
 
-	_, err := codegen.EmitQuery("notes", query, map[string]*ast.AggregateDecl{}, model, prog.Symbols, "Notes", reg)
+	_, err := codegen.EmitQuery("notes", query, map[string]*ast.AggregateDecl{}, prog, model, prog.Symbols, "Notes", reg)
 	if err == nil {
 		t.Fatal("esperava erro de geração: nenhum Aggregate conhecido declara AppendList<Note>")
 	}
@@ -382,7 +382,7 @@ func TestEmitQueryListVOAmbiguousCandidatesFailsExplicitly(t *testing.T) {
 	reg := walletVOOperatorRegistryFromProgram(prog)
 
 	aggregates := map[string]*ast.AggregateDecl{"Board1": board1, "Board2": board2}
-	_, err := codegen.EmitQuery("notes", query, aggregates, model, prog.Symbols, "Notes", reg)
+	_, err := codegen.EmitQuery("notes", query, aggregates, prog, model, prog.Symbols, "Notes", reg)
 	if err == nil {
 		t.Fatal("esperava erro de geração: 2 Aggregates candidatos (Board1, Board2) para AppendList<Note> é ambíguo")
 	}

@@ -1,0 +1,40 @@
+package docs
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	time "time"
+)
+
+// GetContentUrl é a Query GetContentUrl (§6.3): leitura pura, sem unit of work.
+func GetContentUrl(ctx context.Context, store runtime.EventStore, id DocId) (string, error) {
+	var zero string
+	tmp1, err := LoadDocument(runtime.NewEventLoader(ctx, store), id)
+	if err != nil {
+		return zero, err
+	}
+	doc := tmp1
+	if !(doc != nil) {
+		return zero, ErrDocumentNotFound
+	}
+	return fileStorages["ContentStorage"].SignedURL(ctx, doc.state.Content, time.Duration(900000000000)), nil
+}
+
+// DownloadContent é a Query DownloadContent (§6.3): leitura pura, sem unit of work.
+func DownloadContent(ctx context.Context, store runtime.EventStore, id DocId) (runtime.File, error) {
+	var zero runtime.File
+	tmp1, err := LoadDocument(runtime.NewEventLoader(ctx, store), id)
+	if err != nil {
+		return zero, err
+	}
+	doc := tmp1
+	if !(doc != nil) {
+		return zero, ErrDocumentNotFound
+	}
+	tmp2, err := fileStorages["ContentStorage"].Load(ctx, doc.state.Content)
+	if err != nil {
+		return zero, err
+	}
+	file := tmp2
+	return file, nil
+}

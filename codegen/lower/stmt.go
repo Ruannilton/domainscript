@@ -386,15 +386,16 @@ func (sl *StmtLowerer) hoistSubtree(e ast.Expr, ctx StmtContext) (ast.Expr, []st
 }
 
 // hoistQueryExpr trata *ast.QueryExpr dentro de hoistSubtree (E5.3,
-// builtins.go, REQ-22.7(a)): load/list/count SEMPRE precisam de hoisting — a
-// chamada Go que os substitui devolve (_, error), que não cabe em posição de
-// expressão pura (mesmo motivo de needsHoistVOConstruct/hoistVOConstruct,
-// agora para os seams de persistência do runtime em vez de New<VO>). exists
-// é uma expressão pura (boolean, nunca falha por si) — só desce
-// recursivamente no Target. store/call/delete (ops de arquivo, G1a) não são
-// reescritos aqui: devolvidos como estão, e Lowerer.Expr (via
-// BuiltinLowerer.QueryExprPure) emite o erro claro de fora-de-escopo se algum
-// dia forem alcançados nesta posição.
+// builtins.go, REQ-22.7(a)/(b)): load/list/count/store SEMPRE precisam de
+// hoisting — a chamada Go que os substitui devolve (_, error), que não cabe
+// em posição de expressão pura (mesmo motivo de needsHoistVOConstruct/
+// hoistVOConstruct, agora para os seams de persistência do runtime em vez de
+// New<VO>). exists é uma expressão pura (boolean, nunca falha por si) — só
+// desce recursivamente no Target. "delete file(ref)" (G1a) não é reescrito
+// aqui: só é suportado como STATEMENT solto (queryExprStmt/deleteFileStmt,
+// abaixo) — não faz sentido de negócio usá-lo como sub-expressão (Delete não
+// produz valor algum, só error). "call" não é reescrito aqui: continua fora
+// do escopo desta task (ver a doc de BuiltinLowerer.QueryExprPure).
 func (sl *StmtLowerer) hoistQueryExpr(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	switch n.Op {
 	case "load":
@@ -403,6 +404,8 @@ func (sl *StmtLowerer) hoistQueryExpr(n *ast.QueryExpr, ctx StmtContext) (ast.Ex
 		return sl.hoistList(n, ctx)
 	case "count":
 		return sl.hoistCount(n, ctx)
+	case "store":
+		return sl.hoistStore(n, ctx)
 	case "exists":
 		target, hoisted, err := sl.hoistSubtree(n.Target, ctx)
 		if err != nil {
@@ -438,6 +441,9 @@ func (sl *StmtLowerer) hoistLoad(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 	if !ok || len(call.Args) != 1 {
 		return nil, nil, fmt.Errorf("codegen: load ...: forma inesperada de Target (%T) — esperava \"load T(id)\"", n.Target)
 	}
+	if fnIdent, ok := call.Fn.(*ast.Ident); ok && fnIdent.Name == "File" {
+		return sl.hoistLoadFile(call, n, ctx)
+	}
 
 	t, err := sl.env.InferAssignRHS(n)
 	if err != nil {
@@ -457,6 +463,72 @@ func (sl *StmtLowerer) hoistLoad(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 	sl.bindTmp(tmp, t)
 	lines := append(idHoisted,
 		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.LoadCall(t.String(), idGo)),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// hoistLoadFile traduz "load File(ref)" (§2.5, G1a — o caso especial de
+// hoistLoad em que o Target nomeia o tipo OPACO embutido "File", não um
+// Aggregate) para "tmpN, err := <FileStorage>.Load(<ctx>, <refGo>); if err
+// != nil { <ctx.ExitOnError> }" — devolve runtime.File (types.Primitive
+// "File", ver env.go/inferQueryExpr). call é o CallExpr já extraído por
+// hoistLoad (Target de n); o único argumento é a FileRef a carregar.
+func (sl *StmtLowerer) hoistLoadFile(call *ast.CallExpr, n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	if len(call.Args) != 1 {
+		return nil, nil, fmt.Errorf("codegen: load File(...): esperava exatamente 1 argumento (a FileRef), recebeu %d", len(call.Args))
+	}
+
+	refExpr, refHoisted, err := sl.hoistSubtree(call.Args[0].Value, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	refGo, err := sl.Expr(refExpr)
+	if err != nil {
+		return nil, nil, err
+	}
+	callGo, err := sl.builtins.LoadFileCall(call.Args[0].Value, refGo)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tmp := sl.newTmp()
+	sl.bindTmp(tmp, &types.Primitive{Name: "File"})
+	lines := append(refHoisted,
+		fmt.Sprintf("%s, err := %s", tmp, callGo),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// hoistStore traduz "store <file>" (§2.5, G1a) para "tmpN, err :=
+// <FileStorage>.Store(<ctx>, <fileGo>); if err != nil { <ctx.ExitOnError> }"
+// — devolve runtime.FileRef (types.Primitive "FileRef", já inferido por
+// env.go/inferQueryExpr desde E5.0). n.Target é o valor File a armazenar
+// (ex. "cmd.content") — também a Expr que decide QUAL FileStorage usar
+// (BuiltinLowerer.resolveFileStorageName, por nome de campo).
+func (sl *StmtLowerer) hoistStore(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	if sl.builtins == nil {
+		return nil, nil, fmt.Errorf("codegen: store ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (G1a)")
+	}
+
+	fileExpr, fileHoisted, err := sl.hoistSubtree(n.Target, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	fileGo, err := sl.Expr(fileExpr)
+	if err != nil {
+		return nil, nil, err
+	}
+	callGo, err := sl.builtins.StoreCall(n.Target, fileGo)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tmp := sl.newTmp()
+	sl.bindTmp(tmp, &types.Primitive{Name: "FileRef"})
+	lines := append(fileHoisted,
+		fmt.Sprintf("%s, err := %s", tmp, callGo),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
@@ -1154,10 +1226,20 @@ func findHandleDecl(decl *ast.AggregateDecl, name string) *ast.HandleDecl {
 // exprStmt traduz um *ast.ExprStmt cujo X é uma chamada: método embutido
 // (goname.GoBuiltinCall, ex. AppendList.add, exercitado por Apply do wallet
 // real: "state.entries.add(StatementEntry(...))") ou dispatch de Handle de
-// Aggregate (E7.2, ex. "wallet.Deposit(...)" — ver handleDispatchCall).
-// Built-ins de Query (load/list/count/exists) são E5.3, tratados dentro do
-// mecanismo de hoisting (hoistQueryExpr), não aqui.
+// Aggregate (E7.2, ex. "wallet.Deposit(...)" — ver handleDispatchCall). Um X
+// que é *ast.QueryExpr (ex. "delete file(ref)", §2.5, G1a) é a única forma de
+// operação de domínio usada como STATEMENT solto (load/list/count/exists são
+// sempre valor — hoisting, hoistQueryExpr) — ver queryExprStmt.
 func (sl *StmtLowerer) exprStmt(s *ast.ExprStmt) error {
+	if qe, ok := s.X.(*ast.QueryExpr); ok {
+		lines, err := sl.queryExprStmt(qe)
+		if err != nil {
+			return err
+		}
+		sl.emitLines(lines)
+		return nil
+	}
+
 	call, ok := s.X.(*ast.CallExpr)
 	if !ok {
 		return fmt.Errorf("codegen: ExprStmt de %T não suportado por StmtLowerer (E5.2)", s.X)
@@ -1175,6 +1257,56 @@ func (sl *StmtLowerer) exprStmt(s *ast.ExprStmt) error {
 	}
 	sl.emitLines(lines)
 	return nil
+}
+
+// queryExprStmt traduz um *ast.QueryExpr usado como STATEMENT solto (§2.5,
+// G1a): hoje só "delete file(ref)" tem essa forma (Delete não produz valor
+// algum, só error — nunca cabe em posição de expressão/atribuição). Qualquer
+// outro Op alcançando aqui (ex. "wallet exists" solto, sem "ensure" ao redor)
+// é erro de geração claro — não suportado por esta task.
+func (sl *StmtLowerer) queryExprStmt(n *ast.QueryExpr) ([]string, error) {
+	switch n.Op {
+	case "delete":
+		return sl.deleteFileStmt(n)
+	default:
+		return nil, fmt.Errorf("codegen: %s ... como statement solto não é suportado (E5.2/G1a só cobre \"delete file(ref)\")", n.Op)
+	}
+}
+
+// deleteFileStmt traduz "delete file(ref)" (§2.5, G1a) para "if err :=
+// <FileStorage>.Delete(<ctx>, <refGo>); err != nil { <ctx.ExitOnError> }".
+// n.Target precisa ser exatamente "file(ref)" — um CallExpr cujo Fn é o
+// Ident literal "file" (o marcador fixo da forma, §2.5; não um tipo/local
+// declarado) com exatamente 1 argumento posicional (a FileRef a remover).
+func (sl *StmtLowerer) deleteFileStmt(n *ast.QueryExpr) ([]string, error) {
+	if sl.builtins == nil {
+		return nil, fmt.Errorf("codegen: delete file(...): BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (G1a)")
+	}
+	call, ok := n.Target.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return nil, fmt.Errorf("codegen: delete ...: esperava \"delete file(ref)\", forma inesperada de alvo (%T)", n.Target)
+	}
+	fnIdent, ok := call.Fn.(*ast.Ident)
+	if !ok || fnIdent.Name != "file" {
+		return nil, fmt.Errorf("codegen: delete ...: esperava o marcador \"file\" (ex. \"delete file(ref)\"), got %T", call.Fn)
+	}
+
+	refExpr, refHoisted, err := sl.hoistSubtree(call.Args[0].Value, sl.ctx)
+	if err != nil {
+		return nil, err
+	}
+	refGo, err := sl.Expr(refExpr)
+	if err != nil {
+		return nil, err
+	}
+	callGo, err := sl.builtins.DeleteFileCall(call.Args[0].Value, refGo)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(refHoisted,
+		fmt.Sprintf("if err := %s; err != nil { %s }", callGo, sl.ctx.ExitOnError("err")),
+	), nil
 }
 
 // notifyOrCallStmt reconhece "Xxx(args...)" como ExprStmt onde Xxx nomeia uma

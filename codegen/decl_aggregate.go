@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/codegen/lower"
@@ -288,7 +289,18 @@ func emitApply(e *emit.Emitter, decl *ast.AggregateDecl, a *ast.ApplyDecl, model
 
 	var bodyErr error
 	e.Block(sig, func() {
-		e.Line("state := &%s.state", receiver)
+		// "state := &receiver.state" só é declarado quando o corpo de fato usa
+		// "state" — um Apply de um evento puramente de MARCAÇÃO/auditoria (ex.
+		// "ContentRemoved" do exemplo G1a, cujo Apply não muta campo algum: o
+		// arquivo já foi removido da FileStorage por "delete file", nada no
+		// state precisa mudar) tem um corpo VAZIO ou que não referencia
+		// "state" nenhuma vez — "declared and not used" seria erro de
+		// compilação Go se a declaração fosse incondicional (gap descoberto
+		// por G1a: nenhuma fixture anterior tinha um Apply que não mutasse
+		// state).
+		if blockReferencesIdent(a.Body, "state") {
+			e.Line("state := &%s.state", receiver)
+		}
 
 		ctx := lower.StmtContext{Panics: true}
 		sl := lower.NewStmtLowerer(l, e, ctx)
@@ -297,6 +309,19 @@ func emitApply(e *emit.Emitter, decl *ast.AggregateDecl, a *ast.ApplyDecl, model
 		}
 	})
 	return bodyErr
+}
+
+// blockReferencesIdent reporta se b contém, em qualquer profundidade, um
+// *ast.Ident de nome exatamente name — usado por emitApply para decidir se
+// precisa declarar o ponteiro local "state" (ver a doc ali).
+func blockReferencesIdent(b *ast.Block, name string) bool {
+	found := false
+	astutil.ForEachExprInBlock(b, func(e ast.Expr) {
+		if astutil.IsIdent(e, name) {
+			found = true
+		}
+	})
+	return found
 }
 
 // --- Condição de access: caso especial "caller.X == <VO wrapper>" (§7 do

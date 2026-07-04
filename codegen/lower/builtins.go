@@ -23,9 +23,15 @@ import (
 //     "X != nil" sobre um Aggregate já carregado; a semântica completa
 //     (infra vs. não-encontrado vs. idempotência) é G2.
 //
-// Ops de arquivo (store/signed_url/delete file/load File(ref), §2.5) ficam
-// de fora — dependem do seam FileStorage do mod.ds e entram com G1a
-// (REQ-22.7(b)).
+// Ops de arquivo (store/signed_url/delete file/load File(ref), §2.5, G1a,
+// REQ-22.7(b)) — abaixo, seção 4: `store`/`delete file`/`load File(ref)`
+// sempre precisam de hoisting (devolvem (_, error) em Go — o mesmo motivo de
+// load/list/count) e vivem, respectivamente, em StmtLowerer.hoistStore/
+// deleteFileStmt/hoistLoadFile (stmt.go); `signed_url` é a exceção: o runtime
+// (rtsrc/filestorage.go.txt) o expõe como INFALÍVEL (só "string", sem
+// error — coerente com o retorno declarado no spec, "signed_url(ref,
+// expires:) -> string"), então cabe direto aqui, em CallFunc, como
+// now()/uuid()/random(...).
 //
 // O mecanismo de HOISTING de load/list/count (porque a chamada Go que os
 // substitui devolve (_, error), que não cabe em posição de expressão pura)
@@ -35,12 +41,14 @@ import (
 // hoistear é do StmtLowerer.
 
 // BuiltinLowerer traduz as built-ins do núcleo (§2.6 do spec da linguagem,
-// REQ-22.7(a)) para chamadas Go: now/uuid/random/random_str (runtime, sem
-// dependência), load/list/count/exists (operações de domínio, contra os
-// seams de persistência do runtime — REQ-22.7(b), as ops de arquivo, ficam
-// para G1a). Usa os mesmos ctxGoName/storeGoName em toda chamada — nomes
-// configuráveis (o Emitter que compõe o corpo final decide os nomes reais
-// dos parâmetros ctx/tx, esta task só usa o que for passado).
+// REQ-22.7(a)) e as ops de arquivo (§2.5, REQ-22.7(b), G1a) para chamadas Go:
+// now/uuid/random/random_str (runtime, sem dependência), load/list/count/
+// exists (operações de domínio, contra os seams de persistência do runtime),
+// store/signed_url/delete file/load File(ref) (contra o seam FileStorage,
+// roteado por fileStorageByField/fileStorageDefault). Usa os mesmos
+// ctxGoName/storeGoName em toda chamada — nomes configuráveis (o Emitter que
+// compõe o corpo final decide os nomes reais dos parâmetros ctx/tx, esta
+// task só usa o que for passado).
 type BuiltinLowerer struct {
 	runtimeAlias string // alias do import do runtime vendorado (ex. "runtime", via emit.Emitter.Import)
 	ctxGoName    string // nome Go do parâmetro de contexto (ex. "ctx")
@@ -54,6 +62,31 @@ type BuiltinLowerer struct {
 	// storeGoName — nenhuma mudança para UseCases de um único banco (Marco
 	// E/F).
 	storeGoNameFor func(typeName string) string
+	// fileStorageByField/fileStorageDefault roteiam store/signed_url/delete
+	// file/load File(ref) (G1a, §2.5) para o FileStorage certo — anexados via
+	// WithFileStorage. Ambos vazios (o default) preserva o comportamento de
+	// antes de G1a: qualquer op de arquivo falha com um erro claro de
+	// roteamento (ver resolveFileStorageName) em vez de gerar Go quebrado.
+	fileStorageByField map[string]string
+	fileStorageDefault string
+	// wrapLoadWithEventLoader, quando true, faz LoadCall envolver storeGoName
+	// num "<runtimeAlias>.NewEventLoader(<ctxGoName>, <storeGoName>)" em vez
+	// de usá-lo cru — o adaptador que runtime.EventStore precisa para
+	// satisfazer runtime.EventLoader (codegen/rtsrc/eventloader.go.txt),
+	// necessário quando o "store" do construto NÃO é já um EventLoader/Tx por
+	// si: o caso de Query (BuiltinLowerer aqui recebe "store", um
+	// runtime.EventStore cru — ao contrário de UseCase, cujo "tx" é
+	// runtime.Tx, que satisfaz EventLoader estruturalmente sem wrapper
+	// nenhum). Habilitado por WithEventLoaderWrapping (decl_query.go) — gap
+	// pré-existente descoberto por G1a: toda Query real anterior só usava
+	// "load T(id) as View" (decl_query.go/emitLoadAsView, que já monta esse
+	// MESMO wrapper à mão, texto hardcoded) — um "load T(id)" NU, sem "as",
+	// dentro de um corpo de Query nunca tinha sido exercitado antes. Só se
+	// aplica a Aggregate EventSourced (mesma suposição implícita, nunca
+	// documentada antes, que emitLoadAsView já fazia) — StateStored dentro de
+	// Query continua fora do escopo (nenhuma fixture, real ou sintética,
+	// precisa disso ainda).
+	wrapLoadWithEventLoader bool
 }
 
 // NewBuiltinLowerer cria um BuiltinLowerer sobre runtimeAlias (alias já
@@ -76,14 +109,141 @@ func (b *BuiltinLowerer) WithPerAggregateStore(f func(typeName string) string) *
 	return b
 }
 
-// store devolve o nome Go do parâmetro de acesso à persistência a usar para
-// typeName: storeGoNameFor(typeName) quando roteado (G1, 2PC), senão o
-// storeGoName fixo (Marco E/F, todo o resto do gerador).
+// store devolve a expressão Go de acesso à persistência a usar para
+// typeName, na ordem: storeGoNameFor(typeName) quando roteado (G1, 2PC);
+// senão, storeGoName envolto em runtime.NewEventLoader quando
+// wrapLoadWithEventLoader está ligado (Query, ver a doc do campo); senão,
+// storeGoName cru (Marco E/F, todo o resto do gerador).
 func (b *BuiltinLowerer) store(typeName string) string {
 	if b.storeGoNameFor != nil {
 		return b.storeGoNameFor(typeName)
 	}
+	if b.wrapLoadWithEventLoader {
+		return fmt.Sprintf("%s.NewEventLoader(%s, %s)", b.runtimeAlias, b.ctxGoName, b.storeGoName)
+	}
 	return b.storeGoName
+}
+
+// WithEventLoaderWrapping liga wrapLoadWithEventLoader (encadeável) — ver a
+// doc do campo. Usado só por decl_query.go (Query.Body): o "store" ali é um
+// runtime.EventStore cru, que precisa do adaptador runtime.NewEventLoader
+// para satisfazer o parâmetro runtime.EventLoader de Load<Aggregate>.
+func (b *BuiltinLowerer) WithEventLoaderWrapping() *BuiltinLowerer {
+	b.wrapLoadWithEventLoader = true
+	return b
+}
+
+// WithFileStorage anexa o roteamento de FileStorage (G1a, §2.5, REQ-22.7(b))
+// a b: byField mapeia nome de campo (do bloco storage{} de QUALQUER
+// Aggregate do módulo — ver codegen/decl_aggregate_storage.go,
+// moduleFileStorageRouting) para o nome do FileStorage declarado em mod.ds;
+// defaultName (pode ser "") é o nome da ÚNICA FileStorage do módulo, usado
+// quando o alvo de uma operação não é um MemberExpr reconhecível ou seu
+// campo não bate com nenhuma entrada de byField. Devolve o próprio b
+// (encadeável, mesmo padrão de WithPerAggregateStore).
+func (b *BuiltinLowerer) WithFileStorage(byField map[string]string, defaultName string) *BuiltinLowerer {
+	b.fileStorageByField = byField
+	b.fileStorageDefault = defaultName
+	return b
+}
+
+// resolveFileStorageName decide, para o alvo de uma operação de arquivo
+// (Target de "store"/"delete file(ref)"/"load File(ref)", ou o 1º argumento
+// de "signed_url"), qual FileStorage (nome declarado em mod.ds) atende essa
+// operação (§2.5): (1) se target é um MemberExpr cujo Name bate com uma
+// entrada de fileStorageByField (o campo roteado pelo storage{} de algum
+// Aggregate do módulo) — a resposta mais específica, e a única que desambigua
+// quando o módulo declara 2+ FileStorage; (2) senão, fileStorageDefault,
+// quando o módulo declara exatamente 1 FileStorage; (3) erro claro em
+// qualquer outro caso — nunca uma escolha silenciosa (REQ-14.4).
+func (b *BuiltinLowerer) resolveFileStorageName(target ast.Expr) (string, error) {
+	if mem, ok := target.(*ast.MemberExpr); ok {
+		if name, ok := b.fileStorageByField[mem.Name]; ok {
+			return name, nil
+		}
+	}
+	if b.fileStorageDefault != "" {
+		return b.fileStorageDefault, nil
+	}
+	return "", fmt.Errorf("codegen: não consegui determinar qual FileStorage usar (§2.5): o alvo desta operação não corresponde a nenhum campo roteado pelo bloco storage{} de um Aggregate do módulo, e o módulo não declara uma única FileStorage sem ambiguidade — WithFileStorage nunca foi anexado, ou o mod.ds declara 0 ou 2+ FileStorage sem uma rota de campo que bata")
+}
+
+// fileStorageGoExpr devolve o texto Go de acesso à instância de FileStorage
+// resolvida para target (ver resolveFileStorageName): "fileStorages[%q]",
+// indexando o registro wired pelo módulo (ver codegen/decl_usecase.go,
+// emitFileStorageWiring — G1a).
+func (b *BuiltinLowerer) fileStorageGoExpr(target ast.Expr) (string, error) {
+	name, err := b.resolveFileStorageName(target)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("fileStorages[%q]", name), nil
+}
+
+// StoreCall devolve o texto Go (sem "tmp, err :=") de "store <file>" (§2.5):
+// "<FileStorage>.Store(<ctx>, <fileGo>)" — devolve (runtime.FileRef, error),
+// SEMPRE hoisted (StmtLowerer.hoistStore, stmt.go). target é a Expr ORIGINAL
+// de QueryExpr.Target (ex. "cmd.content") — usada só para resolver QUAL
+// FileStorage (resolveFileStorageName); fileGo já é o texto Go pronto do
+// arquivo a armazenar, produzido pelo chamador.
+func (b *BuiltinLowerer) StoreCall(target ast.Expr, fileGo string) (string, error) {
+	storageGo, err := b.fileStorageGoExpr(target)
+	if err != nil {
+		return "", fmt.Errorf("codegen: store %s: %w", fileGo, err)
+	}
+	return fmt.Sprintf("%s.Store(%s, %s)", storageGo, b.ctxGoName, fileGo), nil
+}
+
+// LoadFileCall devolve o texto Go de "load File(ref)" (§2.5):
+// "<FileStorage>.Load(<ctx>, <refGo>)" — devolve (runtime.File, error),
+// SEMPRE hoisted (StmtLowerer.hoistLoadFile). refExpr é a Expr ORIGINAL do
+// argumento (ex. "doc.state.content") — só para roteamento.
+func (b *BuiltinLowerer) LoadFileCall(refExpr ast.Expr, refGo string) (string, error) {
+	storageGo, err := b.fileStorageGoExpr(refExpr)
+	if err != nil {
+		return "", fmt.Errorf("codegen: load File(%s): %w", refGo, err)
+	}
+	return fmt.Sprintf("%s.Load(%s, %s)", storageGo, b.ctxGoName, refGo), nil
+}
+
+// DeleteFileCall devolve o texto Go de "delete file(ref)" (§2.5):
+// "<FileStorage>.Delete(<ctx>, <refGo>)" — devolve só error, propagado como
+// um statement solto (StmtLowerer.deleteFileStmt), nunca em posição de
+// expressão pura.
+func (b *BuiltinLowerer) DeleteFileCall(refExpr ast.Expr, refGo string) (string, error) {
+	storageGo, err := b.fileStorageGoExpr(refExpr)
+	if err != nil {
+		return "", fmt.Errorf("codegen: delete file(%s): %w", refGo, err)
+	}
+	return fmt.Sprintf("%s.Delete(%s, %s)", storageGo, b.ctxGoName, refGo), nil
+}
+
+// signedURLCall traduz "signed_url(ref, expires: <duração>)" (§2.5) para
+// "<FileStorage>.SignedURL(<ctx>, <refGo>, <expiresGo>)" — devolve só
+// "string" (SEM error, ver rtsrc/filestorage.go.txt: uma signed URL é
+// derivada deterministicamente da FileRef + expiração, sem round-trip ao
+// backend), então cabe direto em posição de expressão pura (chamada por
+// CallFunc, como now()/uuid()) — ao contrário de store/load File/delete
+// file, que sempre falham de verdade em Go e por isso vivem em stmt.go.
+// Exige exatamente 2 argumentos: o 1º posicional (a FileRef) e "expires"
+// nomeado (uma duração); qualquer outra forma é erro de geração claro.
+func (b *BuiltinLowerer) signedURLCall(l *Lowerer, args []ast.Arg) (string, error) {
+	if len(args) != 2 || args[0].Name != "" || args[1].Name != "expires" {
+		return "", fmt.Errorf("codegen: signed_url(...): esperava (ref, expires: <duração>), forma recebida não bate")
+	}
+	refGo, err := l.Expr(args[0].Value)
+	if err != nil {
+		return "", err
+	}
+	expiresGo, err := l.Expr(args[1].Value)
+	if err != nil {
+		return "", err
+	}
+	storageGo, err := b.fileStorageGoExpr(args[0].Value)
+	if err != nil {
+		return "", fmt.Errorf("codegen: signed_url(%s, ...): %w", refGo, err)
+	}
+	return fmt.Sprintf("%s.SignedURL(%s, %s, %s)", storageGo, b.ctxGoName, refGo, expiresGo), nil
 }
 
 // --- 1. now()/uuid()/random(min,max)/random_str(length) — CallExpr. ---
@@ -109,6 +269,10 @@ var builtinFuncArity = map[string]int{
 // geração de verdade (aridade errada, argumento nomeado) que o chamador deve
 // propagar, não ignorar.
 func (b *BuiltinLowerer) CallFunc(l *Lowerer, name string, args []ast.Arg) (goExpr string, handled bool, err error) {
+	if name == "signed_url" {
+		goExpr, err := b.signedURLCall(l, args)
+		return goExpr, true, err
+	}
 	want, known := builtinFuncArity[name]
 	if !known {
 		return "", false, nil
@@ -148,21 +312,25 @@ func (b *BuiltinLowerer) CallFunc(l *Lowerer, name string, args []ast.Arg) (goEx
 // valor, nunca falha). Chamada por Lowerer.queryExpr (expr.go).
 //
 //   - "exists" → "<X> != nil" (existsExpr).
-//   - "load"/"list"/"count" → erro claro: essas formas devolvem (_, error)
-//     em Go e SÓ são suportadas via hoisting em nível de statement
-//     (StmtLowerer.hoistQueryExpr, stmt.go, intercepta ANTES de chegar
-//     aqui — ver exprHoisted/hoistSubtree). Alcançar este ramo significa que
-//     o chamador não passou por hoisting (bug de geração).
-//   - "store"/"call"/"delete" (ops de arquivo, §2.5) → fora de escopo desta
-//     task: dependem do seam FileStorage do mod.ds, G1a (REQ-22.7(b)).
+//   - "load"/"list"/"count"/"store"/"delete" → erro claro: essas formas
+//     devolvem (_, error) em Go e SÓ são suportadas via hoisting em nível de
+//     statement (StmtLowerer.hoistQueryExpr/hoistStore/hoistLoadFile/
+//     deleteFileStmt, stmt.go, interceptam ANTES de chegar aqui — ver
+//     exprHoisted/hoistSubtree). Alcançar este ramo significa que o
+//     chamador não passou por hoisting (bug de geração).
+//   - "call" (chamada síncrona via Adapter/Notification, §18.2) → fora do
+//     escopo de G1a: o mecanismo de F4 (decl_io.go) reconhece "Xxx(...)"
+//     como notify/call por FORMA (CallExpr sobre um nome de Notification),
+//     não via QueryExpr.Op "call" — esta forma nunca foi implementada e
+//     continua fora do escopo desta task.
 func (b *BuiltinLowerer) QueryExprPure(l *Lowerer, n *ast.QueryExpr) (string, error) {
 	switch n.Op {
 	case "exists":
 		return b.existsExpr(l, n)
-	case "load", "list", "count":
-		return "", fmt.Errorf("codegen: %s ... em posição de expressão pura não é suportado por Lowerer.Expr — devolve (_, error) e precisa de hoisting em nível de statement (StmtLowerer intercepta antes de chamar Lowerer.Expr; ver hoistQueryExpr em stmt.go, E5.3)", n.Op)
-	case "store", "call", "delete":
-		return "", fmt.Errorf("codegen: QueryExpr.Op %q (operação de arquivo) fica para G1a (depende do seam FileStorage do mod.ds) — fora do escopo do núcleo transacional (E5.3, REQ-22.7(b))", n.Op)
+	case "load", "list", "count", "store", "delete":
+		return "", fmt.Errorf("codegen: %s ... em posição de expressão pura não é suportado por Lowerer.Expr — devolve (_, error) e precisa de hoisting em nível de statement (StmtLowerer intercepta antes de chamar Lowerer.Expr; ver hoistQueryExpr/hoistStore/deleteFileStmt em stmt.go)", n.Op)
+	case "call":
+		return "", fmt.Errorf("codegen: QueryExpr.Op %q (chamada síncrona via Adapter/Notification) não é suportado — fora do escopo de G1a", n.Op)
 	default:
 		return "", fmt.Errorf("codegen: QueryExpr.Op desconhecido: %q", n.Op)
 	}

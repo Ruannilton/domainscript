@@ -6,12 +6,14 @@ import (
 )
 
 // Module é um módulo de domínio agregado: a declaração de mod.ds, os bancos de
-// dados que ele configura e o service que o hospeda na topologia (REQ-7.2).
+// dados que ele configura, as FileStorage que ele configura e o service que o
+// hospeda na topologia (REQ-7.2).
 type Module struct {
-	Name      string
-	Decl      *ast.ModuleDecl      // declaração em mod.ds (nil se ausente)
-	Databases map[string]*Database // por nome de banco
-	Service   string               // service dono (de topology.ds), "" se nenhum
+	Name         string
+	Decl         *ast.ModuleDecl         // declaração em mod.ds (nil se ausente)
+	Databases    map[string]*Database    // por nome de banco
+	FileStorages map[string]*FileStorage // por nome de FileStorage (§2.5, G1a)
+	Service      string                  // service dono (de topology.ds), "" se nenhum
 }
 
 // Database é um banco configurado num mod.ds (§12): suporte a XA (transação
@@ -37,6 +39,20 @@ type Database struct {
 	// espírito de httpPortGo em codegen/codegen.go).
 	DSN  string
 	Decl *ast.ConfigBlock
+}
+
+// FileStorage é um seam de armazenamento de arquivo configurado num mod.ds
+// (§2.5, G1a): o bloco storage {} de um Aggregate roteia cada campo FileRef
+// do seu state para uma FileStorage declarada aqui (por nome) — ao contrário
+// de Database, que é referenciado a partir de "manages" (a lista fica no
+// Database), uma FileStorage não lista os Aggregates que a usam: quem aponta
+// para ela é o storage{} de CADA Aggregate (ver codegen/decl_aggregate_storage.go,
+// a primeira autoridade a interpretar essa referência — o front-end nunca a
+// resolve, mesma situação de Database.Provider acima).
+type FileStorage struct {
+	Name   string
+	Module string
+	Decl   *ast.ConfigBlock
 }
 
 // Service é um service da topologia (§11): agrupa módulos. Um service =
@@ -111,19 +127,25 @@ func (p *Program) buildGraph() {
 // newModule extrai o modelo de um módulo de sua ModuleDecl, incluindo os bancos
 // declarados (blocos Database) com supportsXA e a lista manages.
 func newModule(m *ast.ModuleDecl) *Module {
-	mod := &Module{Name: m.Name, Decl: m, Databases: make(map[string]*Database)}
+	mod := &Module{Name: m.Name, Decl: m, Databases: make(map[string]*Database), FileStorages: make(map[string]*FileStorage)}
 	for _, b := range m.Blocks {
-		if b.Kind != "Database" {
-			continue
-		}
-		mod.Databases[b.Name] = &Database{
-			Name:       b.Name,
-			Module:     m.Name,
-			SupportsXA: boolValue(entry(b.Entries, "supportsXA")),
-			Manages:    identList(entry(b.Entries, "manages")),
-			Provider:   stringValue(entry(b.Entries, "provider")),
-			DSN:        stringValue(entry(b.Entries, "dsn")),
-			Decl:       b,
+		switch b.Kind {
+		case "Database":
+			mod.Databases[b.Name] = &Database{
+				Name:       b.Name,
+				Module:     m.Name,
+				SupportsXA: boolValue(entry(b.Entries, "supportsXA")),
+				Manages:    identList(entry(b.Entries, "manages")),
+				Provider:   stringValue(entry(b.Entries, "provider")),
+				DSN:        stringValue(entry(b.Entries, "dsn")),
+				Decl:       b,
+			}
+		case "FileStorage":
+			mod.FileStorages[b.Name] = &FileStorage{
+				Name:   b.Name,
+				Module: m.Name,
+				Decl:   b,
+			}
 		}
 	}
 	return mod

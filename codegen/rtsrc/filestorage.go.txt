@@ -1,0 +1,154 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sync"
+	"time"
+)
+
+// filestorage.go.txt é o seam de ops de arquivo (G1a, spec §2.5,
+// REQ-22.7(b)/REQ-25/REQ-26): File/FileRef/FileStream (as structs opacas que
+// codegen/goname.GoPrimitive já mapeia "File"/"FileRef"/"FileStream" para,
+// desde E1.3) e a interface FileStorage, atrás da qual `store`/`signed_url`/
+// `delete file`/`load File(ref)` (codegen/lower/builtins.go) rodam. A
+// implementação in-memory abaixo (memoryFileStorage) é o default sem
+// dependência externa — o mesmo espírito de NewMemoryEventStore
+// (eventstore.go.txt, Marco E): um backend real (S3/GCS/Azure Blob/...)
+// entra atrás desta MESMA interface em marco posterior, opt-in (NFR-12),
+// sem qualquer mudança no codegen que a consome.
+
+// File é o conteúdo TRANSITÓRIO de um arquivo (spec §2.5): usado em Commands
+// e processamento de curta duração ("cmd.document File") — carregado
+// inteiro em memória. Nunca vive no state de um Aggregate (isso é FileRef).
+type File struct {
+	Name        string
+	ContentType string
+	Size        int64
+	Metadata    map[string]string
+	Buffer      []byte
+}
+
+// FileRef é a referência LEVE que vive no state de um Aggregate (spec §2.5):
+// nunca carrega bytes implicitamente — só o suficiente para localizar o
+// conteúdo dentro da FileStorage que o produziu (ID) e o metadado exibível
+// sem round-trip (Name/ContentType/Size/Metadata/StoredAt). Roteada por
+// campo via o bloco `storage {}` de um Aggregate (ver
+// codegen/decl_aggregate_storage.go) — persiste como qualquer outro campo de
+// state/evento (JSON determinístico, mesma convenção de E4.2), nunca precisa
+// de tratamento especial de persistência: só os BYTES vivem na FileStorage.
+type FileRef struct {
+	ID          string
+	Name        string
+	ContentType string
+	Size        int64
+	Metadata    map[string]string
+	StoredAt    time.Time
+}
+
+// FileStream é a variante para arquivos grandes (spec §2.5): upload/download
+// chunk-a-chunk. Reader só é válido durante a chamada que o produziu (ex.
+// dentro de um único handler HTTP) — não deve ser retido além disso. Nenhuma
+// operação de builtins.go opera sobre FileStream hoje (G1a cobre só
+// store/signed_url/delete file/load File(ref), todas sobre File/FileRef); o
+// tipo existe para que Command/Event possam declarar um campo FileStream
+// (E1.3 já mapeia o nome para este struct).
+type FileStream struct {
+	Name        string
+	ContentType string
+	Reader      io.Reader
+}
+
+// FileStorage é o seam por trás de store/signed_url/delete file/load
+// File(ref) (spec §2.5): onde os BYTES de um FileRef do state de um
+// Aggregate de fato vivem, roteada por campo pelo bloco storage{} do
+// Aggregate (declarado em mod.ds — §2.5, codegen/decl_aggregate_storage.go).
+// Um módulo pode declarar mais de uma FileStorage (ex. avatar/document do
+// exemplo do spec) — cada uma é uma instância independente deste seam,
+// injetada por nome (ver o registro "fileStorages", codegen/decl_filestorage.go).
+type FileStorage interface {
+	// Store faz upload de f e devolve a FileRef que o domínio guarda (§2.5:
+	// "store cmd.file" → FileRef automaticamente).
+	Store(ctx context.Context, f File) (FileRef, error)
+	// Load carrega os bytes de ref explicitamente (§2.5: "load File(ref)").
+	// Um ref desconhecido (nunca armazenado, ou já removido via Delete)
+	// devolve ErrNotFound.
+	Load(ctx context.Context, ref FileRef) (File, error)
+	// SignedURL gera uma URL temporária para ref, válida por expires (§2.5).
+	// Deliberadamente SEM error (ver a doc de rtsrc/filestorage.go.txt sobre
+	// por que): é derivada apenas da metadata já carregada em ref, sem
+	// round-trip ao backend — sempre "sucede" na forma exigida pelo tipo de
+	// retorno declarado no spec ("signed_url(ref, expires:) -> string").
+	SignedURL(ctx context.Context, ref FileRef, expires time.Duration) string
+	// Delete remove ref do storage — o ciclo de vida explícito do §2.5
+	// ("delete file(ref)", responsabilidade do dev). Remover um ref já
+	// removido (ou nunca armazenado) é sucesso idempotente, nunca erro.
+	Delete(ctx context.Context, ref FileRef) error
+}
+
+// memoryFileStorage é uma FileStorage in-memory, thread-safe, sem
+// dependência externa — o backend default (Marco G1a) até um provider real
+// (S3/GCS/...) ser vendorado atrás desta mesma interface.
+type memoryFileStorage struct {
+	mu    sync.RWMutex
+	files map[string]File
+}
+
+// NewMemoryFileStorage cria uma FileStorage in-memory vazia.
+func NewMemoryFileStorage() FileStorage {
+	return &memoryFileStorage{files: make(map[string]File)}
+}
+
+// Store implementa FileStorage: gera um ID novo (UUID v4, mesma fonte que o
+// resto do runtime usa — util.go.txt) a cada chamada, mesmo re-armazenando
+// bytes idênticos — cada Store é uma entidade nova, coerente com "upload"
+// (§2.5), nunca deduplicação implícita.
+func (s *memoryFileStorage) Store(ctx context.Context, f File) (FileRef, error) {
+	id := UUID()
+	ref := FileRef{
+		ID:          id,
+		Name:        f.Name,
+		ContentType: f.ContentType,
+		Size:        f.Size,
+		Metadata:    f.Metadata,
+		StoredAt:    Now(ctx),
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.files[id] = f
+	return ref, nil
+}
+
+// Load implementa FileStorage: ErrNotFound (runtime.go, reservado — mapeado
+// a HTTP 404 na borda) quando ref.ID nunca foi armazenado ou já foi
+// removido.
+func (s *memoryFileStorage) Load(ctx context.Context, ref FileRef) (File, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	f, ok := s.files[ref.ID]
+	if !ok {
+		return File{}, ErrNotFound
+	}
+	return f, nil
+}
+
+// SignedURL implementa FileStorage: uma URL determinística derivada só de
+// ref+expires+Now(ctx) — nenhum round-trip ao mapa de bytes (ver a doc da
+// interface sobre por que não há error). O esquema "memfile://" deixa claro,
+// em qualquer teste/log, que é o backend in-memory (nunca confundido com uma
+// URL real de um provider).
+func (s *memoryFileStorage) SignedURL(ctx context.Context, ref FileRef, expires time.Duration) string {
+	exp := Now(ctx).Add(expires)
+	return fmt.Sprintf("memfile://%s?expires=%d", ref.ID, exp.Unix())
+}
+
+// Delete implementa FileStorage: idempotente (remover um ID ausente não é
+// erro, ver a doc da interface).
+func (s *memoryFileStorage) Delete(ctx context.Context, ref FileRef) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.files, ref.ID)
+	return nil
+}

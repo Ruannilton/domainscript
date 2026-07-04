@@ -286,6 +286,12 @@ type moduleMarks struct {
 	// UseCase do módulo de fato usa a uow em memória, já que "uow" é uma var
 	// de pacote nunca exigida como "usada").
 	xaDatabases []string
+	// fileStorages (G1a, §2.5) são os nomes (ordenados) de FileStorage
+	// declaradas no mod.ds deste módulo — vazio no caso comum (nenhum
+	// Aggregate com bloco storage{}/campo FileRef). generateCmdMainFile usa
+	// isto para decidir se injeta "<pkg>.WireFileStorage(nome, ...)" — uma
+	// chamada por nome, ao lado do wiring de UseCase/Policy/Worker/2PC.
+	fileStorages []string
 }
 
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
@@ -437,7 +443,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	}
 
 	if len(b.queries) > 0 {
-		content, err := EmitQueries(pkg, b.queries, aggregates, model, tab, moduleName, reg)
+		content, err := EmitQueries(pkg, b.queries, aggregates, prog, model, tab, moduleName, reg)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("queries.go: %w", err)
 		}
@@ -501,7 +507,16 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "sagas.go"), Content: content})
 	}
 
-	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases}, nil
+	fsNames := moduleFileStorageNames(programModule(prog, moduleName))
+	if len(fsNames) > 0 {
+		content, err := emitFileStorageWiring(pkg)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("filestorage.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "filestorage.go"), Content: content})
+	}
+
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -694,13 +709,14 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	httpAlias := e.Import("net/http")
 
 	type wireTarget struct {
-		alias       string
-		pkg         string
-		module      string
-		hasUseCases bool
-		hasPolicies bool
-		hasWorkers  bool
-		xaDatabases []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
+		alias        string
+		pkg          string
+		module       string
+		hasUseCases  bool
+		hasPolicies  bool
+		hasWorkers   bool
+		xaDatabases  []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
+		fileStorages []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
 	}
 	var wireTargets []wireTarget
 	needsDispatcher := false
@@ -708,12 +724,13 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	anyWorkers := false
 	for _, m := range group.modules {
 		hu, hp, hw := modulesWithUseCases[m], modulesWithPolicies[m], modulesWithWorkers[m]
-		if !hu && !hp && !hw {
+		fsNames := moduleFileStorageNames(programModule(prog, m))
+		if !hu && !hp && !hw && len(fsNames) == 0 {
 			continue
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, xaDatabases: modulesXADatabases[m]})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
 		if hp {
 			needsDispatcher = true
 		}
@@ -831,6 +848,14 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 						mainErr = fmt.Errorf("wiring 2PC do módulo %s: %w", wt.module, err)
 						return
 					}
+				}
+				for _, name := range wt.fileStorages {
+					// NewMemoryFileStorage (G1a, §2.5): o seam in-memory, sem
+					// dependência externa — o mesmo espírito de NewMemoryEventStore
+					// acima (Marco E). Um backend real (S3/GCS/...) entra atrás
+					// deste MESMO seam (runtime.FileStorage) em marco posterior,
+					// opt-in (NFR-12) — nenhuma mudança de codegen necessária.
+					e.Line("%s.WireFileStorage(%s, %s.NewMemoryFileStorage())", wt.alias, strconv.Quote(name), runtimeAlias)
 				}
 				if wt.hasWorkers {
 					e.Line("%s.StartWorkers(workerCtx)", wt.alias)
