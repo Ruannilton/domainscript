@@ -113,6 +113,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	modulesWithUseCases := make(map[string]bool, len(moduleNames))
 	modulesWithPolicies := make(map[string]bool, len(moduleNames))
 	modulesWithWorkers := make(map[string]bool, len(moduleNames))
+	modulesWithIdempotency := make(map[string]bool, len(moduleNames)) // G2, REQ-20.4
 	modulesXADatabases := make(map[string][]string, len(moduleNames)) // G1, REQ-20.5
 	buckets := make(map[string]moduleBucket, len(moduleNames))
 
@@ -127,6 +128,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		modulesWithUseCases[name] = marks.hasUseCases
 		modulesWithPolicies[name] = marks.hasPolicies
 		modulesWithWorkers[name] = marks.hasWorkers
+		modulesWithIdempotency[name] = marks.hasIdempotency
 		modulesXADatabases[name] = marks.xaDatabases
 		allPublicEvents = append(allPublicEvents, b.pubEvents...)
 		for _, ev := range b.pubEvents {
@@ -143,7 +145,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range buildCmdGroups(prog) {
-		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesXADatabases, buckets, model, tab)
+		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesXADatabases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -292,6 +294,15 @@ type moduleMarks struct {
 	// isto para decidir se injeta "<pkg>.WireFileStorage(nome, ...)" — uma
 	// chamada por nome, ao lado do wiring de UseCase/Policy/Worker/2PC.
 	fileStorages []string
+	// hasIdempotency (G2, REQ-20.4, spec §14) é true quando ao menos um
+	// UseCase deste módulo declara "idempotency { ... }" — vazio no caso
+	// comum (nenhum UseCase do wallet/shop declara). generateCmdMainFile usa
+	// isto para decidir se chama "<pkg>.StartIdempotencyCleanup(ctx)", o
+	// worker de limpeza gerado automaticamente (EmitUseCases/
+	// emitIdempotencyCleanupStarter, usecase_idempotency.go) — nome próprio,
+	// ao lado de StartWorkers (mesma razão de não reusar "Wire", ver a doc de
+	// decl_worker.go).
+	hasIdempotency bool
 }
 
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
@@ -396,6 +407,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	}
 
 	var xaDatabases []string
+	hasIdempotency := false
 	if hasUseCases {
 		repaired := make([]*ast.UseCaseDecl, len(b.usecases))
 		for i, uc := range b.usecases {
@@ -404,6 +416,9 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 			// de usecase_repair.go. No-op sobre um Execute que não bate no
 			// padrão exato.
 			repaired[i] = repairLoadDispatchExecute(uc)
+			if uc.Idempotency != nil {
+				hasIdempotency = true
+			}
 		}
 		content, err := EmitUseCases(pkg, repaired, aggregates, prog, model, tab, moduleName, reg, adapterByName)
 		if err != nil {
@@ -516,7 +531,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "filestorage.go"), Content: content})
 	}
 
-	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames}, nil
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -701,7 +716,7 @@ func defaultCmdDirName(modules []string) string {
 // dentro do MESMO processo). needsDispatcher (Policy local) e um canal de
 // saída no MESMO service ainda não têm wiring combinado suportado — erro de
 // geração claro (nem wallet nem shop combinam os dois hoje).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -709,30 +724,36 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	httpAlias := e.Import("net/http")
 
 	type wireTarget struct {
-		alias        string
-		pkg          string
-		module       string
-		hasUseCases  bool
-		hasPolicies  bool
-		hasWorkers   bool
-		xaDatabases  []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
-		fileStorages []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
+		alias          string
+		pkg            string
+		module         string
+		hasUseCases    bool
+		hasPolicies    bool
+		hasWorkers     bool
+		hasIdempotency bool     // G2, REQ-20.4 — chama StartIdempotencyCleanup (ver emitIdempotencyCleanupStarter)
+		xaDatabases    []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
+		fileStorages   []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
 	}
 	var wireTargets []wireTarget
 	needsDispatcher := false
 	anyUseCases := false
 	anyWorkers := false
+	anyIdempotency := false
 	for _, m := range group.modules {
 		hu, hp, hw := modulesWithUseCases[m], modulesWithPolicies[m], modulesWithWorkers[m]
+		hi := modulesWithIdempotency[m]
 		fsNames := moduleFileStorageNames(programModule(prog, m))
 		if !hu && !hp && !hw && len(fsNames) == 0 {
 			continue
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
 		if hp {
 			needsDispatcher = true
+		}
+		if hi {
+			anyIdempotency = true
 		}
 		if hu {
 			anyUseCases = true
@@ -786,7 +807,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	}
 
 	var ctxAlias string
-	if anyWorkers || anyXADatabases {
+	if anyWorkers || anyXADatabases || anyIdempotency {
 		ctxAlias = e.Import("context")
 	}
 
@@ -825,7 +846,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		default:
 			e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
 		}
-		if anyWorkers {
+		if anyWorkers || anyIdempotency {
 			e.Line("workerCtx := %s.Background()", ctxAlias)
 		}
 		e.Line("")
@@ -859,6 +880,9 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				}
 				if wt.hasWorkers {
 					e.Line("%s.StartWorkers(workerCtx)", wt.alias)
+				}
+				if wt.hasIdempotency {
+					e.Line("go %s.StartIdempotencyCleanup(workerCtx)", wt.alias)
 				}
 			}
 			if !anyUseCases {

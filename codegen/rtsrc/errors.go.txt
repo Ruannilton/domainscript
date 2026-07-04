@@ -1,5 +1,7 @@
 package runtime
 
+import "errors"
+
 // BusinessError is a domain-level error: the Go representation of a
 // DomainScript Error declaration. Code identifies the declared Error by
 // name and is stable across releases; Msg is the human-readable message.
@@ -22,6 +24,17 @@ func (e BusinessError) Is(target error) bool {
 	return e.Code == other.Code
 }
 
+// IsBusinessError reports whether err is (or wraps) a BusinessError — the
+// same errors.As check codegen/http.go's writeBusinessError performs at the
+// edge (business -> 4xx, everything else -> infra -> 503), exported so other
+// generated runtime call sites (idempotency wrapping, G2; Saga step
+// compensation, saga.go.txt) share the SAME business-vs-infra distinction
+// (spec §19) instead of re-declaring it.
+func IsBusinessError(err error) bool {
+	var be BusinessError
+	return errors.As(err, &be)
+}
+
 // ErrForbidden is the reserved BusinessError for `access`-rule failures
 // (closed-by-default access) — mapped to HTTP 403 at the edge.
 var ErrForbidden = BusinessError{Code: "Forbidden", Msg: "access denied"}
@@ -29,3 +42,29 @@ var ErrForbidden = BusinessError{Code: "Forbidden", Msg: "access denied"}
 // ErrNotFound is the reserved BusinessError for missing aggregates/entities
 // — mapped to HTTP 404 at the edge.
 var ErrNotFound = BusinessError{Code: "NotFound", Msg: "not found"}
+
+// --- Idempotency (spec §14, G2) — see idempotency.go.txt for the store this backs. ---
+
+// ErrIdempotencyKeyConflict is the reserved BusinessError for spec §14's
+// idempotency conflict: the SAME client-supplied Idempotency-Key reused with
+// a DIFFERENT Command payload. Falls through writeBusinessError's default
+// case (codegen/http.go) to HTTP 422, the same status every plain business
+// error gets — no special case is needed there, but one is still spelled out
+// explicitly (REQ-20.4 names 422 for this specific error), documenting the
+// mapping instead of leaning on the default silently.
+var ErrIdempotencyKeyConflict = BusinessError{Code: "IdempotencyKeyConflict", Msg: "idempotency key already used with a different command"}
+
+// ErrIdempotencyKeyRequired is the reserved BusinessError for a UseCase whose
+// "idempotency { required: true }" (spec §14) demands an Idempotency-Key and
+// the caller supplied none — also 422 (writeBusinessError's default case).
+var ErrIdempotencyKeyRequired = BusinessError{Code: "IdempotencyKeyRequired", Msg: "an Idempotency-Key is required for this operation"}
+
+// ErrIdempotencyInFlight is the reserved BusinessError for a concurrent
+// request under the SAME Idempotency-Key while the first run is still in
+// flight, under the module's `concurrentRetry: reject` policy (mod.ds
+// Idempotency{}, spec §14) — mapped to HTTP 409 at the edge
+// (codegen/http.go), deliberately distinct from IdempotencyKeyConflict's 422:
+// this is a timing race between two identical requests, not a payload
+// mismatch (the spec does not pin down a status code for this case; 409
+// Conflict is this generator's own reasoned choice, documented here).
+var ErrIdempotencyInFlight = BusinessError{Code: "IdempotencyInFlight", Msg: "a request with this idempotency key is already in flight"}

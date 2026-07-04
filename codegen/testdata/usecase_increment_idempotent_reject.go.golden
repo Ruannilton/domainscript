@@ -1,0 +1,104 @@
+package tallyreject
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	slog "log/slog"
+	time "time"
+)
+
+// uow é a unit of work do módulo (§design 3.8), compartilhada por todos os
+// UseCases deste pacote — só a declaração de pacote; a instância de verdade
+// vem do wiring (E9.1, Wire abaixo).
+var uow runtime.UnitOfWork
+
+// Wire injeta a unit of work usada pelos UseCases deste pacote — chamada por
+// cmd/<service>/main.go na inicialização (wiring in-memory, §design 3.11).
+func Wire(u runtime.UnitOfWork) {
+	uow = u
+}
+
+// idem é o idempotency store do módulo (spec §14, G2), compartilhado por
+// todo UseCase que declara "idempotency { ... }" — o default in-memory
+// ("storage: same", ver a doc de idempotency.go.txt); sem Wire, mesmo
+// padrão do SagaStore de uma Saga async (decl_saga.go).
+var idem runtime.IdempotencyStore = runtime.NewMemoryIdempotencyStore()
+
+// performIncrementRun carrega o corpo de verdade do UseCase PerformIncrement (§5.2) — a idempotência
+// (spec §14, G2) mora no wrapper público PerformIncrement, abaixo.
+func performIncrementRun(ctx context.Context, cmd IncrementTally) error {
+	caller, _ := runtime.CallerFrom(ctx)
+	return uow.Run(ctx, func(tx runtime.Tx) error {
+		tmp1, err := LoadTally(tx, cmd.TallyId)
+		if err != nil {
+			return err
+		}
+		tally := tmp1
+		if !(tally != nil) {
+			return ErrTallyNotFound
+		}
+		events, err := tally.Increment(caller, cmd.Amount)
+		if err != nil {
+			return err
+		}
+		if err := tx.Append(string(tally.id), events); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// PerformIncrement é a borda idempotente do UseCase PerformIncrement (spec §14, G2): decide, a partir
+// da Idempotency-Key do chamador (runtime.IdempotencyKeyFrom), se roda performIncrementRun de
+// verdade, repete um resultado já cacheado (sucesso ou erro de negócio),
+// recusa um conflito (mesma chave, Command diferente) ou aplica a política
+// de corrida (concurrentRetry) sobre um run concorrente da MESMA chave.
+func PerformIncrement(ctx context.Context, cmd IncrementTally) error {
+	key, hasKey := runtime.IdempotencyKeyFrom(ctx)
+	if !hasKey {
+		return runtime.ErrIdempotencyKeyRequired
+	}
+
+	fingerprint := runtime.IdempotencyFingerprint(cmd)
+	for {
+		begin, err := idem.Begin(ctx, key, fingerprint)
+		if err != nil {
+			return err
+		}
+		switch begin.Outcome {
+		case runtime.BeginConflict:
+			return runtime.ErrIdempotencyKeyConflict
+		case runtime.BeginCached:
+			return begin.Cached.Err()
+		case runtime.BeginInFlight:
+			return runtime.ErrIdempotencyInFlight
+		}
+
+		runErr := performIncrementRun(ctx, cmd)
+		if runErr != nil && !runtime.IsBusinessError(runErr) {
+			_ = idem.Release(ctx, key)
+			return runErr
+		}
+		_ = idem.Complete(ctx, key, runtime.NewCompletedResult(runErr), time.Duration(3600000000000))
+		return runErr
+	}
+}
+
+// StartIdempotencyCleanup roda o worker de limpeza de chaves de idempotência
+// expiradas (spec §14, G2) — gerado automaticamente porque este módulo usa
+// idempotência; chamado por cmd/<service>/main.go na inicialização, ao lado
+// de StartWorkers/Wire. Roda até ctx ser cancelado.
+func StartIdempotencyCleanup(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if _, err := idem.Cleanup(ctx, time.Now()); err != nil {
+			slog.Error("idempotency: falha na limpeza de chaves expiradas", "error", err)
+		}
+	}
+}

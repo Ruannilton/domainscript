@@ -1,0 +1,75 @@
+package reports
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+)
+
+// GenerateReportState é o state da Saga GenerateReport (§18.2) — os campos que os passos
+// semeiam conforme executam (Up escreve em state.<Campo>; ver a doc do
+// arquivo sobre por que o Command não é visível diretamente dentro de um
+// passo).
+type GenerateReportState struct {
+	ReportId ReportId `json:"reportId"`
+}
+
+func generateReportBuildUp(ctx context.Context, state *GenerateReportState) error {
+	return nil
+}
+
+// generateReportSteps é a lista de passos da Saga, na ordem declarada (§18.2) —
+// runtime.RunSaga roda Up em ordem e, numa falha, compensa (Down) os passos
+// já completados em ordem REVERSA, respeitando Unrecoverable (REQ-24.2).
+var generateReportSteps = []runtime.Step[GenerateReportState]{
+	{Name: "Build", Up: generateReportBuildUp, Down: nil, OnInfraError: nil, Unrecoverable: false},
+}
+
+// generateReportRunSteps executa os passos da Saga uma vez sobre state (§18.2): Up em
+// ordem; numa falha, Down dos passos já completados em ordem reversa
+// (runtime.RunSaga, REQ-24.2).
+func generateReportRunSteps(ctx context.Context, state *GenerateReportState) runtime.SagaResult {
+	return runtime.RunSaga(ctx, state, generateReportSteps)
+}
+
+// generateReportSagaStore é o SagaStore em memória da Saga GenerateReport (mode async, REQ-24.3) —
+// rastreia sagaId -> SagaStatus; sem Wire (ver a doc do arquivo) — um
+// backend real de persistência fica para quando existir um seam dedicado a
+// Saga (Marco G).
+var generateReportSagaStore = runtime.NewMemorySagaStore()
+
+// GenerateReport é a Saga GenerateReport (§18.2, mode async): inicia os passos numa goroutine à
+// parte e devolve o sagaId de imediato; consulte GenerateReportStatus(sagaId) para o
+// andamento (REQ-24.3). state.<Campo> é semeado a partir dos campos de
+// mesmo nome de GenerateReportCmd antes do 1º passo.
+func GenerateReport(ctx context.Context, cmd GenerateReportCmd) string {
+	state := &GenerateReportState{}
+	state.ReportId = cmd.ReportId
+	sagaID := runtime.UUID()
+	if key, ok := runtime.IdempotencyKeyFrom(ctx); ok {
+		sagaID = runtime.SagaIDFromIdempotencyKey(key)
+		if _, found, _ := generateReportSagaStore.Get(ctx, sagaID); found {
+			return sagaID
+		}
+	}
+	_ = generateReportSagaStore.Put(ctx, runtime.SagaStatus{ID: sagaID, State: runtime.SagaRunning})
+	go func() {
+		bgCtx := context.Background()
+		res := generateReportRunSteps(bgCtx, state)
+		status := runtime.SagaStatus{ID: sagaID, State: res.FinalState()}
+		if res.Err != nil {
+			status.Err = res.Err.Error()
+		}
+		_ = generateReportSagaStore.Put(bgCtx, status)
+	}()
+	return sagaID
+}
+
+// GenerateReportStatus consulta o andamento da Saga GenerateReport iniciada em modo async pelo
+// sagaId devolvido por GenerateReport (REQ-24.3).
+func GenerateReportStatus(sagaID string) (runtime.SagaStatus, bool) {
+	st, ok, err := generateReportSagaStore.Get(context.Background(), sagaID)
+	if err != nil {
+		return runtime.SagaStatus{}, false
+	}
+	return st, ok
+}

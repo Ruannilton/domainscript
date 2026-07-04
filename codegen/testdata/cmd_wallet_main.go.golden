@@ -154,10 +154,16 @@ func (c devCaller) HasRole(role string) bool {
 
 // writeBusinessError mapeia err a um status HTTP (§design 3.12, REQ-28.2):
 // distingue por errors.As(&runtime.BusinessError) — negócio -> 422, exceto
-// runtime.ErrForbidden (403) e runtime.ErrNotFound (404); qualquer outro
-// error (infra) -> 503. Rate-limit (429), tenant ausente (400) e sunset
-// (410) são marcos posteriores (G4/G5/G6) — deliberadamente não tratados
-// aqui, para não travar a extensão futura com suposições erradas.
+// runtime.ErrForbidden (403), runtime.ErrNotFound (404) e
+// runtime.ErrIdempotencyInFlight (409, G2, spec §14 — corrida da mesma
+// Idempotency-Key sob "concurrentRetry: reject"); qualquer outro error
+// (infra) -> 503. runtime.ErrIdempotencyKeyConflict/ErrIdempotencyKeyRequired
+// (G2) caem no default (422) DE PROPÓSITO — REQ-20.4 pede 422 para o
+// conflito, que já é o que o default produz; não precisam de um case à
+// parte, ao contrário de Forbidden/NotFound/InFlight, que DEVIAM do default.
+// Rate-limit (429), tenant ausente (400) e sunset (410) são marcos
+// posteriores (G4/G5/G6) — deliberadamente não tratados aqui, para não
+// travar a extensão futura com suposições erradas.
 func writeBusinessError(w http.ResponseWriter, err error) {
 	var be runtime.BusinessError
 	if errors.As(err, &be) {
@@ -166,6 +172,8 @@ func writeBusinessError(w http.ResponseWriter, err error) {
 			http.Error(w, be.Msg, http.StatusForbidden)
 		case errors.Is(err, runtime.ErrNotFound):
 			http.Error(w, be.Msg, http.StatusNotFound)
+		case errors.Is(err, runtime.ErrIdempotencyInFlight):
+			http.Error(w, be.Msg, http.StatusConflict)
 		default:
 			http.Error(w, be.Msg, http.StatusUnprocessableEntity)
 		}

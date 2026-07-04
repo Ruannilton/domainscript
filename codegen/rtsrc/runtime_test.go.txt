@@ -345,19 +345,236 @@ func TestMemoryRepositorySaveLoad(t *testing.T) {
 	}
 }
 
-func TestMemoryIdempotencyStoreGetPut(t *testing.T) {
+// TestMemoryIdempotencyStoreBeginCompleteReplaysCachedSuccess prova o
+// caminho feliz (spec §14, G2): a 1ª chamada com uma chave nova devolve
+// BeginStarted; Complete registra sucesso; uma 2ª chamada com a MESMA
+// fingerprint devolve BeginCached com o resultado certo, sem reservar um
+// novo run.
+func TestMemoryIdempotencyStoreBeginCompleteReplaysCachedSuccess(t *testing.T) {
 	store := NewMemoryIdempotencyStore()
 	ctx := context.Background()
 
-	if _, found, err := store.Get(ctx, "key-1"); err != nil || found {
-		t.Fatalf("esperava found=false, got found=%v err=%v", found, err)
+	begin, err := store.Begin(ctx, "key-1", "fp-a")
+	if err != nil || begin.Outcome != BeginStarted {
+		t.Fatalf("1º Begin = (%+v, %v), want BeginStarted", begin, err)
 	}
-	if err := store.Put(ctx, "key-1", []byte("resultado")); err != nil {
+	if err := store.Complete(ctx, "key-1", NewCompletedResult(nil), time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	got, found, err := store.Get(ctx, "key-1")
-	if err != nil || !found || string(got) != "resultado" {
-		t.Fatalf("Get = (%q, %v, %v)", got, found, err)
+
+	begin2, err := store.Begin(ctx, "key-1", "fp-a")
+	if err != nil || begin2.Outcome != BeginCached {
+		t.Fatalf("2º Begin = (%+v, %v), want BeginCached", begin2, err)
+	}
+	if begin2.Cached.Err() != nil {
+		t.Fatalf("resultado cacheado deveria ser sucesso (err nil), got %v", begin2.Cached.Err())
+	}
+}
+
+// TestMemoryIdempotencyStoreCachesBusinessErrorNotInfra prova a distinção do
+// spec §14: erro de negócio é cacheado (replay sem re-rodar); erro de infra
+// NÃO é cacheado (Release, não Complete) — uma chave liberada por Release
+// permite um Begin novo (BeginStarted de novo), nunca BeginCached.
+func TestMemoryIdempotencyStoreCachesBusinessErrorNotInfra(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+
+	if _, err := store.Begin(ctx, "biz", "fp"); err != nil {
+		t.Fatal(err)
+	}
+	bizErr := BusinessError{Code: "SomeError", Msg: "negócio"}
+	if err := store.Complete(ctx, "biz", NewCompletedResult(bizErr), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	begin, err := store.Begin(ctx, "biz", "fp")
+	if err != nil || begin.Outcome != BeginCached || begin.Cached.Err() != bizErr {
+		t.Fatalf("Begin (retry pós erro de negócio) = (%+v, %v), want BeginCached com %v", begin, err, bizErr)
+	}
+
+	if _, err := store.Begin(ctx, "infra", "fp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Release(ctx, "infra"); err != nil {
+		t.Fatal(err)
+	}
+	begin2, err := store.Begin(ctx, "infra", "fp")
+	if err != nil || begin2.Outcome != BeginStarted {
+		t.Fatalf("Begin (retry pós erro de infra/Release) = (%+v, %v), want BeginStarted (sem cache)", begin2, err)
+	}
+}
+
+// TestMemoryIdempotencyStoreConflictOnDifferentFingerprint prova
+// IdempotencyKeyConflict: a MESMA chave com uma fingerprint DIFERENTE (um
+// Command diferente) nunca reaproveita o registro existente, esteja ele em
+// voo ou já terminado.
+func TestMemoryIdempotencyStoreConflictOnDifferentFingerprint(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+
+	if _, err := store.Begin(ctx, "k", "fp-a"); err != nil {
+		t.Fatal(err)
+	}
+	if begin, err := store.Begin(ctx, "k", "fp-b"); err != nil || begin.Outcome != BeginConflict {
+		t.Fatalf("Begin sobre run EM VOO com fingerprint diferente = (%+v, %v), want BeginConflict", begin, err)
+	}
+
+	if err := store.Complete(ctx, "k", NewCompletedResult(nil), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if begin, err := store.Begin(ctx, "k", "fp-b"); err != nil || begin.Outcome != BeginConflict {
+		t.Fatalf("Begin sobre run TERMINADO com fingerprint diferente = (%+v, %v), want BeginConflict", begin, err)
+	}
+}
+
+// TestMemoryIdempotencyStoreInFlightThenWaitReplaysResult prova a corrida da
+// mesma chave (spec §14, "wait"): uma 2ª chamada concorrente vê BeginInFlight
+// e, ao chamar Wait, bloqueia até o 1º run completar e recebe o MESMO
+// resultado, sem nunca ter rodado o corpo de novo.
+func TestMemoryIdempotencyStoreInFlightThenWaitReplaysResult(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+
+	if _, err := store.Begin(ctx, "race", "fp"); err != nil {
+		t.Fatal(err)
+	}
+	begin2, err := store.Begin(ctx, "race", "fp")
+	if err != nil || begin2.Outcome != BeginInFlight {
+		t.Fatalf("2º Begin concorrente = (%+v, %v), want BeginInFlight", begin2, err)
+	}
+
+	done := make(chan WaitResult, 1)
+	go func() {
+		wr, werr := store.Wait(ctx, "race")
+		if werr != nil {
+			t.Errorf("Wait: erro inesperado: %v", werr)
+		}
+		done <- wr
+	}()
+
+	// dá tempo do Wait acima bloquear antes de completar o run.
+	time.Sleep(20 * time.Millisecond)
+	if err := store.Complete(ctx, "race", NewCompletedResult(nil), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case wr := <-done:
+		if wr.Outcome != WaitCompleted || wr.Result.Err() != nil {
+			t.Fatalf("Wait = %+v, want WaitCompleted com sucesso", wr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait não desbloqueou após Complete")
+	}
+}
+
+// TestMemoryIdempotencyStoreWaitReturnsReleasedOnInfraError prova o outro
+// lado da corrida: se o run EM VOO termina com Release (erro de infra), quem
+// esperava recebe WaitReleased — um sinal para tentar de novo (rodar o corpo
+// ela mesma), nunca um resultado cacheado.
+func TestMemoryIdempotencyStoreWaitReturnsReleasedOnInfraError(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+
+	if _, err := store.Begin(ctx, "race2", "fp"); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan WaitResult, 1)
+	go func() {
+		wr, _ := store.Wait(ctx, "race2")
+		done <- wr
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := store.Release(ctx, "race2"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case wr := <-done:
+		if wr.Outcome != WaitReleased {
+			t.Fatalf("Wait = %+v, want WaitReleased", wr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait não desbloqueou após Release")
+	}
+}
+
+// TestMemoryIdempotencyStoreCleanupRemovesExpiredOnly prova o worker de
+// limpeza automático (spec §14): Cleanup remove só registros TERMINAIS cujo
+// prazo já passou, preservando os ainda válidos e os em voo.
+func TestMemoryIdempotencyStoreCleanupRemovesExpiredOnly(t *testing.T) {
+	store := NewMemoryIdempotencyStore()
+	ctx := context.Background()
+	now := time.Now()
+
+	if _, err := store.Begin(ctx, "expired", "fp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete(ctx, "expired", NewCompletedResult(nil), time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(ctx, "fresh", "fp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete(ctx, "fresh", NewCompletedResult(nil), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(ctx, "inflight", "fp"); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := store.Cleanup(ctx, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("Cleanup removeu %d, want 1 (só \"expired\")", removed)
+	}
+
+	if begin, err := store.Begin(ctx, "expired", "fp-novo"); err != nil || begin.Outcome != BeginStarted {
+		t.Fatalf("\"expired\" deveria ter sido removida (Begin = %+v, %v, want BeginStarted)", begin, err)
+	}
+	if begin, err := store.Begin(ctx, "fresh", "fp"); err != nil || begin.Outcome != BeginCached {
+		t.Fatalf("\"fresh\" NÃO deveria ter sido removida (Begin = %+v, %v, want BeginCached)", begin, err)
+	}
+	if begin, err := store.Begin(ctx, "inflight", "fp"); err != nil || begin.Outcome != BeginInFlight {
+		t.Fatalf("\"inflight\" NÃO deveria ter sido removida (Begin = %+v, %v, want BeginInFlight)", begin, err)
+	}
+}
+
+// TestIdempotencyFingerprintStableAndSensitiveToPayload prova NFR-13
+// (determinismo) e a base da detecção de conflito: a mesma struct sempre
+// produz a mesma fingerprint; uma struct com um campo diferente produz uma
+// fingerprint diferente.
+func TestIdempotencyFingerprintStableAndSensitiveToPayload(t *testing.T) {
+	type cmd struct {
+		WalletID string
+		Amount   int64
+	}
+	a1 := IdempotencyFingerprint(cmd{WalletID: "W1", Amount: 100})
+	a2 := IdempotencyFingerprint(cmd{WalletID: "W1", Amount: 100})
+	if a1 != a2 {
+		t.Fatalf("fingerprint não determinística: %q != %q", a1, a2)
+	}
+	b := IdempotencyFingerprint(cmd{WalletID: "W1", Amount: 200})
+	if a1 == b {
+		t.Fatalf("fingerprint deveria mudar com o payload: %q == %q", a1, b)
+	}
+}
+
+// TestSagaIDFromIdempotencyKeyStable prova o mapeamento estável Idempotency-
+// Key -> sagaId (spec §14, F3+G2): a MESMA chave sempre produz o MESMO
+// sagaId; chaves diferentes produzem sagaIds diferentes.
+func TestSagaIDFromIdempotencyKeyStable(t *testing.T) {
+	id1 := SagaIDFromIdempotencyKey("Idempotency-Key-abc")
+	id2 := SagaIDFromIdempotencyKey("Idempotency-Key-abc")
+	if id1 != id2 {
+		t.Fatalf("SagaIDFromIdempotencyKey não é estável: %q != %q", id1, id2)
+	}
+	id3 := SagaIDFromIdempotencyKey("outra-chave")
+	if id1 == id3 {
+		t.Fatalf("chaves diferentes deveriam produzir sagaIds diferentes: %q", id1)
 	}
 }
 

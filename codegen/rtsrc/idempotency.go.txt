@@ -2,45 +2,338 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"sync"
+	"time"
 )
 
-// IdempotencyStore is the storage seam for idempotent Command results: a
-// key maps to the raw result recorded the first time a Command with that
-// key ran. Full conflict/retry semantics (concurrent requests, key reused
-// with a different command) are a later milestone (G2) — this is only the
-// storage primitive.
+// idempotency.go.txt is the real idempotency seam behind a Command's
+// "idempotency { required, window }" declaration (Marco G2, REQ-20.4, spec
+// §14): a client-supplied key maps to the outcome of the FIRST run under that
+// key — success and business-error results are cached (replayed on retry
+// without re-running the UseCase body); infrastructure errors are NEVER
+// cached (spec §14: "erro de infraestrutura ❌ (permite retry)"); the SAME
+// key reused with a DIFFERENT Command payload is a conflict
+// (IdempotencyKeyConflict, errors.go.txt); a concurrent request under the
+// SAME key while the first run is still in flight is resolved per the
+// module's `concurrentRetry` policy (wait/reject, decided by the generated
+// caller — see codegen/decl_usecase.go — not by this file).
+//
+// The generated UseCase wrapper (decl_usecase.go/emitIdempotencyWrapper)
+// drives this seam with the sequence:
+//
+//	begin, err := idem.Begin(ctx, key, fingerprint)
+//	// begin.Outcome decides: run the body (BeginStarted), replay a cached
+//	// result (BeginCached), fail with IdempotencyKeyConflict (BeginConflict),
+//	// or apply concurrentRetry (BeginInFlight: idem.Wait, or reject outright).
+//	...
+//	idem.Complete(ctx, key, NewCompletedResult(runErr), ttl) // success/business error
+//	// OR, only on an INFRA error:
+//	idem.Release(ctx, key) // no caching — a future Begin starts fresh
+//
+// Fingerprint is a stable signature of the Command's payload (IdempotencyFingerprint,
+// below) — comparing signatures, not whole struct values, keeps the store a
+// plain string-keyed map regardless of the Command's shape.
+//
+// --- storage: same vs. external (mod.ds Idempotency{}, spec §14) ---
+//
+// This milestone only implements "storage: same" as an in-memory map — the
+// simplest reading of "same" for a core that has no database transaction of
+// its own yet (Marco E's in-memory store has no concept of a second table to
+// be atomic WITH). A real "external" backend (Redis/Dynamo) or a
+// database/sql-backed "same" store atomic with the business transaction
+// (G1's 2PC/adapter) is later, opt-in work behind this SAME interface — no
+// generated call site changes when that lands (NFR-12's usual seam
+// discipline).
+
+// IdempotencyOutcome is the terminal result of one run recorded by Complete.
+type IdempotencyOutcome int
+
+const (
+	// IdempotencySucceeded means the run completed without error.
+	IdempotencySucceeded IdempotencyOutcome = iota
+	// IdempotencyBusinessErr means the run failed with a BusinessError —
+	// cached just like success (spec §14: "erro de negócio ✅").
+	IdempotencyBusinessErr
+)
+
+// CompletedResult is the cached outcome of one finished run — what Begin
+// replays (BeginCached) and Wait reports (WaitCompleted) to a later caller
+// under the same key.
+type CompletedResult struct {
+	Outcome IdempotencyOutcome
+	ErrCode string // BusinessError.Code, valid when Outcome == IdempotencyBusinessErr
+	ErrMsg  string // BusinessError.Msg, valid when Outcome == IdempotencyBusinessErr
+}
+
+// NewCompletedResult builds the CompletedResult to cache from the error a
+// UseCase body run produced — call ONLY when err is nil or IsBusinessError(err)
+// (an infra error is never cached; the generated wrapper calls Release
+// instead, never Complete, in that case).
+func NewCompletedResult(err error) CompletedResult {
+	if err == nil {
+		return CompletedResult{Outcome: IdempotencySucceeded}
+	}
+	var be BusinessError
+	if errors.As(err, &be) {
+		return CompletedResult{Outcome: IdempotencyBusinessErr, ErrCode: be.Code, ErrMsg: be.Msg}
+	}
+	// Defensive fallback: a caller that (incorrectly) completes an infra
+	// error still gets SOMETHING cacheable rather than a silently wrong
+	// success — never reached by generated code (which always checks
+	// IsBusinessError first).
+	return CompletedResult{Outcome: IdempotencyBusinessErr, ErrCode: "Unknown", ErrMsg: err.Error()}
+}
+
+// Err reconstructs the error a cached CompletedResult represents: nil for a
+// cached success, or the original BusinessError (by Code/Msg — errors.Is
+// still matches by Code, see BusinessError.Is) for a cached business error.
+func (r CompletedResult) Err() error {
+	if r.Outcome == IdempotencySucceeded {
+		return nil
+	}
+	return BusinessError{Code: r.ErrCode, Msg: r.ErrMsg}
+}
+
+// BeginOutcome is the result of Begin — what the generated wrapper does next.
+type BeginOutcome int
+
+const (
+	// BeginStarted means no prior (unexpired) record existed for key: the
+	// caller now owns this run and MUST call Complete (success/business
+	// error) or Release (infra error) exactly once.
+	BeginStarted BeginOutcome = iota
+	// BeginCached means a prior run under the SAME fingerprint already
+	// finished — BeginResult.Cached is the result to replay, without running
+	// the body again.
+	BeginCached
+	// BeginConflict means a prior (or in-flight) record exists under a
+	// DIFFERENT fingerprint — the caller must fail with
+	// ErrIdempotencyKeyConflict (errors.go.txt) without running the body.
+	BeginConflict
+	// BeginInFlight means a prior run under the SAME fingerprint is still
+	// running concurrently — the caller applies the module's
+	// `concurrentRetry` policy (wait via Wait, or reject outright).
+	BeginInFlight
+)
+
+// BeginResult is what Begin returns.
+type BeginResult struct {
+	Outcome BeginOutcome
+	Cached  CompletedResult // valid when Outcome == BeginCached
+}
+
+// WaitOutcome is the result of Wait.
+type WaitOutcome int
+
+const (
+	// WaitCompleted means the in-flight run finished normally (success or
+	// business error) — WaitResult.Result is the outcome to replay.
+	WaitCompleted WaitOutcome = iota
+	// WaitReleased means the in-flight run ended in an INFRA error (Release)
+	// or was otherwise cleared before finishing — nothing is cached, and the
+	// caller should retry from the top (call Begin again) rather than treat
+	// this as a result.
+	WaitReleased
+)
+
+// WaitResult is what Wait returns.
+type WaitResult struct {
+	Outcome WaitOutcome
+	Result  CompletedResult // valid when Outcome == WaitCompleted
+}
+
+// defaultIdempotencyTTL is the fallback expiry applied by Complete when the
+// generated call site passes ttl <= 0 (no "window" configured anywhere —
+// neither the UseCase's "idempotency { window: ... }" nor the module's
+// mod.ds Idempotency{window:} — see codegen/decl_usecase.go) — the same
+// value the spec's own mod.ds example uses as a module default (§12: "window:
+// 24h").
+const defaultIdempotencyTTL = 24 * time.Hour
+
+// IdempotencyStore is the storage seam behind idempotent Command dispatch
+// (spec §14, G2) — see the file doc for the full Begin/Wait/Complete/Release
+// protocol.
 type IdempotencyStore interface {
-	// Get returns the result recorded for key, if any.
-	Get(ctx context.Context, key string) (result []byte, found bool, err error)
-	// Put records result under key, replacing any previous value.
-	Put(ctx context.Context, key string, result []byte) error
+	// Begin atomically starts or joins idempotent processing of key with the
+	// given fingerprint (IdempotencyFingerprint(cmd)). See BeginOutcome for
+	// the four possible results.
+	Begin(ctx context.Context, key, fingerprint string) (BeginResult, error)
+	// Wait blocks until the in-flight run started under key finishes
+	// (Complete or Release) or ctx is done — used by the `concurrentRetry:
+	// wait` policy. The generated wrapper bounds ctx with the module's
+	// `concurrentTimeout` before calling Wait.
+	Wait(ctx context.Context, key string) (WaitResult, error)
+	// Complete records the terminal result (success or cached business
+	// error) of the run BeginStarted authorized, expiring it after ttl (<= 0
+	// uses defaultIdempotencyTTL). Wakes any Wait callers blocked on key.
+	Complete(ctx context.Context, key string, result CompletedResult, ttl time.Duration) error
+	// Release aborts the in-flight run started by BeginStarted after an
+	// INFRASTRUCTURE error — no result is cached, and a future Begin with
+	// the same key starts a fresh run (spec §14: infra errors allow retry).
+	// Wakes any Wait callers blocked on key with WaitReleased.
+	Release(ctx context.Context, key string) error
+	// Cleanup removes every terminal record whose expiry is <= now — called
+	// periodically by the auto-generated cleanup Worker (spec §14: "Limpeza
+	// de chaves expiradas: Worker gerado automaticamente").
+	Cleanup(ctx context.Context, now time.Time) (removed int, err error)
+}
+
+// idemRecordState is the lifecycle state of one memoryIdempotencyStore record.
+type idemRecordState int
+
+const (
+	idemInFlight idemRecordState = iota
+	idemTerminal
+)
+
+// idemRecord is one client-supplied key's tracked state.
+type idemRecord struct {
+	fingerprint string
+	state       idemRecordState
+	result      CompletedResult // valid once state == idemTerminal
+	expiresAt   time.Time       // valid once state == idemTerminal
+	done        chan struct{}   // closed exactly once, when the record leaves idemInFlight
 }
 
 // memoryIdempotencyStore is a thread-safe, in-process IdempotencyStore
-// backed by a map.
+// backed by a map — the "storage: same" default (see the file doc).
 type memoryIdempotencyStore struct {
-	mu      sync.RWMutex
-	results map[string][]byte
+	mu      sync.Mutex
+	records map[string]*idemRecord
 }
 
 // NewMemoryIdempotencyStore creates an empty in-memory IdempotencyStore.
 func NewMemoryIdempotencyStore() IdempotencyStore {
-	return &memoryIdempotencyStore{results: make(map[string][]byte)}
+	return &memoryIdempotencyStore{records: make(map[string]*idemRecord)}
 }
 
-// Get implements IdempotencyStore.
-func (s *memoryIdempotencyStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result, found := s.results[key]
-	return result, found, nil
-}
-
-// Put implements IdempotencyStore.
-func (s *memoryIdempotencyStore) Put(ctx context.Context, key string, result []byte) error {
+// Begin implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Begin(ctx context.Context, key, fingerprint string) (BeginResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.results[key] = result
+
+	rec, ok := s.records[key]
+	if ok && rec.state == idemTerminal && !rec.expiresAt.After(time.Now()) {
+		// Expired: treat exactly as if absent (the cleanup Worker would have
+		// removed it already; Begin doesn't need to wait for that pass).
+		delete(s.records, key)
+		ok = false
+	}
+	if !ok {
+		s.records[key] = &idemRecord{fingerprint: fingerprint, state: idemInFlight, done: make(chan struct{})}
+		return BeginResult{Outcome: BeginStarted}, nil
+	}
+	if rec.fingerprint != fingerprint {
+		return BeginResult{Outcome: BeginConflict}, nil
+	}
+	if rec.state == idemInFlight {
+		return BeginResult{Outcome: BeginInFlight}, nil
+	}
+	return BeginResult{Outcome: BeginCached, Cached: rec.result}, nil
+}
+
+// Wait implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Wait(ctx context.Context, key string) (WaitResult, error) {
+	s.mu.Lock()
+	rec, ok := s.records[key]
+	if !ok {
+		s.mu.Unlock()
+		// Nothing tracked under key anymore (e.g. Release already ran and
+		// nothing re-started it yet) -- tell the caller to retry via Begin.
+		return WaitResult{Outcome: WaitReleased}, nil
+	}
+	done := rec.done
+	s.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return WaitResult{}, ctx.Err()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok = s.records[key]
+	if !ok || rec.state == idemInFlight {
+		// Released (deleted), or a new run already started under the same
+		// key -- neither is a result to replay; the caller retries.
+		return WaitResult{Outcome: WaitReleased}, nil
+	}
+	return WaitResult{Outcome: WaitCompleted, Result: rec.result}, nil
+}
+
+// Complete implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Complete(ctx context.Context, key string, result CompletedResult, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.records[key]
+	if !ok {
+		// Complete without a prior Begin should not happen from generated
+		// code, but recording it anyway (rather than erroring) means a
+		// subsequent Begin still sees the right cached outcome.
+		rec = &idemRecord{done: make(chan struct{})}
+		s.records[key] = rec
+	}
+	if ttl <= 0 {
+		ttl = defaultIdempotencyTTL
+	}
+	rec.state = idemTerminal
+	rec.result = result
+	rec.expiresAt = time.Now().Add(ttl)
+	close(rec.done)
 	return nil
+}
+
+// Release implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Release(ctx context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.records[key]
+	if !ok {
+		return nil
+	}
+	delete(s.records, key)
+	close(rec.done)
+	return nil
+}
+
+// Cleanup implements IdempotencyStore.
+func (s *memoryIdempotencyStore) Cleanup(ctx context.Context, now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	removed := 0
+	for k, rec := range s.records {
+		if rec.state == idemTerminal && !rec.expiresAt.After(now) {
+			delete(s.records, k)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// IdempotencyFingerprint computes a stable signature of a Command's payload
+// (spec §14's conflict check: "mesma chave, command diferente"): backed by
+// encoding/json (deterministic here — struct field order is fixed and
+// encoding/json sorts map keys) hashed with SHA-256. Two calls with an
+// equal-valued Command always produce the same fingerprint (determinism,
+// NFR-13); a different payload under the same key produces a different one,
+// which Begin uses to detect IdempotencyKeyConflict.
+func IdempotencyFingerprint(cmd any) string {
+	b, err := json.Marshal(cmd)
+	if err != nil {
+		// A generated Command DTO failing to marshal would be a generation
+		// bug, not a runtime condition — fail toward ALWAYS conflicting
+		// (never toward silently treating every unmarshalable Command as
+		// the same key).
+		return "unmarshalable:" + err.Error()
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

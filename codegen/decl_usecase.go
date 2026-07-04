@@ -171,11 +171,33 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 	}
 	fsDefault := moduleFileStorageDefault(mod)
 
+	// Idempotência (G2, REQ-20.4, spec §14): "idem" e o worker de limpeza só
+	// existem quando ALGUM UseCase deste módulo declara "idempotency { ... }"
+	// (o caso comum — nenhum do wallet/shop declara — preserva byte a byte a
+	// saída de antes desta task). idemBlock é o bloco de módulo (mod.ds
+	// Idempotency{}, pode ser nil) que planUseCaseIdempotency usa como
+	// default quando o próprio UseCase não sobrescreve required/window.
+	idemBlock := moduleIdempotencyBlock(mod)
+	anyIdempotency := false
+	for _, decl := range decls {
+		if decl.Idempotency != nil {
+			anyIdempotency = true
+			break
+		}
+	}
+	if anyIdempotency {
+		emitIdempotencyStoreVar(e, runtimeAlias)
+	}
+
 	for _, decl := range decls {
 		e.Line("")
-		if err := emitUseCaseDecl(e, decl, aggregates, prog, model, tab, module, reg, adapters, ctxAlias, runtimeAlias, fsByField, fsDefault); err != nil {
+		if err := emitUseCaseDecl(e, decl, aggregates, prog, model, tab, module, reg, adapters, ctxAlias, runtimeAlias, fsByField, fsDefault, idemBlock); err != nil {
 			return nil, err
 		}
+	}
+
+	if anyIdempotency {
+		emitIdempotencyCleanupStarter(e, ctxAlias, runtimeAlias)
 	}
 
 	return e.Bytes()
@@ -188,11 +210,26 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 // load roteado ao Tx do Database certo — ver lower.WithHandleDispatchRouted/
 // BuiltinLowerer.WithPerAggregateStore); senão, o caminho de sempre (uow.Run
 // com um "tx" só, Marco E/F, byte a byte inalterado).
-func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string) error {
+func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string, idemBlock *ast.ConfigBlock) error {
 	env := lower.New(model, tab, module)
 	env.SeedUseCaseExecute(decl.Handles)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
 	l.BindGoName("caller", "caller")
+
+	// Idempotência (G2, REQ-20.4, spec §14): decl.Idempotency == nil (o caso
+	// comum) devolve plan == nil e NADA muda daqui pra baixo — innerName ==
+	// decl.Name, a mesma função pública de sempre carrega o corpo direto,
+	// byte a byte igual à saída de antes desta task. Só quando plan != nil o
+	// corpo migra para um nome PRIVADO (innerName) e a função pública vira o
+	// wrapper de idempotência (emitIdempotencyWrapper, ao final).
+	idemPlan, err := planUseCaseIdempotency(decl, idemBlock, l)
+	if err != nil {
+		return fmt.Errorf("codegen: %w", err)
+	}
+	innerName := decl.Name
+	if idemPlan != nil {
+		innerName = unexportedRunName(decl.Name)
+	}
 
 	dbNames, needs2PC := usecase2PCPlan(decl, aggregates, prog)
 	var txGoNameFor func(string) string
@@ -223,10 +260,15 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 		e.Import("time")
 	}
 
-	sig := fmt.Sprintf("func %s(ctx %s.Context, cmd %s) error", decl.Name, ctxAlias, decl.Handles)
+	sig := fmt.Sprintf("func %s(ctx %s.Context, cmd %s) error", innerName, ctxAlias, decl.Handles)
 
-	e.Line("// %s é o UseCase %s (§5.2): abre uma unit of work, executa", decl.Name, decl.Name)
-	e.Line("// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.")
+	if idemPlan != nil {
+		e.Line("// %s carrega o corpo de verdade do UseCase %s (§5.2) — a idempotência", innerName, decl.Name)
+		e.Line("// (spec §14, G2) mora no wrapper público %s, abaixo.", decl.Name)
+	} else {
+		e.Line("// %s é o UseCase %s (§5.2): abre uma unit of work, executa", decl.Name, decl.Name)
+		e.Line("// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.")
+	}
 
 	var bodyErr error
 	e.Block(sig, func() {
@@ -264,6 +306,10 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 	})
 	if bodyErr != nil {
 		return fmt.Errorf("codegen: UseCase %s: %w", decl.Name, bodyErr)
+	}
+
+	if idemPlan != nil {
+		emitIdempotencyWrapper(e, decl, idemPlan, innerName, ctxAlias, runtimeAlias)
 	}
 	return nil
 }

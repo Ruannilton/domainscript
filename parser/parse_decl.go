@@ -804,7 +804,18 @@ func (p *parser) parseUseCase() ast.Decl {
 			timeout = p.parseExpr()
 		case p.atIdentLit("idempotency"):
 			p.advance()
-			idempotency = p.parseExpr()
+			// idempotency (§14, G2) sempre vem como um objeto de config, ex.
+			// "idempotency { required: true, window: 48h }" — a mesma forma
+			// "Key { Object }" que mod.ds/Worker.onError já reconhecem
+			// (parseConfigEntry). p.parseExpr() sozinho NUNCA soube ler um
+			// ObjectExpr "{ ... }" (achado desta task: o campo existia desde
+			// antes, mas nenhum teste jamais escreveu essa sintaxe — nenhum
+			// programa real conseguia declarar idempotency; ver
+			// codegen/decl_usecase.go, G2). parseConfigValue (parse_config.go)
+			// é o mesmo despacho genérico já usado por mod.ds/Worker: objeto
+			// "{...}"/lista "[...]"/senão cai em parseExpr — mudança aditiva,
+			// não regride nenhuma forma que já parseava.
+			idempotency = p.parseConfigValue()
 		case p.atIdentLit("tenancy"):
 			p.advance()
 			p.accept(token.COLON)

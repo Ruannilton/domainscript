@@ -2,7 +2,8 @@ package runtime
 
 import (
 	"context"
-	"errors"
+	"crypto/sha256"
+	"fmt"
 	"sync"
 )
 
@@ -103,7 +104,7 @@ func RunSaga[S any](ctx context.Context, state *S, steps []Step[S]) SagaResult {
 	failedAt := -1
 	for i, step := range steps {
 		if err := step.Up(ctx, state); err != nil {
-			if step.OnInfraError != nil && !isBusinessError(err) {
+			if step.OnInfraError != nil && !IsBusinessError(err) {
 				_ = step.OnInfraError(ctx, state)
 			}
 			res.Err = err
@@ -128,13 +129,6 @@ func RunSaga[S any](ctx context.Context, state *S, steps []Step[S]) SagaResult {
 		res.Compensated = append(res.Compensated, step.Name)
 	}
 	return res
-}
-
-// isBusinessError reports whether err is (or wraps) a BusinessError — the
-// same errors.As check codegen/http.go uses at the edge.
-func isBusinessError(err error) bool {
-	var be BusinessError
-	return errors.As(err, &be)
 }
 
 // --- SagaStatus/SagaStore: `async` mode's sagaId + queryable status (REQ-24.3). ---
@@ -190,6 +184,24 @@ type SagaStore interface {
 	Get(ctx context.Context, sagaID string) (status SagaStatus, found bool, err error)
 	// Put records status, replacing any previous value for status.ID.
 	Put(ctx context.Context, status SagaStatus) error
+}
+
+// SagaIDFromIdempotencyKey derives a STABLE, UUID-shaped sagaId from a
+// client-supplied Idempotency-Key (spec §14, G2: "para Sagas, Idempotency-Key
+// (entrada) mapeia para sagaId (saída) de forma estável") — the SAME key
+// always yields the SAME sagaId, so a generated async Saga entry point
+// (decl_saga.go/emitSagaAsyncEntry) can look the sagaId up in its SagaStore
+// BEFORE starting a new run: if a status is already recorded under it, the
+// request is a retry of an already-started (or finished) Saga, and the
+// caller returns the existing sagaId/status instead of running the steps
+// again. Not an RFC 4122 UUID (no version/variant bits — nothing here claims
+// randomness), just a deterministic hex digest shaped like one for display
+// consistency with UUID() above; SHA-256 makes two DIFFERENT keys collide
+// only with cryptographically negligible probability.
+func SagaIDFromIdempotencyKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	b := sum[:16]
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // memorySagaStore is a thread-safe, in-process SagaStore backed by a map.

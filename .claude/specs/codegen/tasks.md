@@ -404,7 +404,7 @@
   declarado (e `state:` para o `Database`). _(REQ-22.7 (b), REQ-25, spec §2.5)_
   **Commit:** `feat(codegen): FileStorage e operações de arquivo`
 
-- [ ] **G2** Idempotência real de Command (spec §14): chave do cliente, cache de
+- [x] **G2** Idempotência real de Command (spec §14): chave do cliente, cache de
   sucesso/erro de negócio (erro de infra permite retry), conflito mesma chave +
   command diferente → `IdempotencyKeyConflict` (422), corrida da mesma chave →
   `wait`/`reject` conforme `concurrentRetry`, worker de limpeza de chaves expiradas

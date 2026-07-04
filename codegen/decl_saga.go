@@ -401,6 +401,25 @@ func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 		e.Line("state := &%s{}", stateType)
 		emitSagaSeed(e, seedLines)
 		e.Line("sagaID := %s.UUID()", runtimeAlias)
+		// Idempotency-Key -> sagaId estável (spec §14, G2 — REQ-20.4/REQ-24.3):
+		// quando o chamador trouxe uma Idempotency-Key (repassada ao ctx desde
+		// E9.2, runtime.WithIdempotencyKey), o sagaId vira uma derivação
+		// DETERMINÍSTICA dela (SagaIDFromIdempotencyKey) em vez do runtime.UUID()
+		// aleatório de cima — a MESMA chave sempre produz o MESMO sagaId. Se já
+		// existe um status registrado sob esse sagaId (a chave já foi usada
+		// antes, run em andamento ou já terminado), esta chamada é um retry
+		// idempotente: devolve o sagaId de imediato SEM iniciar os passos de
+		// novo — o cliente consulta %sStatus(sagaId) para o andamento real,
+		// exatamente como faria com o 1º sagaId. Sem Idempotency-Key nenhuma
+		// (a maioria dos chamadores hoje, já que nenhuma Saga async real do
+		// wallet/shop declara idempotência — mudança inerte nesse caso), o
+		// comportamento é idêntico ao de antes desta task.
+		e.Block(fmt.Sprintf("if key, ok := %s.IdempotencyKeyFrom(ctx); ok", runtimeAlias), func() {
+			e.Line("sagaID = %s.SagaIDFromIdempotencyKey(key)", runtimeAlias)
+			e.Block(fmt.Sprintf("if _, found, _ := %s.Get(ctx, sagaID); found", storeVar), func() {
+				e.Line("return sagaID")
+			})
+		})
 		e.Line("_ = %s.Put(ctx, %s.SagaStatus{ID: sagaID, State: %s.SagaRunning})", storeVar, runtimeAlias, runtimeAlias)
 		e.BlockSuffix("go func()", "()", func() {
 			e.Line("bgCtx := %s.Background()", ctxAlias)
