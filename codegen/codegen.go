@@ -111,6 +111,29 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 	sort.Strings(moduleNames)
 
+	// groups/moduleGroupVersions (G6, spec §17) precisam existir ANTES da
+	// geração por módulo: um Version (versions/*.ds) pode viver em QUALQUER
+	// módulo do mesmo cmd/<service> — não necessariamente o módulo que
+	// declara o Command/View que traduz — então o upcast/downcast de um
+	// Command/View de um módulo M precisa enxergar os Version de TODOS os
+	// módulos do GRUPO de M, não só os de M. Por isso os buckets de TODOS os
+	// módulos são computados numa passagem separada, ANTES da passagem que
+	// gera arquivos por módulo (que hoje já precisa dos buckets de TODOS os
+	// módulos para outras coisas, ex. findCommandInBuckets em cmd/main.go —
+	// mas agora também DENTRO de generateModuleFiles).
+	groups := buildCmdGroups(prog)
+	moduleGroupModules := make(map[string][]string, len(moduleNames))
+	for _, g := range groups {
+		for _, m := range g.modules {
+			moduleGroupModules[m] = g.modules
+		}
+	}
+
+	buckets := make(map[string]moduleBucket, len(moduleNames))
+	for _, name := range moduleNames {
+		buckets[name] = bucketModuleDecls(prog, name)
+	}
+
 	var allPublicEvents []*ast.EventDecl
 	publicEventModule := make(map[string]string) // nome do PublicEvent -> módulo de origem (EmitPublicEvents, F1)
 	modulesWithUseCases := make(map[string]bool, len(moduleNames))
@@ -119,12 +142,11 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	modulesWithIdempotency := make(map[string]bool, len(moduleNames))   // G2, REQ-20.4
 	modulesWithCachedQueries := make(map[string]bool, len(moduleNames)) // G3, REQ-21.3
 	modulesXADatabases := make(map[string][]string, len(moduleNames))   // G1, REQ-20.5
-	buckets := make(map[string]moduleBucket, len(moduleNames))
 
 	for _, name := range moduleNames {
-		b := bucketModuleDecls(prog, name)
-		buckets[name] = b
-		modFiles, marks, err := generateModuleFiles(b, name, model, tab, prog)
+		b := buckets[name]
+		groupVersions := collectVersionDecls(buckets, moduleGroupModules[name])
+		modFiles, marks, err := generateModuleFiles(b, name, model, tab, prog, groupVersions)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: módulo %s: %w", name, err)
 		}
@@ -149,7 +171,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		files = append(files, File{Path: "contracts/events.go", Content: content})
 	}
 
-	for _, group := range buildCmdGroups(prog) {
+	for _, group := range groups {
 		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesXADatabases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
@@ -248,6 +270,14 @@ type moduleBucket struct {
 	notifications []*ast.NotificationDecl
 	adapters      []*ast.AdapterDecl
 	foreigns      []*ast.ForeignDecl
+	// versions (G6, spec §17) são os VersionDecl de versions/*.ds — o
+	// diretório herda o módulo do mod.ds mais próximo (program.go), exatamente
+	// como contracts/ (ver a doc de ModuleOf). Consumidos por
+	// codegen/versioning.go (via collectVersionDecls, escopo de GRUPO — todos
+	// os módulos de um cmd/<service>), nunca emitidos como arquivo próprio:
+	// viram upcast/downcast/route/lifecycle wiring dentro de cmd/<group>/
+	// main.go, ao lado das rotas HTTP que versionam (http.go).
+	versions []*ast.VersionDecl
 }
 
 // bucketModuleDecls percorre os arquivos de moduleName (prog.Files filtrados
@@ -259,6 +289,9 @@ type moduleBucket struct {
 // (wiring/borda tratados à parte) — caem no default, ignorados
 // silenciosamente, junto de qualquer nó de erro (rede de segurança
 // defensiva sobre um programa já validado sem erros, REQ-14.4).
+// *ast.VersionDecl (G6, versions/*.ds, spec §17) É coletado (b.versions),
+// mas também não vira arquivo próprio — collectVersionDecls
+// (codegen/versioning.go) o reconsulta por GRUPO de service a partir daqui.
 func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 	var paths []string
 	for p := range prog.Files {
@@ -308,6 +341,8 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 				b.adapters = append(b.adapters, n)
 			case *ast.ForeignDecl:
 				b.foreigns = append(b.foreigns, n)
+			case *ast.VersionDecl:
+				b.versions = append(b.versions, n)
 			}
 		}
 	}
@@ -376,7 +411,15 @@ type moduleMarks struct {
 // coexiste com UseCase e/ou Policy no mesmo módulo: seu ponto de entrada é
 // "StartWorkers", um nome próprio que nunca colide com "Wire" (ver a doc de
 // decl_worker.go) — por isso não há guarda equivalente para Worker aqui.
-func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) ([]File, moduleMarks, error) {
+//
+// groupVersions (G6, spec §17) são os VersionDecl de TODOS os módulos do
+// mesmo cmd/<service> que b.moduleName pertence (collectVersionDecls,
+// calculado pelo CHAMADOR antes desta passagem — ver a doc de Generate) —
+// não só os deste módulo: um versions/*.ds pode viver em outro módulo do
+// grupo. Usado só para emitir api_versions.go (emitModuleAPIVersions,
+// versioning.go), quando algum Command/View DESTE módulo tem upcast/downcast
+// em groupVersions — vazio (o caso comum, wallet/shop) não emite nada.
+func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, groupVersions []*ast.VersionDecl) ([]File, moduleMarks, error) {
 	pkg := goname.PackageName(moduleName)
 	var files []File
 
@@ -594,6 +637,18 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 			return nil, moduleMarks{}, fmt.Errorf("filestorage.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "filestorage.go"), Content: content})
+	}
+
+	// api_versions.go (G6, spec §17): Upcast/Downcast de CADA Command/View
+	// deste módulo que alguma Version do GRUPO traduz — nil quando nenhum
+	// (o caso comum, wallet/shop: groupVersions vazio) ou quando nenhum
+	// Command/View DESTE módulo específico é alvo de upcast/downcast.
+	apiVersionsContent, err := emitModuleAPIVersions(pkg, b, groupVersions, model, tab, moduleName)
+	if err != nil {
+		return nil, moduleMarks{}, fmt.Errorf("api_versions.go: %w", err)
+	}
+	if apiVersionsContent != nil {
+		files = append(files, File{Path: path.Join(pkg, "api_versions.go"), Content: apiVersionsContent})
 	}
 
 	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries}, nil
@@ -997,9 +1052,10 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	var hadRoutes bool
 	var tenantPlan *httpTenantPlan
 	var rlPending []pendingRateLimitPlan
+	var verEnv *httpVersioningEnv
 	e.Block(fmt.Sprintf("func newMux(store %s.EventStore) *%s.ServeMux", runtimeAlias, httpAlias), func() {
 		e.Line("mux := %s.NewServeMux()", httpAlias)
-		hadRoutes, tenantPlan, rlPending, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab, prog)
+		hadRoutes, tenantPlan, rlPending, verEnv, bodyErr = emitHTTPRoutes(e, "mux", iface, buckets, group.modules, model, tab, prog)
 		if bodyErr != nil {
 			return
 		}
@@ -1027,6 +1083,20 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		emitRateLimitHelpers(e, runtimeAlias, httpAlias)
 		for _, p := range rlPending {
 			emitRouteRateLimitChecks(e, p, runtimeAlias, httpAlias)
+		}
+	}
+	// Versionamento de API (G6, spec §17) — resolveAPIVersion/apiVersionGate +
+	// os mapas de lifecycle (as funções Upcast/Downcast em si moram no pacote
+	// de domínio do Command/View, emitModuleAPIVersions — ver a nota de
+	// arquitetura em httpVersioningEnv, versioning.go) — só quando a
+	// Interface HTTP do grupo de fato declara "versioning { ... }"
+	// (verEnv.plan != nil); mesma razão de posição (depois que newMux fecha)
+	// que emitTenantHelpers/emitRateLimitHelpers acima. Sem "versioning"
+	// declarado, verEnv.plan é nil e NADA é emitido — Go gerado byte a byte
+	// igual ao de antes de G6.
+	if verEnv != nil && verEnv.plan != nil {
+		if err := emitVersioningHelpers(e, verEnv, httpAlias); err != nil {
+			return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
 		}
 	}
 

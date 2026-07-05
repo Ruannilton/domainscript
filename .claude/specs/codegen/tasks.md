@@ -436,7 +436,7 @@
   ciclo, ver req. §1.3.)* _(REQ-27, spec §13)_
   **Commit:** `feat(codegen): multi-tenancy`
 
-- [ ] **G6** HTTP avançado: `versioning` + `versions/*.ds` (`VersionUpcast`/
+- [x] **G6** HTTP avançado: `versioning` + `versions/*.ds` (`VersionUpcast`/
   `VersionDowncast`/`VersionRoute`); após `deprecated` → headers `Deprecation` +
   `Sunset`; após `sunset` → **`410 Gone`**; endpoints inalterados passam direto
   (versionamento esparso). _(REQ-28.4, spec §17)_

@@ -1,0 +1,40 @@
+package billing
+
+import (
+	runtime "domainscript/generated/runtime"
+)
+
+// ChargeCmdV1Request é a shape legada (versão v1) do corpo de requisição de ChargeCmd (spec §17:
+// upcast).
+type ChargeCmdV1Request struct {
+	LegacyAccountId string          `json:"legacyAccountId"`
+	LegacyAmount    runtime.Decimal `json:"legacyAmount"`
+	LegacyCurrency  string          `json:"legacyCurrency"`
+	LegacyNote      string          `json:"legacyNote"`
+}
+
+// UpcastChargeCmdV1 traduz o corpo legado (versão v1) para ChargeCmd (spec §17: upcast). Um campo
+// de ChargeCmd não atribuído em "to" fica com o zero value Go — só acontece com um
+// campo que tem default (REQ-5.13/sema.checkVersionUpcastDefaults já barra um
+// campo obrigatório sem default e sem atribuição).
+func UpcastChargeCmdV1(raw ChargeCmdV1Request) (ChargeCmd, error) {
+	accountId := AccountId(raw.LegacyAccountId)
+	tmp1, err := NewMoney(raw.LegacyAmount, raw.LegacyCurrency)
+	if err != nil {
+		return ChargeCmd{}, err
+	}
+	amount := tmp1
+	note := Note(raw.LegacyNote)
+	return ChargeCmd{AccountId: accountId, Amount: amount, Note: note}, nil
+}
+
+// AccountSummaryVWV1Response é a shape legada (versão v1) da resposta de AccountSummaryVW (spec §17: downcast).
+type AccountSummaryVWV1Response struct {
+	AccountId   AccountId `json:"accountId"`
+	LegacyTotal Money     `json:"legacyTotal"`
+}
+
+// DowncastAccountSummaryVWV1 traduz AccountSummaryVW atual de volta à shape legada (versão v1, spec §17: downcast).
+func DowncastAccountSummaryVWV1(v AccountSummaryVW) AccountSummaryVWV1Response {
+	return AccountSummaryVWV1Response{AccountId: v.Id, LegacyTotal: v.Balance}
+}

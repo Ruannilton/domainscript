@@ -1,0 +1,309 @@
+package main
+
+import (
+	billing "domainscript/generated/billing"
+	runtime "domainscript/generated/runtime"
+	json "encoding/json"
+	errors "errors"
+	fmt "fmt"
+	log "log"
+	http "net/http"
+	time "time"
+)
+
+// main é o ponto de entrada do service "billing" — wiring in-memory a partir de
+// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada
+// geração, não editar à mão.
+func main() {
+	store := runtime.NewMemoryEventStore()
+	uow := runtime.NewUnitOfWork(store)
+
+	billing.Wire(uow)
+
+	port := "8080"
+	server := &http.Server{Addr: fmt.Sprintf(":%s", port), Handler: newMux(store)}
+	log.Fatal(server.ListenAndServe())
+}
+
+// newMux constrói o *http.ServeMux do service "billing", registrando cada rota de
+// Interface HTTP (§design 3.12) — função à parte de main() (ver a doc acima)
+// para poder ser exercitada por teste via httptest, sem subir um socket real.
+func newMux(store runtime.EventStore) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /accounts/{accountId}/charge", func(w http.ResponseWriter, r *http.Request) {
+		apiVersion, verOK := apiVersionGate(w, r)
+		if !verOK {
+			return
+		}
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		var cmd billing.ChargeCmd
+		switch apiVersion {
+		case "v1":
+			if r.ContentLength != 0 {
+				var legacy billing.ChargeCmdV1Request
+				if err := json.NewDecoder(r.Body).Decode(&legacy); err != nil {
+					http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+					return
+				}
+				var uerr error
+				cmd, uerr = billing.UpcastChargeCmdV1(legacy)
+				if uerr != nil {
+					http.Error(w, uerr.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		default:
+			if r.ContentLength != 0 {
+				if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+					http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+					return
+				}
+			}
+		}
+		accountIdVal, err := billing.NewAccountId(r.PathValue("accountId"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "accountId", err), http.StatusBadRequest)
+			return
+		}
+		cmd.AccountId = accountIdVal
+		if err := billing.ChargeAccount(ctx, cmd); err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /accounts/{accountId}/adjust", func(w http.ResponseWriter, r *http.Request) {
+		apiVersion, verOK := apiVersionGate(w, r)
+		if !verOK {
+			return
+		}
+		switch apiVersion {
+		case "v1":
+			caller := devCallerFromRequest(r)
+			ctx := runtime.WithCaller(r.Context(), caller)
+			if key := r.Header.Get("Idempotency-Key"); key != "" {
+				ctx = runtime.WithIdempotencyKey(ctx, key)
+			}
+			var cmd billing.AdjustCmd
+			if r.ContentLength != 0 {
+				if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+					http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+					return
+				}
+			}
+			accountIdOverrideVal, err := billing.NewAccountId(r.PathValue("accountId"))
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid path param %q: %s", "accountId", err), http.StatusBadRequest)
+				return
+			}
+			cmd.AccountId = accountIdOverrideVal
+			if err := billing.LegacyAdjustAccount(ctx, cmd); err != nil {
+				writeBusinessError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		var cmd billing.ChargeCmd
+		switch apiVersion {
+		case "v1":
+			if r.ContentLength != 0 {
+				var legacy billing.ChargeCmdV1Request
+				if err := json.NewDecoder(r.Body).Decode(&legacy); err != nil {
+					http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+					return
+				}
+				var uerr error
+				cmd, uerr = billing.UpcastChargeCmdV1(legacy)
+				if uerr != nil {
+					http.Error(w, uerr.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		default:
+			if r.ContentLength != 0 {
+				if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+					http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
+					return
+				}
+			}
+		}
+		accountIdVal, err := billing.NewAccountId(r.PathValue("accountId"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "accountId", err), http.StatusBadRequest)
+			return
+		}
+		cmd.AccountId = accountIdVal
+		if err := billing.ChargeAccount(ctx, cmd); err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /accounts/{accountId}", func(w http.ResponseWriter, r *http.Request) {
+		apiVersion, verOK := apiVersionGate(w, r)
+		if !verOK {
+			return
+		}
+		caller := devCallerFromRequest(r)
+		ctx := runtime.WithCaller(r.Context(), caller)
+		if key := r.Header.Get("Idempotency-Key"); key != "" {
+			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		accountIdVal, err := billing.NewAccountId(r.PathValue("accountId"))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "accountId", err), http.StatusBadRequest)
+			return
+		}
+		result, err := billing.GetAccount(ctx, store, accountIdVal)
+		if err != nil {
+			writeBusinessError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch apiVersion {
+		case "v1":
+			if err := json.NewEncoder(w).Encode(billing.DowncastAccountSummaryVWV1(result)); err != nil {
+				http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
+			}
+		default:
+			if err := json.NewEncoder(w).Encode(result); err != nil {
+				http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
+			}
+		}
+	})
+	return mux
+}
+
+// devCallerFromRequest constrói um runtime.Caller de DESENVOLVIMENTO a partir
+// do header "X-Caller-Id" (§design 3.12): presente e não-vazio ->
+// Authenticated()==true, ID()==valor do header; ausente -> Authenticated()==
+// false, ID()=="". Placeholder até a borda de auth real chegar; HasRole
+// sempre devolve false.
+func devCallerFromRequest(r *http.Request) runtime.Caller {
+	id := r.Header.Get("X-Caller-Id")
+	return devCaller{authenticated: id != "", id: id}
+}
+
+// devCaller implementa runtime.Caller para o caller de dev acima.
+type devCaller struct {
+	authenticated bool
+	id            string
+}
+
+func (c devCaller) Authenticated() bool {
+	return c.authenticated
+}
+
+func (c devCaller) ID() string {
+	return c.id
+}
+
+func (c devCaller) HasRole(role string) bool {
+	return false
+}
+
+// writeBusinessError mapeia err a um status HTTP (§design 3.12, REQ-28.2):
+// distingue por errors.As(&runtime.BusinessError) — negócio -> 422, exceto
+// runtime.ErrForbidden (403), runtime.ErrNotFound (404) e
+// runtime.ErrIdempotencyInFlight (409, G2, spec §14 — corrida da mesma
+// Idempotency-Key sob "concurrentRetry: reject"); qualquer outro error
+// (infra) -> 503. runtime.ErrIdempotencyKeyConflict/ErrIdempotencyKeyRequired
+// (G2) caem no default (422) DE PROPÓSITO — REQ-20.4 pede 422 para o
+// conflito, que já é o que o default produz; não precisam de um case à
+// parte, ao contrário de Forbidden/NotFound/InFlight, que DEVIAM do default.
+// runtime.ErrNotFound (404) também é o que um Load/Query devolve para um
+// aggregate de OUTRO tenant (G5, spec §13.2, row_level) — o mesmo caminho de
+// "não encontrado", de propósito: cross-tenant nunca deve vazar um 403 (evita
+// enumeração). Rate-limit (429, G4) e tenant ausente (400 fail-closed, G5) são
+// resolvidos À PARTE, ANTES desta função sequer ser chamada (writeRateLimitExceeded/
+// requireTenant, ver as rotas acima) — nenhum dos dois chega a err aqui. Sunset
+// (410) continua marco posterior (G6) — deliberadamente não tratado aqui, para
+// não travar a extensão futura com suposições erradas.
+func writeBusinessError(w http.ResponseWriter, err error) {
+	var be runtime.BusinessError
+	if errors.As(err, &be) {
+		switch {
+		case errors.Is(err, runtime.ErrForbidden):
+			http.Error(w, be.Msg, http.StatusForbidden)
+		case errors.Is(err, runtime.ErrNotFound):
+			http.Error(w, be.Msg, http.StatusNotFound)
+		case errors.Is(err, runtime.ErrIdempotencyInFlight):
+			http.Error(w, be.Msg, http.StatusConflict)
+		default:
+			http.Error(w, be.Msg, http.StatusUnprocessableEntity)
+		}
+		return
+	}
+	http.Error(w, "internal error", http.StatusServiceUnavailable)
+}
+
+// resolveAPIVersion extrai a versão de API requisitada (spec §17) do header
+// "Api-Version" — ausente ou vazio cai para a versão corrente ("v2").
+func resolveAPIVersion(r *http.Request) string {
+	v := r.Header.Get("Api-Version")
+	if v == "" {
+		return "v2"
+	}
+	return v
+}
+
+// mustParseAPIVersionDate parseia uma data "YYYY-MM-DD" declarada em Version
+// (spec §17) — já validada em tempo de GERAÇÃO (versionDateLiteral), então um
+// erro aqui é bug de geração, não de dado do usuário.
+func mustParseAPIVersionDate(s string) time.Time {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+// apiVersionSunset mapeia versão -> data em que deixou de funcionar (410 Gone
+// a partir dela, spec §17).
+var apiVersionSunset = map[string]time.Time{
+	"v0": mustParseAPIVersionDate("2016-01-01"),
+	"v1": mustParseAPIVersionDate("2099-01-01"),
+}
+
+// apiVersionSunsetHeader formata t no formato HTTP-date (RFC 7231/8594) para o
+// header "Sunset".
+func apiVersionSunsetHeader(t time.Time) string {
+	return t.UTC().Format(http.TimeFormat)
+}
+
+// apiVersionDeprecated mapeia versão -> data em que passou a ser deprecated
+// (headers Deprecation/Sunset a partir dela, spec §17).
+var apiVersionDeprecated = map[string]time.Time{
+	"v0": mustParseAPIVersionDate("2015-01-01"),
+	"v1": mustParseAPIVersionDate("2020-01-01"),
+}
+
+// apiVersionGate resolve a versão requisitada (spec §17), aplica sunset (410
+// Gone, o handler de domínio NUNCA roda) e deprecated (headers Deprecation/
+// Sunset, segue normal) — chamado no INÍCIO de todo handler versionado, antes
+// de qualquer outro gate (caller/tenant/rate-limit) — ver a doc de
+// emitUseCaseRoute/emitQueryRoute (http.go).
+func apiVersionGate(w http.ResponseWriter, r *http.Request) (string, bool) {
+	version := resolveAPIVersion(r)
+	if sunset, ok := apiVersionSunset[version]; ok && !time.Now().Before(sunset) {
+		http.Error(w, "API version sunset (spec §17)", http.StatusGone)
+		return "", false
+	}
+	if dep, ok := apiVersionDeprecated[version]; ok && !time.Now().Before(dep) {
+		w.Header().Set("Deprecation", "true")
+		if sunset, ok := apiVersionSunset[version]; ok {
+			w.Header().Set("Sunset", apiVersionSunsetHeader(sunset))
+		}
+	}
+	return version, true
+}

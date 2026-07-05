@@ -251,22 +251,31 @@ func emitTenantGate(e *emit.Emitter, plan *httpTenantPlan, route *ast.Route, htt
 // chamador (generateCmdMainFile) as renderiza de volta no nível de pacote
 // depois que este bloco (newMux) fecha (ver a doc de pendingRateLimitPlan,
 // codegen/ratelimit.go, sobre por que isso não pode ser emitido aqui
-// dentro).
-func emitHTTPRoutes(e *emit.Emitter, muxVar string, iface *ast.InterfaceDecl, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) (hadRoutes bool, tenantPlan *httpTenantPlan, rlPending []pendingRateLimitPlan, err error) {
+// dentro). verEnv (G6, spec §17) é a mesma dança: resolvido UMA vez aqui
+// (nil.plan quando a Interface não declara "versioning { ... }" — ver a doc
+// de codegen/versioning.go) e repassado a cada rota, que enfileira nele os
+// Upcast/Downcast por (Command|View, versão) que de fato usa; o chamador
+// (generateCmdMainFile) os renderiza de volta no nível de pacote também
+// depois que newMux fecha (emitVersioningHelpers).
+func emitHTTPRoutes(e *emit.Emitter, muxVar string, iface *ast.InterfaceDecl, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, prog *program.Program) (hadRoutes bool, tenantPlan *httpTenantPlan, rlPending []pendingRateLimitPlan, verEnv *httpVersioningEnv, err error) {
 	if iface == nil || len(iface.Routes) == 0 {
-		return false, nil, nil, nil
+		return false, nil, nil, nil, nil
 	}
 	tenantPlan, err = parseInterfaceTenantPlan(iface)
 	if err != nil {
-		return true, nil, nil, err
+		return true, nil, nil, nil, err
+	}
+	verEnv, err = newHTTPVersioningEnv(iface, buckets, modules)
+	if err != nil {
+		return true, tenantPlan, nil, nil, err
 	}
 	rlEnv := newHTTPRateLimitEnv(prog, iface)
 	for _, route := range iface.Routes {
-		if err := emitRoute(e, muxVar, route, buckets, modules, model, tab, rlEnv, tenantPlan); err != nil {
-			return true, tenantPlan, *rlEnv.pending, fmt.Errorf("rota %s %q -> %s: %w", route.Method, route.Path, route.Target, err)
+		if err := emitRoute(e, muxVar, route, buckets, modules, model, tab, rlEnv, tenantPlan, verEnv); err != nil {
+			return true, tenantPlan, *rlEnv.pending, verEnv, fmt.Errorf("rota %s %q -> %s: %w", route.Method, route.Path, route.Target, err)
 		}
 	}
-	return true, tenantPlan, *rlEnv.pending, nil
+	return true, tenantPlan, *rlEnv.pending, verEnv, nil
 }
 
 // routeTarget é o resultado de resolveRouteTarget: exatamente um dos dois
@@ -307,16 +316,17 @@ func resolveRouteTarget(buckets map[string]moduleBucket, modules []string, targe
 // resolveRouteTarget achou. rlEnv (G4, spec §16) resolve/enfileira o rate
 // limiting da rota, quando configurado — ver a doc de httpRateLimitEnv
 // (codegen/ratelimit.go). tenantPlan (G5, §13) repassa a config de tenancy da
-// Interface, se houver — ver a doc do arquivo.
-func emitRoute(e *emit.Emitter, muxVar string, route *ast.Route, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan) error {
+// Interface, se houver — ver a doc do arquivo. verEnv (G6, spec §17) repassa
+// o versionamento resolvido da Interface — ver codegen/versioning.go.
+func emitRoute(e *emit.Emitter, muxVar string, route *ast.Route, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan, verEnv *httpVersioningEnv) error {
 	target, err := resolveRouteTarget(buckets, modules, route.Target)
 	if err != nil {
 		return err
 	}
 	if target.usecase != nil {
-		return emitUseCaseRoute(e, muxVar, route, target.usecase, target.ucModule, buckets, modules, model, tab, rlEnv, tenantPlan)
+		return emitUseCaseRoute(e, muxVar, route, target.usecase, target.ucModule, buckets, modules, model, tab, rlEnv, tenantPlan, verEnv)
 	}
-	return emitQueryRoute(e, muxVar, route, target.query, target.qModule, model, tab, rlEnv, tenantPlan)
+	return emitQueryRoute(e, muxVar, route, target.query, target.qModule, model, tab, rlEnv, tenantPlan, verEnv)
 }
 
 // findCommandInBuckets procura um CommandDecl de nome name entre TODOS os
@@ -633,7 +643,33 @@ func emitRateLimitGate(e *emit.Emitter, checksFuncName, runtimeAlias string) {
 // resolvido) — 400 fail-closed antes de qualquer decode de corpo/path param
 // quando a rota exige tenant e a borda não consegue resolvê-lo. Uma rota sem
 // tenancy configurada em lugar nenhum (tenantPlan == nil) não muda NADA.
-func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.UseCaseDecl, ucModule string, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan) error {
+//
+// --- Versionamento (G6, spec §17) ---
+//
+// verEnv.plan == nil (Interface sem "versioning { ... }", o caso do
+// wallet/shop) não muda NADA — nenhuma linha de versão é emitida. Quando a
+// Interface declara versioning, TRÊS coisas acontecem, nesta ordem, logo no
+// INÍCIO do handler (antes até de emitCallerAndIdempotency — um cliente
+// numa versão sunset nunca deveria pagar o custo de autenticação/tenant/rate
+// limit, ver a doc de apiVersionGate, codegen/versioning.go):
+//
+//  1. apiVersionGate resolve a versão e aplica sunset (410 imediato, handler
+//     nunca roda) e deprecated (headers Deprecation/Sunset, segue normal).
+//  2. Se ALGUMA Version declara "route <esta rota> -> UseCase" (VersionRoute,
+//     mudança de comportamento, não de shape), um switch despacha para o
+//     UseCase de override — inteiramente auto-contido (seu próprio caller/
+//     decode/dispatch), ignorando upcast/downcast/tenant/rate-limit da rota
+//     BASE — e retorna, sem cair no fluxo abaixo (emitVersionRouteOverrides).
+//  3. Se a Version tem "upcast <este Command>", o decode do corpo (mais
+//     abaixo) ganha um switch: a versão com upcast decodifica a shape legada
+//     e chama Upcast<Cmd><Ver>; qualquer outra versão (incl. a corrente)
+//     decodifica direto no Command atual — EXATAMENTE como antes de G6
+//     (emitPlainCommandDecode, reusado em ambos os ramos).
+//
+// Endpoints sem NENHUM upcast/override para o Command desta rota passam
+// direto, byte a byte igual ao handler sem versionamento (versionamento
+// esparso, spec §17) — só ganham o gate de sunset/deprecated.
+func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.UseCaseDecl, ucModule string, buckets map[string]moduleBucket, modules []string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan, verEnv *httpVersioningEnv) error {
 	cmdDecl, cmdModule, ok := findCommandInBuckets(buckets, modules, uc.Handles)
 	if !ok {
 		return fmt.Errorf("UseCase %s: Command %q (handles) não encontrado nos módulos do grupo", uc.Name, uc.Handles)
@@ -662,11 +698,32 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 	}
 	hasIdempotency := uc.Idempotency != nil
 
+	upcasts := verEnv.upcastsForCommand(cmdDecl.Name)
+	overrides, err := verEnv.routeOverridesFor(route.Path)
+	if err != nil {
+		return fmt.Errorf("UseCase %s: %w", uc.Name, err)
+	}
+	apiVersionVar := "_"
+	if len(upcasts) > 0 || len(overrides) > 0 {
+		apiVersionVar = "apiVersion"
+	}
+
 	pattern := route.Method + " " + route.Path
 	header := fmt.Sprintf("%s.HandleFunc(%s, func(w %s.ResponseWriter, r *%s.Request)", muxVar, strconv.Quote(pattern), httpAlias, httpAlias)
 
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
+		if verEnv.plan != nil {
+			e.Line("%s, verOK := apiVersionGate(w, r)", apiVersionVar)
+			e.Block("if !verOK", func() {
+				e.Line("return")
+			})
+			if err := emitVersionRouteOverrides(e, overrides, route, buckets, modules, model, tab, runtimeAlias, httpAlias); err != nil {
+				bodyErr = err
+				return
+			}
+		}
+
 		emitCallerAndIdempotency(e, runtimeAlias)
 		emitTenantGate(e, tenantPlan, route, httpAlias)
 		if checksFuncName != "" && !hasIdempotency {
@@ -674,14 +731,39 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 		}
 
 		e.Line("var cmd %s.%s", cmdAlias, cmdDecl.Name)
-		e.Block("if r.ContentLength != 0", func() {
-			jsonAlias := e.Import("encoding/json")
-			e.Block(fmt.Sprintf("if err := %s.NewDecoder(r.Body).Decode(&cmd); err != nil", jsonAlias), func() {
-				fmtAlias := e.Import("fmt")
-				e.Line("%s.Error(w, %s.Sprintf(%q, err), %s.StatusBadRequest)", httpAlias, fmtAlias, "invalid request body: %s", httpAlias)
-				e.Line("return")
-			})
-		})
+		if len(upcasts) > 0 {
+			versions := sortedStringKeys(upcasts)
+			e.Line("switch apiVersion {")
+			for _, version := range versions {
+				e.Line("case %s:", strconv.Quote(version))
+				// reqStructName/fnName são QUALIFICADOS pelo alias do pacote de
+				// domínio de cmdDecl (cmdAlias) — a struct+função em si mora lá
+				// (emitModuleAPIVersions, versioning.go), não aqui em cmd/main.go
+				// (ver a nota de arquitetura em httpVersioningEnv, versioning.go).
+				reqStructName := fmt.Sprintf("%s.%s", cmdAlias, cmdDecl.Name+versionSuffixGo(version)+"Request")
+				fnName := fmt.Sprintf("%s.%s", cmdAlias, "Upcast"+cmdDecl.Name+versionSuffixGo(version))
+				e.Block("if r.ContentLength != 0", func() {
+					jsonAlias := e.Import("encoding/json")
+					e.Line("var legacy %s", reqStructName)
+					e.Block(fmt.Sprintf("if err := %s.NewDecoder(r.Body).Decode(&legacy); err != nil", jsonAlias), func() {
+						fmtAlias := e.Import("fmt")
+						e.Line("%s.Error(w, %s.Sprintf(%q, err), %s.StatusBadRequest)", httpAlias, fmtAlias, "invalid request body: %s", httpAlias)
+						e.Line("return")
+					})
+					e.Line("var uerr error")
+					e.Line("cmd, uerr = %s(legacy)", fnName)
+					e.Block("if uerr != nil", func() {
+						e.Line("%s.Error(w, uerr.Error(), %s.StatusBadRequest)", httpAlias, httpAlias)
+						e.Line("return")
+					})
+				})
+			}
+			e.Line("default:")
+			emitPlainCommandDecode(e, httpAlias)
+			e.Line("}")
+		} else {
+			emitPlainCommandDecode(e, httpAlias)
+		}
 
 		for i, param := range pp {
 			field := fields[i]
@@ -716,6 +798,26 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 	return bodyErr
 }
 
+// emitPlainCommandDecode emite "if r.ContentLength != 0 { ... Decode(&cmd) ...
+// }" — o decode direto do corpo JSON no Command ATUAL, sem tradução alguma.
+// É o comportamento de SEMPRE (antes de G6 só existia este caminho); com
+// versionamento (G6), continua sendo o "default" do switch por versão
+// (nenhum upcast declarado para esta versão) e o único caminho quando o
+// Command não tem NENHUM upcast em lugar nenhum (versionamento esparso,
+// spec §17) — extraído para função à parte para que os dois pontos de
+// chamada (emitUseCaseRoute e emitVersionRouteOverrideBody, versioning.go)
+// produzam o MESMO Go, byte a byte.
+func emitPlainCommandDecode(e *emit.Emitter, httpAlias string) {
+	e.Block("if r.ContentLength != 0", func() {
+		jsonAlias := e.Import("encoding/json")
+		e.Block(fmt.Sprintf("if err := %s.NewDecoder(r.Body).Decode(&cmd); err != nil", jsonAlias), func() {
+			fmtAlias := e.Import("fmt")
+			e.Line("%s.Error(w, %s.Sprintf(%q, err), %s.StatusBadRequest)", httpAlias, fmtAlias, "invalid request body: %s", httpAlias)
+			e.Line("return")
+		})
+	})
+}
+
 // emitQueryRoute emite um mux.HandleFunc para uma rota cujo Target resolve a
 // uma Query (ver a doc do arquivo: cada parâmetro declarado vem de um path
 // param de mesmo nome, na ordem declarada; sucesso 200 + JSON, erro via
@@ -725,7 +827,20 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 // checagem sempre roda ANTES de tudo, sem exceção. tenantPlan (G5, §13) roda
 // logo após emitCallerAndIdempotency e ANTES do rate limit gate, mesma ordem
 // e mesmo motivo de emitUseCaseRoute.
-func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.QueryDecl, qModule string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan) error {
+//
+// --- Versionamento (G6, spec §17) ---
+//
+// verEnv.plan == nil não muda NADA (ver a doc de emitUseCaseRoute). Quando
+// declarado, o mesmo apiVersionGate roda primeiro (sunset/deprecated); se a
+// View de retorno tem "downcast" em alguma Version, o encode da resposta
+// (mais abaixo) ganha um switch: a versão com downcast serializa a shape
+// legada (Downcast<View><Ver>(result)); qualquer outra versão serializa
+// "result" direto — igual a antes de G6 (emitPlainViewEncode, reusado nos
+// dois ramos). VersionRoute (override de UseCase) apontando para uma rota
+// cujo alvo BASE é uma Query não é suportado por este gerador — spec §17
+// descreve route como troca para "UseCase distinto", nunca para outra Query;
+// erro de geração claro em vez de ignorar silenciosamente.
+func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.QueryDecl, qModule string, model *types.Model, tab *symbols.SymbolTable, rlEnv *httpRateLimitEnv, tenantPlan *httpTenantPlan, verEnv *httpVersioningEnv) error {
 	pp := routePathParams(route.Path)
 	pathSet := make(map[string]bool, len(pp))
 	for _, p := range pp {
@@ -744,11 +859,46 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 		return fmt.Errorf("Query %s: %w", decl.Name, err)
 	}
 
+	overrides, err := verEnv.routeOverridesFor(route.Path)
+	if err != nil {
+		return fmt.Errorf("Query %s: %w", decl.Name, err)
+	}
+	if len(overrides) > 0 {
+		return fmt.Errorf("Query %s: rota %q tem VersionRoute (versão %s -> %s), mas o alvo BASE desta rota é uma Query — não suportado por este gerador (spec §17: route troca para um UseCase distinto)", decl.Name, route.Path, overrides[0].version, overrides[0].usecase.Name)
+	}
+	downcasts := verEnv.downcastsForView(decl.Return)
+	var downcastModule string
+	if len(downcasts) > 0 {
+		// A struct+função Downcast<View><Ver> mora no pacote de domínio da
+		// View (emitModuleAPIVersions, versioning.go) — resolve o módulo que a
+		// declara pela MESMA regra de aliasForSymbol (Lookup local a qModule,
+		// fallback Find global) para qualificar a chamada mais abaixo.
+		sym, ok := tab.Lookup(qModule, decl.Return.Name)
+		if !ok {
+			sym, ok = tab.Find(decl.Return.Name)
+		}
+		if !ok {
+			return fmt.Errorf("Query %s: View %q (retorno) não resolvida (bug de geração — REQ-9 já deveria ter barrado isso)", decl.Name, decl.Return.Name)
+		}
+		downcastModule = sym.Module
+	}
+	apiVersionVar := "_"
+	if len(downcasts) > 0 {
+		apiVersionVar = "apiVersion"
+	}
+
 	pattern := route.Method + " " + route.Path
 	header := fmt.Sprintf("%s.HandleFunc(%s, func(w %s.ResponseWriter, r *%s.Request)", muxVar, strconv.Quote(pattern), httpAlias, httpAlias)
 
 	var bodyErr error
 	e.BlockSuffix(header, ")", func() {
+		if verEnv.plan != nil {
+			e.Line("%s, verOK := apiVersionGate(w, r)", apiVersionVar)
+			e.Block("if !verOK", func() {
+				e.Line("return")
+			})
+		}
+
 		emitCallerAndIdempotency(e, runtimeAlias)
 		emitTenantGate(e, tenantPlan, route, httpAlias)
 		if checksFuncName != "" {
@@ -787,13 +937,41 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 			e.Line("return")
 		})
 		e.Line(`w.Header().Set("Content-Type", "application/json")`)
-		jsonAlias := e.Import("encoding/json")
-		e.Block(fmt.Sprintf("if err := %s.NewEncoder(w).Encode(result); err != nil", jsonAlias), func() {
-			fmtAlias := e.Import("fmt")
-			e.Line("%s.Error(w, %s.Sprintf(%q, err), %s.StatusInternalServerError)", httpAlias, fmtAlias, "failed to encode response: %s", httpAlias)
-		})
+		if len(downcasts) > 0 {
+			viewAlias, aerr := aliasForSymbol(e, tab, downcastModule, decl.Return.Name)
+			if aerr != nil {
+				bodyErr = aerr
+				return
+			}
+			versions := sortedStringKeys(downcasts)
+			e.Line("switch apiVersion {")
+			for _, version := range versions {
+				e.Line("case %s:", strconv.Quote(version))
+				fnName := fmt.Sprintf("%s.%s", viewAlias, "Downcast"+decl.Return.Name+versionSuffixGo(version))
+				emitPlainViewEncode(e, httpAlias, fmt.Sprintf("%s(result)", fnName))
+			}
+			e.Line("default:")
+			emitPlainViewEncode(e, httpAlias, "result")
+			e.Line("}")
+		} else {
+			emitPlainViewEncode(e, httpAlias, "result")
+		}
 	})
 	return bodyErr
+}
+
+// emitPlainViewEncode emite "if err := json.NewEncoder(w).Encode(valueGo);
+// err != nil { ... }" — o encode da resposta, EXATAMENTE como antes de G6.
+// valueGo é "result" (o valor de retorno da Query, sem tradução) ou uma
+// chamada a Downcast<View><Ver>(result) (G6, spec §17) — extraído para função
+// à parte para que os dois ramos do switch por versão (emitQueryRoute)
+// produzam o MESMO Go.
+func emitPlainViewEncode(e *emit.Emitter, httpAlias, valueGo string) {
+	jsonAlias := e.Import("encoding/json")
+	e.Block(fmt.Sprintf("if err := %s.NewEncoder(w).Encode(%s); err != nil", jsonAlias, valueGo), func() {
+		fmtAlias := e.Import("fmt")
+		e.Line("%s.Error(w, %s.Sprintf(%q, err), %s.StatusInternalServerError)", httpAlias, fmtAlias, "failed to encode response: %s", httpAlias)
+	})
 }
 
 // emitTenantHelpers emite, como declarações de PACOTE, tenantIDFromRequest
