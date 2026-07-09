@@ -1,0 +1,11 @@
+package grpcedge
+
+// Empty é a resposta de uma rpc cujo alvo é um UseCase (H1, REQ-29.3): um
+// UseCase devolve só error no domínio (ver codegen/decl_usecase.go) — não há
+// dado para serializar em caso de sucesso, o mesmo raciocínio que levou a
+// borda HTTP a responder "204 No Content" sem corpo para uma rota de UseCase
+// (ver codegen/http.go). gRPC sempre espera UMA mensagem de resposta (mesmo
+// vazia), daí este tipo compartilhado em vez de "nil": um único tipo
+// reutilizado por toda rpc de UseCase de todo service, em vez de gerar um
+// "<Nome>Response{}" idêntico e vazio por rpc.
+type Empty struct{}

@@ -572,9 +572,31 @@ O `mod.ds` (`ast.ModuleDecl` + `program.Module`/`Database`) vira **wiring**: o
   string(self.id)`. A porta HTTP vem do setting `port:` da `Interface` quando
   declarado (ex.: `port: env("HTTP_PORT")`, §10); fallback `8080` quando ausente
   (caso do wallet, cujo `interface.ds` só declara rotas). *(§6.)*
-- **gRPC (REQ-29):** gera `.proto` e stubs; **isola** a dep `google.golang.org/grpc`
-  num pacote de borda separado, presente só quando há `Interface GRPC`. Exceção
-  documentada à NFR-12.
+- **gRPC (REQ-29, H1):** `.proto` (`proto/<service>.proto`) é um artefato TEXTUAL —
+  documentação/interoperabilidade, nunca compilado por `protoc` neste pipeline (o
+  mesmo motivo por trás do parser recursivo-descendente à mão, REQ-3/NFR-1). O
+  servidor gRPC gerado é real (gRPC-sobre-HTTP/2 de verdade), montado à mão via a
+  API de baixo nível do grpc-go — um `grpc.ServiceDesc`/`grpc.MethodDesc` por
+  `GrpcService`/`GrpcRPC`, sem nenhum tipo `*.pb.go` — forçando um
+  `encoding.Codec` de JSON (`grpc.ForceServerCodec`/`ForceCodec`) em vez do codec
+  "proto" default: os DTOs de request/response são structs Go com tag `json`
+  (o Command reusado tal qual para uma rpc-para-UseCase; um struct de request
+  próprio, um campo por `Params`, para uma rpc-para-Query), nunca
+  `proto.Message`. **Exceção documentada à NFR-12**: a dep `google.golang.org/grpc`
+  é isolada num pacote de borda vendorado (`grpcedge/`, opt-in, presente só
+  quando há `Interface GRPC` — mirror de `sqlruntime/` para o adapter SQL, G1) que
+  guarda as peças INVARIANTES entre programas (o codec JSON, o tipo de resposta
+  vazia de uma rpc-para-UseCase, extração de caller/idempotency-key da metadata
+  de entrada, e o mapeamento de erro a `codes.Code`); o `grpc.ServiceDesc`/
+  handlers em si — que VARIAM por programa — são emitidos direto em
+  `cmd/<service>/main.go` (função `newGRPCServer`, ao lado de `newMux`), não num
+  pacote à parte: as duas bordas (HTTP/gRPC) já compartilham esse arquivo, e um
+  pacote extra só faria sentido isolado por service, o que colidiria de nome
+  entre services num programa multi-serviço. Reusa o MESMO dispatch de domínio
+  que a borda HTTP chama (`resolveRouteTarget`/`findCommandInBuckets`, `http.go`)
+  — nunca uma segunda cópia da lógica de negócio. Tenant/rate-limit/versionamento
+  (G4-G6) não têm equivalente na borda gRPC ainda — fora do escopo de REQ-29,
+  registrado aqui de propósito para não travar a extensão futura.
 
 ### 3.13. Observabilidade (`observ.go`) — REQ-30
 

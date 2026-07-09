@@ -3,6 +3,8 @@ package codegen
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // project.go emite o esqueleto de projeto do gerado (E9.1, REQ-14.5, §design
@@ -26,6 +28,31 @@ const (
 	// como default de opts.GoVersion quando o adapter SQL está habilitado e
 	// o chamador não pediu uma versão explícita.
 	sqliteMinGoVersion = "1.25"
+
+	// grpcModule/grpcVersion identificam o ÚNICO par módulo/versão que este
+	// gerador sabe vendorar atrás do pacote de borda grpcedge (H1, NFR-12,
+	// REQ-29.2): fixado (não "latest") pela mesma razão de
+	// sqliteDriverModule/sqliteDriverVersion (determinismo, NFR-13). v1.67.0
+	// foi escolhida (em vez da mais recente disponível) por ter uma árvore de
+	// dependências transitivas deliberadamente mais enxuta (sem
+	// opentelemetry/spiffe/gonum, presentes só a partir de versões bem mais
+	// novas do grpc-go) — mais rápida de resolver via `go mod tidy`/`go build`
+	// no smoke test (NFR-14) sem trocar nenhuma garantia de compatibilidade
+	// que este gerador precisa (ServiceDesc/MethodDesc manuais +
+	// encoding.Codec, toda API pública estável há várias versões).
+	// google.golang.org/protobuf NÃO é listada aqui: nenhum Go emitido por
+	// este gerador a importa diretamente (o codec de borda usa
+	// encoding.Codec com `any`, nunca proto.Message — ver
+	// codegen/grpcrt/codec.go.txt) — `go mod tidy` a resolve sozinha como
+	// dependência INDIRETA do próprio grpc-go, exatamente como já acontece
+	// com as dependências transitivas de modernc.org/sqlite acima.
+	grpcModule  = "google.golang.org/grpc"
+	grpcVersion = "v1.67.0"
+	// grpcMinGoVersion é a versão mínima de Go que grpcVersion exige (seu
+	// próprio go.mod declara "go 1.21") — não usada hoje como default de
+	// opts.GoVersion (o default "1.22" abaixo já a excede), mas registrada
+	// aqui pela mesma razão documental de sqliteMinGoVersion.
+	grpcMinGoVersion = "1.21"
 )
 
 // EmitGoMod gera o conteúdo de go.mod do projeto gerado: "module <path>\n\ngo
@@ -33,13 +60,19 @@ const (
 // stdlib e do runtime vendorado (NFR-12), então não há nenhuma dependência
 // externa a declarar. sqlAdapter (G1, REQ-26.2/26.3) é true quando
 // programNeedsSQLAdapter (codegen.go) encontrou ao menos um Database
-// provider:"sqlite" no programa: só ENTÃO um bloco
-// "require modernc.org/sqlite <versão>" é acrescentado (a única dependência
-// externa que este gerador introduz, isolada e opt-in — NFR-12), e o default
-// de versão de Go sobe para sqliteMinGoVersion (o driver exige go >= 1.25).
-// Um programa sem nenhum Database sqlite continua produzindo EXATAMENTE o
-// go.mod de antes de G1 (byte a byte) — wallet/shop (provider "postgres")
-// incluídos.
+// provider:"sqlite" no programa; grpcAdapter (H1, REQ-29.2) é true quando
+// programNeedsGRPC (codegen.go) encontrou ao menos uma "Interface GRPC": só
+// ENTÃO cada um acrescenta sua própria linha "require <módulo> <versão>" (as
+// únicas dependências externas que este gerador introduz, cada uma isolada e
+// opt-in — NFR-12); as duas podem estar presentes ao mesmo tempo (um
+// programa com Database sqlite E Interface GRPC), caso em que viram um único
+// bloco "require (...)" com as duas linhas, ordenadas por caminho de módulo
+// (determinismo, NFR-13). sqlAdapter também sobe o default de versão de Go
+// para sqliteMinGoVersion (o driver exige go >= 1.25) — grpcAdapter sozinho
+// NÃO precisa disso: grpcMinGoVersion (1.21) já é menor que o default "1.22"
+// abaixo. Um programa sem Database sqlite nem Interface GRPC continua
+// produzindo EXATAMENTE o go.mod de antes de G1/H1 (byte a byte) —
+// wallet/shop incluídos.
 //
 // O caminho do módulo é opts.ModulePath quando não-vazio; senão, é derivado
 // do nome-base de outDir (ex. "/tmp/out/wallet" -> "wallet") — a heurística
@@ -63,7 +96,7 @@ const (
 // Options.ModulePath em TODOS os decl_*.go (8 arquivos, cada um com golden
 // tests byte-a-byte) é trabalho futuro fora do orçamento desta task — ver o
 // resumo da task E9.1.
-func EmitGoMod(opts Options, outDir string, sqlAdapter bool) []byte {
+func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter bool) []byte {
 	modulePath := opts.ModulePath
 	if modulePath == "" {
 		modulePath = moduleNameFromOutDir(outDir)
@@ -77,10 +110,28 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter bool) []byte {
 		}
 	}
 
-	if !sqlAdapter {
+	var requires []string
+	if grpcAdapter {
+		requires = append(requires, fmt.Sprintf("%s %s", grpcModule, grpcVersion))
+	}
+	if sqlAdapter {
+		requires = append(requires, fmt.Sprintf("%s %s", sqliteDriverModule, sqliteDriverVersion))
+	}
+
+	if len(requires) == 0 {
 		return []byte(fmt.Sprintf("module %s\n\ngo %s\n", modulePath, version))
 	}
-	return []byte(fmt.Sprintf("module %s\n\ngo %s\n\nrequire %s %s\n", modulePath, version, sqliteDriverModule, sqliteDriverVersion))
+	sort.Strings(requires)
+	if len(requires) == 1 {
+		return []byte(fmt.Sprintf("module %s\n\ngo %s\n\nrequire %s\n", modulePath, version, requires[0]))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "module %s\n\ngo %s\n\nrequire (\n", modulePath, version)
+	for _, r := range requires {
+		fmt.Fprintf(&b, "\t%s\n", r)
+	}
+	b.WriteString(")\n")
+	return []byte(b.String())
 }
 
 // moduleNameFromOutDir deriva um nome de módulo Go do nome-base de outDir

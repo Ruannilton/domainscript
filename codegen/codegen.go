@@ -87,9 +87,10 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	needsSQL := programNeedsSQLAdapter(prog) // G1, NFR-12 — true só quando ao menos um Database é provider:"sqlite"
+	needsGRPC := programNeedsGRPC(prog)      // H1, NFR-12 — true só quando ao menos um arquivo declara "Interface GRPC"
 
 	var files []File
-	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", needsSQL)})
+	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", needsSQL, needsGRPC)})
 
 	runtimeFiles, err := generateRuntimeFiles()
 	if err != nil {
@@ -103,6 +104,14 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 			return nil, err
 		}
 		files = append(files, sqlFiles...)
+	}
+
+	if needsGRPC {
+		grpcFiles, err := generateGRPCRuntimeFiles()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, grpcFiles...)
 	}
 
 	moduleNames := make([]string, 0, len(prog.Modules))
@@ -172,11 +181,11 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range groups {
-		f, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesXADatabases, buckets, model, tab)
+		fs, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesXADatabases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
-		files = append(files, f)
+		files = append(files, fs...)
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -850,7 +859,7 @@ func defaultCmdDirName(modules []string) string {
 // produz para um canal "queue" cai no mesmo erro claro, documentado como
 // wiring ainda não combinado (nem wallet nem shop hoje combinam nenhum dos
 // dois casos).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) (File, error) {
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) ([]File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -923,18 +932,18 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 		ch, err := producerChannelFor(prog, m)
 		if err != nil {
-			return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+			return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
 		}
 		if ch == nil {
 			continue
 		}
 		if producerChannel != nil {
-			return File{}, fmt.Errorf("codegen: cmd/%s/main.go: mais de um módulo produtor de canal de saída via queue no mesmo service (%s, %s) — wiring combinado ainda não suportado (F5)", group.dirName, producerModule, m)
+			return nil, fmt.Errorf("codegen: cmd/%s/main.go: mais de um módulo produtor de canal de saída via queue no mesmo service (%s, %s) — wiring combinado ainda não suportado (F5)", group.dirName, producerModule, m)
 		}
 		producerModule, producerChannel = m, ch
 	}
 	if producerChannel != nil && needsDispatcher {
-		return File{}, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5/G3)", group.dirName)
+		return nil, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5/G3)", group.dirName)
 	}
 
 	anyXADatabases := false
@@ -952,6 +961,15 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 
 	iface := findGroupInterface(prog, group.modules)
 	port := httpPortGo(iface)
+
+	// grpcIface (H1, REQ-29, §design 3.12) é resolvido aqui — ANTES da emissão
+	// de func main() — porque main() precisa decidir, na hora, se sobe o
+	// listener gRPC (grpcInterfaceHasServices), mesmo o registro de fato dos
+	// serviços (newGRPCServer) só sendo emitido bem mais abaixo, depois de
+	// newMux/helpers (ver a doc de emitGRPCServer, grpc.go, sobre por que essa
+	// ordem é a mesma de HTTP: main() -> newMux -> helpers de pacote).
+	grpcIface := findGroupGRPCInterface(prog, group.modules)
+	hasGRPC := grpcInterfaceHasServices(grpcIface)
 
 	e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
 	e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
@@ -1035,13 +1053,36 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				e.Line("_ = uow // nenhum módulo deste service declara UseCase")
 			}
 		}
+
+		// gRPC (H1, REQ-29, §design 3.12): sobe ao lado do servidor HTTP, na
+		// sua PRÓPRIA goroutine — "go server.Serve(lis)" — para que os dois
+		// rodem no MESMO processo sem um bloquear o outro; um grupo gRPC-only
+		// (sem Interface HTTP) continua subindo o servidor HTTP de sempre (mux
+		// vazio, "grupos só-worker" já documentado acima) ADEMAIS do gRPC —
+		// não há gate cruzado entre os dois. hasGRPC é pré-computado (ver a
+		// doc acima) porque o registro de fato dos serviços (newGRPCServer)
+		// só é emitido depois de newMux/helpers.
+		if hasGRPC {
+			netAlias := e.Import("net")
+			e.Line("")
+			e.Line("grpcPort := %s", grpcPortGo(grpcIface))
+			e.Line("grpcLis, listenErr := %s.Listen(\"tcp\", %s.Sprintf(\":%%s\", grpcPort))", netAlias, fmtAlias)
+			e.Block("if listenErr != nil", func() {
+				e.Line("%s.Fatal(listenErr)", logAlias)
+			})
+			e.Line("grpcServer := newGRPCServer(store)")
+			e.BlockSuffix("go func()", "()", func() {
+				e.Line("%s.Fatal(grpcServer.Serve(grpcLis))", logAlias)
+			})
+		}
+
 		e.Line("")
 		e.Line("port := %s", port)
 		e.Line("server := &%s.Server{Addr: %s.Sprintf(\":%%s\", port), Handler: newMux(store)}", httpAlias, fmtAlias)
 		e.Line("%s.Fatal(server.ListenAndServe())", logAlias)
 	})
 	if mainErr != nil {
-		return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, mainErr)
+		return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, mainErr)
 	}
 
 	e.Line("")
@@ -1062,7 +1103,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		e.Line("return mux")
 	})
 	if bodyErr != nil {
-		return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, bodyErr)
+		return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, bodyErr)
 	}
 	if hadRoutes {
 		emitHTTPHelpers(e, runtimeAlias)
@@ -1096,15 +1137,36 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	// igual ao de antes de G6.
 	if verEnv != nil && verEnv.plan != nil {
 		if err := emitVersioningHelpers(e, verEnv, httpAlias); err != nil {
-			return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+			return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+		}
+	}
+
+	// gRPC (H1, REQ-29, §design 3.12): newGRPCServer + o grpc.ServiceDesc/
+	// handlers de cada GrpcService, emitidos como declarações de PACOTE depois
+	// que newMux/helpers fecham (mesma razão de posição que tenant/rate-limit/
+	// versioning acima) — hasGRPC (pré-computado) já garantiu que func main()
+	// só referencia "newGRPCServer" quando este bloco de fato o emite.
+	if hasGRPC {
+		if err := emitGRPCServer(e, group.dirName, grpcIface, buckets, group.modules, model, tab); err != nil {
+			return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
 		}
 	}
 
 	content, err := e.Bytes()
 	if err != nil {
-		return File{}, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+		return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
 	}
-	return File{Path: path.Join("cmd", group.dirName, "main.go"), Content: content}, nil
+	files := []File{{Path: path.Join("cmd", group.dirName, "main.go"), Content: content}}
+
+	if hasGRPC {
+		protoContent, err := emitGRPCProtoFile(group.dirName, grpcIface, buckets, group.modules, model, tab)
+		if err != nil {
+			return nil, fmt.Errorf("proto/%s.proto: %w", group.dirName, err)
+		}
+		files = append(files, File{Path: path.Join("proto", group.dirName+".proto"), Content: protoContent})
+	}
+
+	return files, nil
 }
 
 // findGroupInterface acha o *ast.InterfaceDecl HTTP de qualquer arquivo dos

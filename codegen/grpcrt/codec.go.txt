@@ -1,0 +1,48 @@
+package grpcedge
+
+import "encoding/json"
+
+// JSONCodec implementa encoding.Codec (google.golang.org/grpc/encoding) com
+// encoding/json em vez do codec "proto" default do grpc-go — a peça central
+// da exceção documentada à NFR-12 (H1, REQ-29.2, §design 3.12): sem depender
+// de protoc, este pacote não pode gerar tipos Go que implementem
+// proto.Message (o *.pb.go de sempre), então os DTOs de request/response são
+// structs Go comuns com tag `json`, e o transporte gRPC-sobre-HTTP/2
+// continua real — só a codificação da MENSAGEM (não do framing HTTP/2, que o
+// grpc-go cuida do jeito de sempre) é JSON em vez de protobuf binário. O
+// servidor força este Codec via grpc.ForceServerCodec(JSONCodec{}) (ver
+// newGRPCServer, gerado em cmd/<service>/main.go por codegen/grpc.go); um
+// cliente que queira falar com este servidor precisa da mesma troca, via
+// grpc.WithDefaultCallOptions(grpc.ForceCodec(JSONCodec{})) — ver o teste
+// comportamental de H1 (bufconn) para o exemplo completo.
+//
+// Tradeoff aceito, documentado aqui em vez de escondido: um cliente gRPC
+// "de verdade" (gerado por protoc a partir de proto/<service>.proto, ver
+// codegen/grpc_proto.go) NÃO consegue conversar com este servidor sem a
+// MESMA troca de codec — o .proto emitido é só um artefato textual (REQ-29.1,
+// documentação/interoperabilidade para quem quiser rodar protoc por conta
+// própria contra outra pilha), nunca a fonte de verdade do wire format deste
+// servidor. Em troca, evita-se por completo a dependência de um binário
+// externo (protoc) no pipeline de geração — o mesmo espírito que levou este
+// projeto a escrever um parser recursivo-descendente à mão em vez de usar um
+// gerador (REQ-3/NFR-1).
+type JSONCodec struct{}
+
+// Name é o content-subtype anunciado no Content-Type ("application/grpc+json")
+// quando nenhum CallContentSubtype explícito sobrescreve — só importa quando
+// ForceServerCodec/ForceCodec NÃO estão em uso (aqui sempre estão, então esta
+// negociação nunca é consultada de fato; mantida só porque a interface
+// encoding.Codec exige o método).
+func (JSONCodec) Name() string { return "json" }
+
+// Marshal serializa v (um DTO gerado por codegen/grpc.go, ex. um Command ou
+// um struct de request de Query) como JSON.
+func (JSONCodec) Marshal(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
+
+// Unmarshal decodifica data (JSON) em v — v é sempre um ponteiro para o DTO
+// esperado (o "dec" que grpc-go passa a um grpc.MethodHandler).
+func (JSONCodec) Unmarshal(data []byte, v any) error {
+	return json.Unmarshal(data, v)
+}

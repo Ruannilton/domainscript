@@ -446,9 +446,15 @@
 
 ## Marco H — Exposição/Observabilidade Avançadas e Testes
 
-- [ ] **H1** gRPC: `.proto` (de `InterfaceDecl` `GRPC` + `GrpcService`/`GrpcRPC`) +
+- [x] **H1** gRPC: `.proto` (de `InterfaceDecl` `GRPC` + `GrpcService`/`GrpcRPC`) +
   stubs, dep `google.golang.org/grpc` **isolada** num pacote de borda, **ausente** sem
   `Interface GRPC`. _(REQ-29, NFR-12, §design 3.12)_
+  **Conclusão:** `.proto` textual (`grpc_proto.go`) + servidor gRPC real sem
+  protoc/`*.pb.go` (`grpc.ServiceDesc`/`MethodDesc` manuais + `encoding.Codec`
+  JSON, `grpc.go`); dep isolada em `grpcedge/` (vendorado, `codegen/grpcrt`),
+  ausente sem `Interface GRPC` (go.mod, golden, smoke via `go mod tidy` real, e
+  round-trip comportamental via `bufconn` — fixture sintética `GrpcDemo`,
+  `grpc_test.go`).
   **Commit:** `feat(codegen): exposição gRPC (dep isolada)`
 
 - [ ] **H2** Observabilidade: `log/slog` (stdlib) por padrão com trace context; adapter

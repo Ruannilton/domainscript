@@ -1,0 +1,56 @@
+package grpcedge
+
+import (
+	"errors"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"domainscript/generated/runtime"
+)
+
+// StatusError traduz err — como um UseCase/Query gerado o devolve — para o
+// status gRPC equivalente (H1, §design 3.12): a MESMA classificação por
+// errors.As(&runtime.BusinessError) que writeBusinessError usa na borda HTTP
+// (ver codegen/http.go), só que mapeada para codes.Code em vez de status
+// HTTP. err == nil devolve nil (nunca envelopa um sucesso). Diferente de
+// writeBusinessError (emitido por programa em cmd/<service>/main.go, por
+// razões históricas de quando não havia um pacote de borda isolado para
+// gRPC — ver a doc de codegen/http.go), esta função é INVARIANTE entre
+// programas (a classificação de erro não depende de nada específico do
+// programa gerado) e por isso mora aqui, vendorada, em vez de reemitida a
+// cada geração.
+//
+//   - runtime.ErrForbidden           -> codes.PermissionDenied
+//   - runtime.ErrNotFound            -> codes.NotFound (inclui o "não
+//     encontrado" que um Load/Query devolve para um aggregate de OUTRO
+//     tenant sob row_level, G5 — mesmo raciocínio anti-enumeração de
+//     writeBusinessError)
+//   - runtime.ErrIdempotencyInFlight -> codes.Aborted (corrida da mesma
+//     Idempotency-Key sob "concurrentRetry: reject", G2, spec §14 — o
+//     equivalente ao 409 HTTP)
+//   - qualquer outro runtime.BusinessError -> codes.FailedPrecondition (o
+//     equivalente ao 422 HTTP "regra de negócio violada" — inclui
+//     ErrIdempotencyKeyConflict/ErrIdempotencyKeyRequired, G2, DE PROPÓSITO,
+//     mesma razão documentada em writeBusinessError)
+//   - qualquer erro que NÃO seja um runtime.BusinessError (infra)
+//     -> codes.Unavailable
+func StatusError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var be runtime.BusinessError
+	if errors.As(err, &be) {
+		switch {
+		case errors.Is(err, runtime.ErrForbidden):
+			return status.Error(codes.PermissionDenied, be.Msg)
+		case errors.Is(err, runtime.ErrNotFound):
+			return status.Error(codes.NotFound, be.Msg)
+		case errors.Is(err, runtime.ErrIdempotencyInFlight):
+			return status.Error(codes.Aborted, be.Msg)
+		default:
+			return status.Error(codes.FailedPrecondition, be.Msg)
+		}
+	}
+	return status.Error(codes.Unavailable, "internal error")
+}

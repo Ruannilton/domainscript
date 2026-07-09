@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package grpcdemo;
+
+// Gerado por dsc gen a partir de "Interface GRPC" (spec §10) — sobrescrito a
+// cada geração, não editar à mão.
+//
+// AVISO (REQ-29.2, exceção documentada à NFR-12): este arquivo é um artefato
+// TEXTUAL — documentação/interoperabilidade para quem queira rodar protoc
+// por conta própria. O servidor gRPC de fato gerado por este compilador NÃO
+// usa protoc nem tipos *.pb.go: ele fala gRPC-sobre-HTTP/2 real, mas
+// serializa cada mensagem como JSON (não o wire format binário protobuf
+// usual) via um encoding.Codec customizado. Um cliente gerado por protoc a
+// partir DESTE arquivo, sem a mesma troca de codec, NÃO consegue conversar
+// com o servidor gerado — ver codegen/grpcrt/codec.go.txt (o compilador) para
+// o tradeoff completo.
+
+service ItemService {
+  rpc Touch (TouchItem) returns (Empty);
+  rpc GetItem (ItemServiceGetItemRequest) returns (ItemView);
+}
+
+message Empty {}
+
+message TouchItem {
+  string item_id = 1;
+  string note = 2;
+}
+
+message ItemServiceGetItemRequest {
+  string id = 1;
+}
+
+message ItemView {
+  string id = 1;
+  string note = 2;
+}
+

@@ -1,0 +1,112 @@
+package main
+
+import (
+	context "context"
+	grpcdemo "domainscript/generated/grpcdemo"
+	grpcedge "domainscript/generated/grpcedge"
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+	grpc "google.golang.org/grpc"
+	log "log"
+	net "net"
+	http "net/http"
+)
+
+// main é o ponto de entrada do service "grpcdemo" — wiring in-memory a partir de
+// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada
+// geração, não editar à mão.
+func main() {
+	store := runtime.NewMemoryEventStore()
+	uow := runtime.NewUnitOfWork(store)
+
+	grpcdemo.Wire(uow)
+
+	grpcPort := "50051"
+	grpcLis, listenErr := net.Listen("tcp", fmt.Sprintf(":%s", grpcPort))
+	if listenErr != nil {
+		log.Fatal(listenErr)
+	}
+	grpcServer := newGRPCServer(store)
+	go func() {
+		log.Fatal(grpcServer.Serve(grpcLis))
+	}()
+
+	port := "8080"
+	server := &http.Server{Addr: fmt.Sprintf(":%s", port), Handler: newMux(store)}
+	log.Fatal(server.ListenAndServe())
+}
+
+// newMux constrói o *http.ServeMux do service "grpcdemo", registrando cada rota de
+// Interface HTTP (§design 3.12) — função à parte de main() (ver a doc acima)
+// para poder ser exercitada por teste via httptest, sem subir um socket real.
+func newMux(store runtime.EventStore) *http.ServeMux {
+	mux := http.NewServeMux()
+	return mux
+}
+
+// newGRPCServer constrói o *grpc.Server do service "grpcdemo", registrando um
+// grpc.ServiceDesc por "service" de Interface GRPC (H1, §design 3.12) —
+// função à parte de main() (mesmo espírito de newMux/HTTP) para poder ser
+// exercitada por teste via bufconn, sem subir um socket real.
+func newGRPCServer(store runtime.EventStore) *grpc.Server {
+	srv := grpc.NewServer(grpc.ForceServerCodec(grpcedge.JSONCodec{}))
+	srv.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "grpcdemo.ItemService",
+		HandlerType: nil,
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "Touch",
+				Handler: func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+					var req grpcdemo.TouchItem
+					if err := dec(&req); err != nil {
+						return nil, err
+					}
+					ctx = runtime.WithCaller(ctx, grpcedge.CallerFromContext(ctx))
+					if key, ok := grpcedge.IdempotencyKeyFromContext(ctx); ok {
+						ctx = runtime.WithIdempotencyKey(ctx, key)
+					}
+					call := func(ctx context.Context, req any) (any, error) {
+						if err := grpcdemo.TouchItemUseCase(ctx, req.(grpcdemo.TouchItem)); err != nil {
+							return nil, grpcedge.StatusError(err)
+						}
+						return &grpcedge.Empty{}, nil
+					}
+					if interceptor == nil {
+						return call(ctx, req)
+					}
+					info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/grpcdemo.ItemService/Touch"}
+					return interceptor(ctx, req, info, call)
+				},
+			},
+			{
+				MethodName: "GetItem",
+				Handler: func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+					var req ItemServiceGetItemRequest
+					if err := dec(&req); err != nil {
+						return nil, err
+					}
+					call := func(ctx context.Context, req any) (any, error) {
+						r := req.(ItemServiceGetItemRequest)
+						result, err := grpcdemo.GetItem(ctx, store, r.Id)
+						if err != nil {
+							return nil, grpcedge.StatusError(err)
+						}
+						return result, nil
+					}
+					if interceptor == nil {
+						return call(ctx, req)
+					}
+					info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/grpcdemo.ItemService/GetItem"}
+					return interceptor(ctx, req, info, call)
+				},
+			},
+		},
+	}, nil)
+	return srv
+}
+
+// ItemServiceGetItemRequest é o request gRPC (H1, REQ-29.1/29.2) de uma rpc que despacha para
+// uma Query — um campo por parâmetro declarado (mesma shape de Query.Params).
+type ItemServiceGetItemRequest struct {
+	Id grpcdemo.ItemId `json:"id"`
+}

@@ -1,0 +1,58 @@
+package grpcedge
+
+import (
+	"context"
+
+	"google.golang.org/grpc/metadata"
+
+	"domainscript/generated/runtime"
+)
+
+// devCaller implementa runtime.Caller a partir de metadata de entrada gRPC —
+// o mesmo placeholder de DESENVOLVIMENTO que a borda HTTP usa a partir do
+// header "X-Caller-Id" (ver devCaller/devCallerFromRequest, codegen/http.go):
+// presente e não-vazio -> Authenticated()==true, ID()==valor; ausente ->
+// Authenticated()==false, ID()=="". HasRole sempre devolve false. Placeholder
+// até uma borda de auth real chegar (mesma ressalva documentada em http.go).
+type devCaller struct {
+	authenticated bool
+	id            string
+}
+
+func (c devCaller) Authenticated() bool      { return c.authenticated }
+func (c devCaller) ID() string               { return c.id }
+func (c devCaller) HasRole(role string) bool { return false }
+
+// CallerFromContext extrai o caller de DEV da metadata de entrada de ctx (a
+// chave "x-caller-id", o equivalente gRPC do header "X-Caller-Id" da borda
+// HTTP) — chamado por todo handler gerado que despacha para um UseCase (H1,
+// §design 3.12): TODA função de UseCase gerada lê "caller, _ :=
+// runtime.CallerFrom(ctx)" incondicionalmente (ver codegen/decl_usecase.go) —
+// sem isso, um UseCase com "access { requires caller.* }" receberia uma
+// interface Caller nil e sofreria nil pointer dereference ao chamar
+// Authenticated()/HasRole(...). Uma rpc que despacha para uma Query NUNCA
+// chama isto: Query não referencia caller (ver codegen/decl_query.go).
+func CallerFromContext(ctx context.Context) runtime.Caller {
+	id := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-caller-id"); len(vals) > 0 {
+			id = vals[0]
+		}
+	}
+	return devCaller{authenticated: id != "", id: id}
+}
+
+// IdempotencyKeyFromContext extrai a chave "idempotency-key" da metadata de
+// entrada de ctx, se presente — o equivalente gRPC do header
+// "Idempotency-Key" que a borda HTTP repassa via runtime.WithIdempotencyKey
+// (ver emitCallerAndIdempotency, codegen/http.go). Carrier só (mesma ressalva
+// de http.go): o enforcement de verdade mora no runtime (spec §14, G2),
+// inalterado por esta task.
+func IdempotencyKeyFromContext(ctx context.Context) (string, bool) {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("idempotency-key"); len(vals) > 0 && vals[0] != "" {
+			return vals[0], true
+		}
+	}
+	return "", false
+}
