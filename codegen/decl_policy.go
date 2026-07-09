@@ -226,7 +226,7 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 		e.Line("_ = caller")
 		e.Line("_ = event")
 
-		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
+		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil", CtxVar: "ctx"}
 		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithNotifyAdapters(adapters, "ctx")
 		if bodyErr = sl.Block(decl.Execute); bodyErr != nil {
 			return

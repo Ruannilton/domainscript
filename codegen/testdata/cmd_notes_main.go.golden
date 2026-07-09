@@ -39,6 +39,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("POST /notes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -66,8 +67,11 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		cmd.NoteId = idVal
-		if err := notes.CreateNote(ctx, cmd); err != nil {
-			writeBusinessError(w, err)
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.CreateNote")
+		ucErr := notes.CreateNote(ctx, cmd)
+		ucSpanEnd(ucErr)
+		if ucErr != nil {
+			writeBusinessError(w, ucErr)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -75,6 +79,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("GET /notes/{id}/view", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -97,7 +102,9 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
 			return
 		}
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.PeekNoteView")
 		result, err := notes.PeekNoteView(ctx, store, idVal)
+		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)
 			return
@@ -110,6 +117,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("POST /notes/{id}/admin-touch", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -137,8 +145,11 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		cmd.NoteId = idVal
-		if err := notes.AdminTouchNote(ctx, cmd); err != nil {
-			writeBusinessError(w, err)
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.AdminTouchNote")
+		ucErr := notes.AdminTouchNote(ctx, cmd)
+		ucSpanEnd(ucErr)
+		if ucErr != nil {
+			writeBusinessError(w, ucErr)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -146,6 +157,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -155,7 +167,9 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		writeRateLimitHeaders(w, rlResult)
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.Ping")
 		result, err := notes.Ping(ctx, store)
+		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)
 			return

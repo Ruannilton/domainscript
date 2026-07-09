@@ -249,7 +249,7 @@ func (qc *queryBodyEmitter) emitBody(b *ast.Block) error {
 		qc.e.Line("var zero %s", qc.returnGoType)
 	}
 
-	ctx := lower.StmtContext{ZeroValues: []string{"zero"}}
+	ctx := lower.StmtContext{ZeroValues: []string{"zero"}, CtxVar: "ctx"}
 	sl := lower.NewStmtLowerer(qc.l, qc.e, ctx)
 	for _, s := range b.Stmts {
 		ret, ok := s.(*ast.ReturnStmt)

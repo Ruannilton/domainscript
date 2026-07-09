@@ -568,13 +568,22 @@ func emitHTTPParseParam(e *emit.Emitter, tab *symbols.SymbolTable, homeModule, v
 	return nil
 }
 
-// emitCallerAndIdempotency emite as duas linhas comuns a TODO handler (§design
-// 3.12): o caller de dev extraído do header "X-Caller-Id" posto em ctx, e
+// emitCallerAndIdempotency emite as linhas comuns a TODO handler (§design
+// 3.12/3.13): o caller de dev extraído do header "X-Caller-Id" posto em ctx,
 // "Idempotency-Key" repassado via runtime.WithIdempotencyKey quando presente
-// (carrier só — enforcement é G2, ver contextkeys.go.txt).
+// (carrier só — enforcement é G2, ver contextkeys.go.txt), e um trace id
+// mintado por requisição (H2, REQ-30.1) via runtime.WithTrace(ctx,
+// runtime.NewTraceID()) — o mecanismo DEFAULT, stdlib-only, de correlação de
+// logs (ver TraceIDFrom/logStmt): presente em TODA rota, com ou sem
+// "Telemetry" declarado. Quando "Telemetry" está declarado, esse id stdlib
+// vira só o FALLBACK — o Observer real (instalado via runtime.SetObserver,
+// ver emitOTelWiring) troca a fonte para o trace id do span OTel ativo assim
+// que emitUseCaseRoute/emitQueryRoute abrirem um (runtime.RecordSpan,
+// abaixo) — nunca dois ids divergentes ao mesmo tempo.
 func emitCallerAndIdempotency(e *emit.Emitter, runtimeAlias string) {
 	e.Line("caller := devCallerFromRequest(r)")
 	e.Line("ctx := %s.WithCaller(r.Context(), caller)", runtimeAlias)
+	e.Line("ctx = %s.WithTrace(ctx, %s.NewTraceID())", runtimeAlias, runtimeAlias)
 	e.Block(`if key := r.Header.Get("Idempotency-Key"); key != ""`, func() {
 		e.Line("ctx = %s.WithIdempotencyKey(ctx, key)", runtimeAlias)
 	})
@@ -789,8 +798,22 @@ func emitUseCaseRoute(e *emit.Emitter, muxVar string, route *ast.Route, uc *ast.
 			})
 		}
 
-		e.Block(fmt.Sprintf("if err := %s.%s(ctx, cmd); err != nil", ucAlias, uc.Name), func() {
-			e.Line("writeBusinessError(w, err)")
+		// RecordSpan (H2, REQ-30.2, §design 3.13): um span de verdade em torno
+		// do despacho quando o adapter OTel está instalado (Telemetry
+		// declarado, ver emitOTelWiring) — no-op (mesmo ctx, sem custo) caso
+		// contrário. ctx é reatribuído (o span, quando real, precisa fluir
+		// para dentro do UseCase — log/trace_id dentro dele lê o mesmo ctx).
+		// "ucErr" (em vez de "err") é proposital: um path param "ref
+		// Aggregate" já pode ter declarado "err" mais acima neste MESMO
+		// escopo (emitHTTPParseParam, ex. "idVal, err := wallet.NewWalletId(
+		// ...)") — reusar "err" aqui bateria de frente com a regra de Go
+		// "no new variables on left side of :=" quando NENHUM outro nome à
+		// esquerda for novo.
+		e.Line("ctx, ucSpanEnd := %s.RecordSpan(ctx, %s)", runtimeAlias, strconv.Quote("UseCase."+uc.Name))
+		e.Line("ucErr := %s.%s(ctx, cmd)", ucAlias, uc.Name)
+		e.Line("ucSpanEnd(ucErr)")
+		e.Block("if ucErr != nil", func() {
+			e.Line("writeBusinessError(w, ucErr)")
 			e.Line("return")
 		})
 		e.Line("w.WriteHeader(%s.StatusNoContent)", httpAlias)
@@ -930,8 +953,13 @@ func emitQueryRoute(e *emit.Emitter, muxVar string, route *ast.Route, decl *ast.
 			return
 		}
 
+		// RecordSpan (H2, REQ-30.2, §design 3.13): mesma técnica de
+		// emitUseCaseRoute — span de verdade quando o adapter OTel está
+		// instalado, no-op caso contrário.
+		e.Line("ctx, qSpanEnd := %s.RecordSpan(ctx, %s)", runtimeAlias, strconv.Quote("Query."+decl.Name))
 		callArgs := append([]string{"ctx", "store"}, argNames...)
 		e.Line("result, err := %s.%s(%s)", qAlias, decl.Name, strings.Join(callArgs, ", "))
+		e.Line("qSpanEnd(err)")
 		e.Block("if err != nil", func() {
 			e.Line("writeBusinessError(w, err)")
 			e.Line("return")

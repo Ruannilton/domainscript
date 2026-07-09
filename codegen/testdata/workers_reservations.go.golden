@@ -43,7 +43,7 @@ func ProcessExpiredReservations(ctx context.Context) {
 
 // processExpiredReservationsTick executa o corpo do Worker ProcessExpiredReservations (§8) uma vez.
 func processExpiredReservationsTick(ctx context.Context) error {
-	slog.Info("worker tick")
+	slog.Info("worker tick", "trace_id", runtime.TraceIDFrom(ctx))
 	return nil
 }
 
@@ -153,7 +153,7 @@ func ProcessQueueItems(ctx context.Context) {
 
 // processQueueItemsExecute executa o corpo do Worker ProcessQueueItems (§8) uma vez.
 func processQueueItemsExecute(ctx context.Context, item QueueItem) error {
-	slog.Info("processing item")
+	slog.Info("processing item", "trace_id", runtime.TraceIDFrom(ctx))
 	return nil
 }
 

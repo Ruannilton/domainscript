@@ -113,3 +113,21 @@ func NoCacheFrom(ctx context.Context) bool {
 	v, _ := ctx.Value(noCacheCtxKey).(bool)
 	return v
 }
+
+// WithTrace returns a copy of ctx carrying the trace correlation id traceID
+// (H2, REQ-30.1, §design 3.13) — minted once per inbound request/RPC at the
+// HTTP/gRPC edge (NewTraceID, ver codegen/http.go/codegen/grpc.go) as the
+// DEFAULT, stdlib-only trace mechanism. WithTrace/TraceFrom stay a plain
+// carrier pair, same shape as WithCaller/CallerFrom — the extra logic that
+// prefers an ACTIVE OTel span's own trace id over this carrier, when the OTel
+// adapter is installed (Telemetry declared, §design 3.13), lives in
+// TraceIDFrom (observer.go.txt), not here.
+func WithTrace(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceCtxKey, traceID)
+}
+
+// TraceFrom returns the trace id carried by ctx, if any.
+func TraceFrom(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(traceCtxKey).(string)
+	return id, ok
+}

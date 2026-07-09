@@ -41,6 +41,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("POST /accounts/{id}/charge", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -65,8 +66,11 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			}
 			writeRateLimitHeaders(w, rlResult)
 		}
-		if err := billing.ChargeCard(ctx, cmd); err != nil {
-			writeBusinessError(w, err)
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.ChargeCard")
+		ucErr := billing.ChargeCard(ctx, cmd)
+		ucSpanEnd(ucErr)
+		if ucErr != nil {
+			writeBusinessError(w, ucErr)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -74,6 +78,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("POST /accounts/{id}/close", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -98,8 +103,11 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			}
 			writeRateLimitHeaders(w, rlResult)
 		}
-		if err := billing.CloseAccount(ctx, cmd); err != nil {
-			writeBusinessError(w, err)
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.CloseAccount")
+		ucErr := billing.CloseAccount(ctx, cmd)
+		ucSpanEnd(ucErr)
+		if ucErr != nil {
+			writeBusinessError(w, ucErr)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -107,6 +115,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("GET /products/{id}", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -121,7 +130,9 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
 			return
 		}
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.GetProduct")
 		result, err := catalog.GetProduct(ctx, store, idVal)
+		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)
 			return
@@ -134,6 +145,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("GET /products/{id}/peek", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -148,7 +160,9 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
 			return
 		}
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.PeekProduct")
 		result, err := catalog.PeekProduct(ctx, store, idVal)
+		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)
 			return
@@ -161,6 +175,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 	mux.HandleFunc("GET /search/{id}", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -175,7 +190,9 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
 			return
 		}
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.SearchEvents")
 		result, err := search.SearchEvents(ctx, store, idVal)
+		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)
 			return

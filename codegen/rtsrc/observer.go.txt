@@ -1,0 +1,128 @@
+package runtime
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+)
+
+// observer.go.txt (H2, REQ-30.1/30.2, §design 3.13) é o seam de
+// observabilidade do runtime núcleo: a interface Observer, seu default
+// no-op (zero custo além do que rtsrc já importa — stdlib only, NFR-12) e os
+// dois pontos de entrada que o Go gerado chama incondicionalmente,
+// independente de "Telemetry" estar declarado ou não —
+//
+//   - RecordSpan(ctx, name): inicia/fecha um "span" em torno de uma fronteira
+//     de despacho. O gerador liga isto em: (a) a borda HTTP/gRPC, em torno da
+//     chamada ao UseCase/Query alvo da rota (codegen/http.go/grpc.go); (b) o
+//     Dispatcher núcleo, em torno de CADA invocação de handler de Policy
+//     (dispatcher.go.txt) — cobrindo tanto entrega BestEffort (in-process)
+//     quanto AtLeastOnce (via Outbox, que despacha através do MESMO
+//     Dispatcher). Worker/Saga NÃO ganham um span próprio nesta task —
+//     "traces automáticos para todo construto" (spec §21) é
+//     deliberadamente escopado aqui às fronteiras de despacho síncronas
+//     alcançáveis a partir de uma requisição/RPC de entrada, não a TODO
+//     construto exaustivamente (decisão documentada, §design 3.13/§6).
+//   - TraceIDFrom(ctx): o id de correlação a anexar em CADA log estruturado
+//     de um corpo que tem ctx em escopo (lower/stmt.go:logStmt) — prefere o
+//     trace id do span OTel ATIVO em ctx (quando o adapter real está
+//     instalado, ver TraceID abaixo) e cai para o id stdlib simples mintado
+//     por WithTrace (contextkeys.go.txt) caso contrário.
+//
+// Sem "Telemetry" declarado (o caso comum), activeObserver nunca sai de
+// noopObserver{}: RecordSpan é um passthrough puro (mesmo ctx, callback
+// vazio) e TraceID nunca acha nada — TraceIDFrom cai direto para o id
+// stdlib. Com "Telemetry" declarado, cmd/<service>/main.go chama
+// SetObserver com o adapter real (codegen/otelrt, isolado, dependência
+// externa opt-in — ver a doc de codegen/decl_telemetry.go) uma única vez, na
+// inicialização.
+
+// Observer é o seam de observabilidade do runtime (H2, REQ-30.2): a MESMA
+// interface serve o caminho no-op (default) e o adapter OTel opt-in — o
+// gerado nunca sabe qual dos dois está instalado, só chama RecordSpan/
+// TraceIDFrom incondicionalmente.
+type Observer interface {
+	// RecordSpan inicia uma unidade de trabalho nomeada name, derivada de
+	// ctx, e devolve o ctx (possivelmente atualizado, carregando o que for
+	// necessário para spans aninhados/TraceID enxergarem) mais uma função de
+	// fechamento a chamar quando a unidade de trabalho termina — err é o
+	// erro de negócio/infra devolvido por ela, nil em sucesso.
+	RecordSpan(ctx context.Context, name string) (context.Context, func(err error))
+
+	// TraceID devolve o trace id "ativo" em ctx segundo este Observer,
+	// ok=false quando ele não reconhece nenhum (o noop nunca reconhece; o
+	// adapter OTel reconhece quando ctx carrega um span válido — ver
+	// codegen/otelrt/observer.go.txt).
+	TraceID(ctx context.Context) (string, bool)
+}
+
+// noopObserver é o Observer default (NFR-12): RecordSpan não inicia nada de
+// verdade (devolve o mesmo ctx e um callback vazio), TraceID nunca acha
+// nada — exatamente o comportamento de antes desta task, sem custo além de
+// duas chamadas de função vazias.
+type noopObserver struct{}
+
+func (noopObserver) RecordSpan(ctx context.Context, name string) (context.Context, func(err error)) {
+	return ctx, func(error) {}
+}
+
+func (noopObserver) TraceID(ctx context.Context) (string, bool) { return "", false }
+
+// activeObserver é o Observer instalado no processo — noopObserver{} até
+// SetObserver ser chamado (cmd/<service>/main.go, só quando "Telemetry" é
+// declarado, ver codegen/decl_telemetry.go). Não há mutex aqui de propósito:
+// SetObserver é chamado uma única vez, na inicialização do processo, ANTES
+// de qualquer handler começar a servir requisições — a mesma convenção (sem
+// sincronização) que outras vars de wiring de pacote deste runtime já usam
+// (ex. o "uow"/"uow2pc" de decl_usecase.go).
+var activeObserver Observer = noopObserver{}
+
+// SetObserver instala o Observer usado pelo processo inteiro — chamado no
+// máximo uma vez, na inicialização (cmd/<service>/main.go), quando o mod.ds
+// declara "Telemetry { ... }" (H2, REQ-30.2). o == nil restaura o default
+// no-op.
+func SetObserver(o Observer) {
+	if o == nil {
+		activeObserver = noopObserver{}
+		return
+	}
+	activeObserver = o
+}
+
+// RecordSpan delega ao Observer ativo (RecordSpan(ctx, name) — ver a doc do
+// arquivo para os pontos de chamada). O Go gerado sempre chama esta função de
+// pacote, nunca o Observer diretamente — o indireto por trás de
+// activeObserver é o que torna a troca no-op/OTel invisível ao gerador.
+func RecordSpan(ctx context.Context, name string) (context.Context, func(err error)) {
+	return activeObserver.RecordSpan(ctx, name)
+}
+
+// TraceIDFrom devolve o trace id "efetivo" para anexar num log estruturado
+// (REQ-30.1, ver lower/stmt.go:logStmt): o id do span OTel ativo em ctx
+// quando o Observer real está instalado (ver a doc do arquivo), senão o id
+// stdlib carregado por WithTrace, senão "" (nenhum dos dois presente — nunca
+// deveria acontecer num corpo que tem ctx em escopo, já que a borda sempre
+// chama WithTrace antes de despachar, mas TraceIDFrom não pânica sobre essa
+// ausência: um campo "trace_id" vazio no log é preferível a travar o
+// caminho de negócio por causa de instrumentação).
+func TraceIDFrom(ctx context.Context) string {
+	if id, ok := activeObserver.TraceID(ctx); ok {
+		return id
+	}
+	if id, ok := TraceFrom(ctx); ok {
+		return id
+	}
+	return ""
+}
+
+// NewTraceID minta um id de correlação aleatório de 128 bits (32 chars hex —
+// o mesmo tamanho de um trace id W3C, embora este mecanismo NÃO implemente
+// propagação W3C entre serviços, só correlação de logs DENTRO de um mesmo
+// processo/request — decisão documentada, §design 3.13/§6) via crypto/rand
+// (stdlib, sem dependência externa) — chamado uma vez por requisição/RPC de
+// entrada na borda (codegen/http.go/grpc.go), nunca dentro do domínio.
+func NewTraceID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}

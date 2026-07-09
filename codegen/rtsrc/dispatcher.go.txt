@@ -36,14 +36,25 @@ func (d *memoryDispatcher) Subscribe(eventType string, handler func(ctx context.
 	d.handlers[eventType] = append(d.handlers[eventType], handler)
 }
 
-// Publish implements Dispatcher.
+// Publish implements Dispatcher. Each handler invocation (a Policy, ver
+// codegen/decl_policy.go) runs inside its own span (H2, REQ-30.2, §design
+// 3.13, via RecordSpan/observer.go.txt) — a no-op unless "Telemetry" is
+// declared and an Observer was installed (runtime.SetObserver,
+// cmd/<service>/main.go). This is the ONE hook point that covers BOTH
+// delivery guarantees without any per-program codegen: BestEffort calls
+// Publish directly (in-process); AtLeastOnce goes through Outbox, which
+// wraps this SAME Dispatcher (outbox.go.txt) and therefore reaches this
+// exact call too.
 func (d *memoryDispatcher) Publish(ctx context.Context, ev Event) error {
 	d.mu.RLock()
 	handlers := append([]func(ctx context.Context, ev Event) error(nil), d.handlers[ev.EventType()]...)
 	d.mu.RUnlock()
 
 	for _, handler := range handlers {
-		if err := handler(ctx, ev); err != nil {
+		spanCtx, end := RecordSpan(ctx, "policy:"+ev.EventType())
+		err := handler(spanCtx, ev)
+		end(err)
+		if err != nil {
 			return err
 		}
 	}

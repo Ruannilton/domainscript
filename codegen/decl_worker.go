@@ -379,7 +379,7 @@ func (w *workerEmitter) emitBodyFunc(fnName, extraParam string) error {
 	var bodyErr error
 	sig := fmt.Sprintf("func %s(ctx %s.Context%s) error", fnName, w.ctxAlias, extraParam)
 	e.Block(sig, func() {
-		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
+		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil", CtxVar: "ctx"}
 		sl := lower.NewStmtLowerer(w.l, e, stmtCtx)
 		if bodyErr = sl.Block(w.decl.Execute); bodyErr != nil {
 			return

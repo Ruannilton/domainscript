@@ -40,7 +40,7 @@ func purchaseTicketsProcessPaymentDown(ctx context.Context, state *PurchaseTicke
 }
 
 func purchaseTicketsProcessPaymentOnInfraError(ctx context.Context, state *PurchaseTicketsState) error {
-	slog.Warn("infra ao processar pagamento")
+	slog.Warn("infra ao processar pagamento", "trace_id", runtime.TraceIDFrom(ctx))
 	return nil
 }
 

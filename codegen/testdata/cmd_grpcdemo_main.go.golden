@@ -65,8 +65,12 @@ func newGRPCServer(store runtime.EventStore) *grpc.Server {
 					if key, ok := grpcedge.IdempotencyKeyFromContext(ctx); ok {
 						ctx = runtime.WithIdempotencyKey(ctx, key)
 					}
+					ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 					call := func(ctx context.Context, req any) (any, error) {
-						if err := grpcdemo.TouchItemUseCase(ctx, req.(grpcdemo.TouchItem)); err != nil {
+						ctx, spanEnd := runtime.RecordSpan(ctx, "UseCase.TouchItemUseCase")
+						err := grpcdemo.TouchItemUseCase(ctx, req.(grpcdemo.TouchItem))
+						spanEnd(err)
+						if err != nil {
 							return nil, grpcedge.StatusError(err)
 						}
 						return &grpcedge.Empty{}, nil
@@ -85,9 +89,12 @@ func newGRPCServer(store runtime.EventStore) *grpc.Server {
 					if err := dec(&req); err != nil {
 						return nil, err
 					}
+					ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 					call := func(ctx context.Context, req any) (any, error) {
+						ctx, spanEnd := runtime.RecordSpan(ctx, "Query.GetItem")
 						r := req.(ItemServiceGetItemRequest)
 						result, err := grpcdemo.GetItem(ctx, store, r.Id)
+						spanEnd(err)
 						if err != nil {
 							return nil, grpcedge.StatusError(err)
 						}

@@ -353,7 +353,7 @@ func emitGRPCServiceRegistration(e *emit.Emitter, protoPkg string, svc *ast.Grpc
 					return
 				}
 				*pending = append(*pending, spec)
-				emitGRPCQueryHandlerBody(e, spec, qAlias, target.query.Name, fullMethod, ctxAlias, grpcAlias, grpcedgeAlias)
+				emitGRPCQueryHandlerBody(e, spec, qAlias, target.query.Name, fullMethod, ctxAlias, grpcAlias, runtimeAlias, grpcedgeAlias)
 			})
 			e.Line("},")
 		}
@@ -382,8 +382,19 @@ func emitGRPCUseCaseHandlerBody(e *emit.Emitter, cmdAlias, cmdName, ucAlias, ucN
 	e.Block(fmt.Sprintf("if key, ok := %s.IdempotencyKeyFromContext(ctx); ok", grpcedgeAlias), func() {
 		e.Line("ctx = %s.WithIdempotencyKey(ctx, key)", runtimeAlias)
 	})
+	// Trace id por RPC (H2, REQ-30.1) — mesmo mecanismo/mesma posição da
+	// borda HTTP (emitCallerAndIdempotency, http.go): mintado incondicional,
+	// vira o id lido pelo log/trace_id do UseCase quando não há Observer OTel
+	// real instalado (Telemetry não declarado); com Telemetry, o span aberto
+	// logo abaixo (RecordSpan) passa a ser a fonte preferida.
+	e.Line("ctx = %s.WithTrace(ctx, %s.NewTraceID())", runtimeAlias, runtimeAlias)
 	e.Block(fmt.Sprintf("call := func(ctx %s.Context, req any) (any, error)", ctxAlias), func() {
-		e.Block(fmt.Sprintf("if err := %s.%s(ctx, req.(%s.%s)); err != nil", ucAlias, ucName, cmdAlias, cmdName), func() {
+		// RecordSpan (H2, REQ-30.2, §design 3.13) — mesma técnica da borda
+		// HTTP (emitUseCaseRoute, http.go): no-op sem Telemetry declarado.
+		e.Line("ctx, spanEnd := %s.RecordSpan(ctx, %s)", runtimeAlias, strconv.Quote("UseCase."+ucName))
+		e.Line("err := %s.%s(ctx, req.(%s.%s))", ucAlias, ucName, cmdAlias, cmdName)
+		e.Line("spanEnd(err)")
+		e.Block("if err != nil", func() {
 			e.Line("return nil, %s.StatusError(err)", grpcedgeAlias)
 		})
 		e.Line("return &%s.Empty{}, nil", grpcedgeAlias)
@@ -403,13 +414,18 @@ func emitGRPCUseCaseHandlerBody(e *emit.Emitter, cmdAlias, cmdName, ucAlias, ucN
 // grpcedge.StatusError(err) (mesma forma de emitGRPCUseCaseHandlerBody).
 // Query nunca referencia caller (decl_query.go não emite CallerFrom), então,
 // ao contrário do handler de UseCase, nenhum caller/idempotency-key é
-// injetado aqui.
-func emitGRPCQueryHandlerBody(e *emit.Emitter, spec grpcQueryRequestSpec, qAlias, qName, fullMethod, ctxAlias, grpcAlias, grpcedgeAlias string) {
+// injetado aqui — mas GANHA o mesmo trace id por RPC (H2, REQ-30.1) e o
+// mesmo RecordSpan (REQ-30.2) que o handler de UseCase, para que uma Query
+// gRPC tenha a mesma paridade de observabilidade que uma Query HTTP já tem
+// (emitQueryRoute, http.go).
+func emitGRPCQueryHandlerBody(e *emit.Emitter, spec grpcQueryRequestSpec, qAlias, qName, fullMethod, ctxAlias, grpcAlias, runtimeAlias, grpcedgeAlias string) {
 	e.Line("var req %s", spec.structName)
 	e.Block("if err := dec(&req); err != nil", func() {
 		e.Line("return nil, err")
 	})
+	e.Line("ctx = %s.WithTrace(ctx, %s.NewTraceID())", runtimeAlias, runtimeAlias)
 	e.Block(fmt.Sprintf("call := func(ctx %s.Context, req any) (any, error)", ctxAlias), func() {
+		e.Line("ctx, spanEnd := %s.RecordSpan(ctx, %s)", runtimeAlias, strconv.Quote("Query."+qName))
 		e.Line("r := req.(%s)", spec.structName)
 		argNames := make([]string, len(spec.fields))
 		for i, fi := range spec.fields {
@@ -417,6 +433,7 @@ func emitGRPCQueryHandlerBody(e *emit.Emitter, spec grpcQueryRequestSpec, qAlias
 		}
 		callArgs := append([]string{"ctx", "store"}, argNames...)
 		e.Line("result, err := %s.%s(%s)", qAlias, qName, strings.Join(callArgs, ", "))
+		e.Line("spanEnd(err)")
 		e.Block("if err != nil", func() {
 			e.Line("return nil, %s.StatusError(err)", grpcedgeAlias)
 		})

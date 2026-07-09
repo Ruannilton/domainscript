@@ -22,7 +22,7 @@ func Wire(u runtime.UnitOfWork) {
 func Pay(ctx context.Context, cmd MakePayment) error {
 	caller, _ := runtime.CallerFrom(ctx)
 	return uow.Run(ctx, func(tx runtime.Tx) error {
-		slog.Info("pagamento solicitado", "caller", caller.ID())
+		slog.Info("pagamento solicitado", "trace_id", runtime.TraceIDFrom(ctx), "caller", caller.ID())
 		if err := CallPaymentRequest(ctx, PaymentRequest{PaymentId: cmd.PaymentId, Amount: 100}); err != nil {
 			return err
 		}

@@ -1,56 +1,74 @@
 package main
 
 import (
+	context "context"
+	otelruntime "domainscript/generated/otelruntime"
 	runtime "domainscript/generated/runtime"
-	wallet "domainscript/generated/wallet"
+	telemetrydemo "domainscript/generated/telemetrydemo"
 	json "encoding/json"
 	errors "errors"
 	fmt "fmt"
 	log "log"
 	http "net/http"
+	os "os"
 )
 
-// main é o ponto de entrada do service "wallet" — wiring in-memory a partir de
+// main é o ponto de entrada do service "telemetrydemo" — wiring in-memory a partir de
 // mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada
 // geração, não editar à mão.
 func main() {
+	// Observabilidade (H2, REQ-30.2, §design 3.13): "Telemetry" declarado no
+	// mod.ds — instala o adapter OTel real; sem isso (o caso comum), o Observer
+	// do processo permanece o no-op default (runtime/observer.go).
+	otelObserver, otelShutdown, err := otelruntime.NewObserver(context.Background(), otelruntime.Config{
+		Endpoint:    os.Getenv("OTEL_EXPORTER_ENDPOINT"),
+		ServiceName: "telemetrydemo",
+		Sampler:     "parentbased_traceidratio",
+		SampleRate:  0.1,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer otelShutdown(context.Background())
+	runtime.SetObserver(otelObserver)
+
 	store := runtime.NewMemoryEventStore()
 	uow := runtime.NewUnitOfWork(store)
 
-	wallet.Wire(uow)
+	telemetrydemo.Wire(uow)
 
 	port := "8080"
 	server := &http.Server{Addr: fmt.Sprintf(":%s", port), Handler: newMux(store)}
 	log.Fatal(server.ListenAndServe())
 }
 
-// newMux constrói o *http.ServeMux do service "wallet", registrando cada rota de
+// newMux constrói o *http.ServeMux do service "telemetrydemo", registrando cada rota de
 // Interface HTTP (§design 3.12) — função à parte de main() (ver a doc acima)
 // para poder ser exercitada por teste via httptest, sem subir um socket real.
 func newMux(store runtime.EventStore) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /wallets/{id}/deposit", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /items/{id}/touch", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
 		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
-		var cmd wallet.Deposit
+		var cmd telemetrydemo.TouchItem
 		if r.ContentLength != 0 {
 			if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
 				http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
 				return
 			}
 		}
-		idVal, err := wallet.NewWalletId(r.PathValue("id"))
+		idVal, err := telemetrydemo.NewItemId(r.PathValue("id"))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
 			return
 		}
-		cmd.WalletId = idVal
-		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.PerformDeposit")
-		ucErr := wallet.PerformDeposit(ctx, cmd)
+		cmd.ItemId = idVal
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.TouchItemUseCase")
+		ucErr := telemetrydemo.TouchItemUseCase(ctx, cmd)
 		ucSpanEnd(ucErr)
 		if ucErr != nil {
 			writeBusinessError(w, ucErr)
@@ -58,73 +76,20 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /wallets/{id}/withdraw", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /items/{id}", func(w http.ResponseWriter, r *http.Request) {
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
 		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
-		var cmd wallet.Withdraw
-		if r.ContentLength != 0 {
-			if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
-				http.Error(w, fmt.Sprintf("invalid request body: %s", err), http.StatusBadRequest)
-				return
-			}
-		}
-		idVal, err := wallet.NewWalletId(r.PathValue("id"))
+		idVal, err := telemetrydemo.NewItemId(r.PathValue("id"))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
 			return
 		}
-		cmd.WalletId = idVal
-		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.PerformWithdrawal")
-		ucErr := wallet.PerformWithdrawal(ctx, cmd)
-		ucSpanEnd(ucErr)
-		if ucErr != nil {
-			writeBusinessError(w, ucErr)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("GET /wallets/{id}", func(w http.ResponseWriter, r *http.Request) {
-		caller := devCallerFromRequest(r)
-		ctx := runtime.WithCaller(r.Context(), caller)
-		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
-		if key := r.Header.Get("Idempotency-Key"); key != "" {
-			ctx = runtime.WithIdempotencyKey(ctx, key)
-		}
-		idVal, err := wallet.NewWalletId(r.PathValue("id"))
-		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
-			return
-		}
-		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.GetWallet")
-		result, err := wallet.GetWallet(ctx, store, idVal)
-		qSpanEnd(err)
-		if err != nil {
-			writeBusinessError(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(result); err != nil {
-			http.Error(w, fmt.Sprintf("failed to encode response: %s", err), http.StatusInternalServerError)
-		}
-	})
-	mux.HandleFunc("GET /wallets/{id}/entries", func(w http.ResponseWriter, r *http.Request) {
-		caller := devCallerFromRequest(r)
-		ctx := runtime.WithCaller(r.Context(), caller)
-		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
-		if key := r.Header.Get("Idempotency-Key"); key != "" {
-			ctx = runtime.WithIdempotencyKey(ctx, key)
-		}
-		idVal, err := wallet.NewWalletId(r.PathValue("id"))
-		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
-			return
-		}
-		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.ListEntries")
-		result, err := wallet.ListEntries(ctx, store, idVal)
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.GetItem")
+		result, err := telemetrydemo.GetItem(ctx, store, idVal)
 		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)

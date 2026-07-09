@@ -53,6 +53,29 @@ const (
 	// opts.GoVersion (o default "1.22" abaixo já a excede), mas registrada
 	// aqui pela mesma razão documental de sqliteMinGoVersion.
 	grpcMinGoVersion = "1.21"
+
+	// otelModule/otelVersion, otelSDKModule, otelTraceModule e
+	// otelExporterModule identificam o conjunto FIXO de módulos que este
+	// gerador sabe vendorar atrás do pacote de borda otelruntime (H2, NFR-12,
+	// REQ-30.2): fixados (não "latest") pela mesma razão de
+	// sqliteDriverModule/grpcModule (determinismo, NFR-13) — confirmados
+	// resolvíveis e compatíveis entre si (mesma versão v1.44.0 nos quatro,
+	// `go build`/`go vet`/`go test` reais sobre um projeto de prova isolado,
+	// ver o relatório da task H2). otlptracehttp (OTLP sobre HTTP) foi
+	// escolhido em vez do exporter sobre gRPC para não introduzir
+	// google.golang.org/grpc como dependência REAL de compilação deste
+	// caminho — "go mod why" confirma que nenhum código deste adapter o
+	// importa, mesmo aparecendo no grafo de módulos como indireto.
+	otelModule         = "go.opentelemetry.io/otel"
+	otelSDKModule      = "go.opentelemetry.io/otel/sdk"
+	otelTraceModule    = "go.opentelemetry.io/otel/trace"
+	otelExporterModule = "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	otelVersion        = "v1.44.0"
+	// otelMinGoVersion é a versão mínima de Go que os módulos OTel acima
+	// exigem (seus próprios go.mod declaram "go 1.25.0", confirmado no
+	// probe da task H2) — coincide com sqliteMinGoVersion; EmitGoMod usa o
+	// maior entre os adapters ativos.
+	otelMinGoVersion = "1.25"
 )
 
 // EmitGoMod gera o conteúdo de go.mod do projeto gerado: "module <path>\n\ngo
@@ -96,7 +119,18 @@ const (
 // Options.ModulePath em TODOS os decl_*.go (8 arquivos, cada um com golden
 // tests byte-a-byte) é trabalho futuro fora do orçamento desta task — ver o
 // resumo da task E9.1.
-func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter bool) []byte {
+//
+// otelAdapter (H2, REQ-30.2) é true quando programNeedsOTel (codegen.go)
+// encontrou ao menos um mod.ds com "Telemetry { ... }": acrescenta as 4
+// linhas "require" do adapter OTel (otel, otel/sdk, otel/trace, o exporter
+// OTLP/HTTP — ver a doc das consts acima) ao MESMO bloco "require (...)" que
+// sqlAdapter/grpcAdapter já usam, ordenadas por caminho de módulo junto com
+// as demais (determinismo, NFR-13), e sobe o default de versão de Go para
+// otelMinGoVersion quando nenhuma das outras duas já o fez (mesmo valor de
+// sqliteMinGoVersion — não há conflito a resolver). Um programa sem nenhum
+// dos três adapters continua produzindo EXATAMENTE o go.mod de antes de
+// G1/H1/H2 (byte a byte).
+func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter bool) []byte {
 	modulePath := opts.ModulePath
 	if modulePath == "" {
 		modulePath = moduleNameFromOutDir(outDir)
@@ -105,14 +139,25 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter bool) []byte
 	version := opts.GoVersion
 	if version == "" {
 		version = "1.22"
-		if sqlAdapter {
+		switch {
+		case sqlAdapter:
 			version = sqliteMinGoVersion
+		case otelAdapter:
+			version = otelMinGoVersion // == sqliteMinGoVersion hoje ("1.25"); ver a doc das consts
 		}
 	}
 
 	var requires []string
 	if grpcAdapter {
 		requires = append(requires, fmt.Sprintf("%s %s", grpcModule, grpcVersion))
+	}
+	if otelAdapter {
+		requires = append(requires,
+			fmt.Sprintf("%s %s", otelModule, otelVersion),
+			fmt.Sprintf("%s %s", otelSDKModule, otelVersion),
+			fmt.Sprintf("%s %s", otelTraceModule, otelVersion),
+			fmt.Sprintf("%s %s", otelExporterModule, otelVersion),
+		)
 	}
 	if sqlAdapter {
 		requires = append(requires, fmt.Sprintf("%s %s", sqliteDriverModule, sqliteDriverVersion))

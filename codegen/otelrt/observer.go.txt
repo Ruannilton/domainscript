@@ -1,0 +1,152 @@
+package otelruntime
+
+// otelruntime é o adapter OTel opt-in por trás de runtime.Observer (H2,
+// REQ-30.2, §design 3.13): a ÚNICA dependência externa deste pacote — os
+// módulos go.opentelemetry.io/otel{,/sdk,/trace} e o exporter OTLP-sobre-HTTP
+// (otlptracehttp, escolhido em vez do exporter OTLP-sobre-gRPC para não
+// puxar google.golang.org/grpc como dependência REAL de compilação deste
+// caminho — o grafo de módulos do otlptracehttp lista grpc-go como indireto,
+// mas nenhum código deste pacote o importa, "go mod why" confirma — mantendo
+// o caminho OTel independente de o mesmo programa também declarar
+// "Interface GRPC", H1) — isolada aqui, vendorada, emitida SÓ quando um
+// mod.ds declara "Telemetry { ... }" (ver codegen/decl_telemetry.go,
+// programNeedsOTel); ausente em qualquer outro caso (NFR-12).
+//
+// Escopo desta task (documentado, não é "traces completos para tudo"):
+//   - NewObserver monta um *sdktrace.TracerProvider real, exportando via
+//     OTLP/HTTP, e devolve um runtime.Observer cujo RecordSpan inicia/fecha
+//     um span de verdade por chamada. O GERADOR liga isto nas fronteiras de
+//     despacho UseCase/Query (borda HTTP/gRPC, codegen/http.go|grpc.go) e,
+//     dentro do runtime núcleo (rtsrc/dispatcher.go.txt), em cada invocação
+//     de handler de Policy — não em TODO construto exaustivamente
+//     (Worker/Saga continuam só com log/trace_id via TraceID abaixo, sem
+//     span próprio nesta task; ver a doc de codegen/decl_telemetry.go).
+//   - TraceID expõe o trace id do span OTel ativo em ctx (quando houver) —
+//     a fonte que runtime.TraceIDFrom prefere sobre o id stdlib simples
+//     (runtime.NewTraceID/WithTrace) assim que este Observer é instalado via
+//     runtime.SetObserver (cmd/<service>/main.go, ver a lógica de fallback
+//     completa em rtsrc/observer.go.txt).
+//   - Métricas (Metric de negócio, H3) e logs (permanecem em log/slog,
+//     REQ-30.1 — não há bridge para um exporter de logs OTel aqui: os dois
+//     mecanismos convivem correlacionados só pelo trace_id) ficam FORA do
+//     escopo deste pacote.
+//   - Propagação cross-service via headers W3C (§21 do spec) NÃO é
+//     implementada: cada processo grava seu próprio trace raiz (ou honra um
+//     span já presente em ctx quando propagado DENTRO do mesmo processo) —
+//     extrair/injetar traceparent em chamadas HTTP/gRPC de SAÍDA é trabalho
+//     futuro, fora do orçamento desta task (mesmo espírito documentado para
+//     o mecanismo stdlib simples, rtsrc/observer.go.txt).
+
+import (
+	"context"
+	"fmt"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
+	"domainscript/generated/runtime"
+)
+
+// Config é a configuração já resolvida do bloco "Telemetry { ... }" (spec
+// §12) — montada pelo Go gerado em cmd/<service>/main.go a partir do mod.ds
+// (ver codegen/decl_telemetry.go).
+type Config struct {
+	// Endpoint é o endpoint OTLP/HTTP do collector (ex.
+	// "http://otel-collector:4318", spec §12 "endpoint: env(...)").
+	Endpoint string
+	// ServiceName identifica este processo nos spans exportados (o nome do
+	// grupo/service, §design 3.4/3.11).
+	ServiceName string
+	// Sampler é "always_on" (default, sem bloco "traces" ou "sampler"
+	// ausente) ou "parentbased_traceidratio" (spec §12 "traces { sampler:
+	// ... }") — qualquer outro valor já foi barrado por
+	// codegen/decl_telemetry.go antes de chegar aqui.
+	Sampler string
+	// SampleRate só é lido quando Sampler == "parentbased_traceidratio"
+	// (spec §12 "sampleRate: 0.1").
+	SampleRate float64
+}
+
+// NewObserver monta um runtime.Observer de verdade sobre o OTel SDK (H2):
+// abre o exporter OTLP/HTTP, monta um TracerProvider com o sampler
+// configurado e devolve (observer, shutdown, nil). shutdown drena/fecha o
+// exporter — o CHAMADOR (cmd/<service>/main.go) o chama via "defer" (best
+// effort: como o service roda até um erro fatal via log.Fatal, que chama
+// os.Exit sem rodar defers, o shutdown só corre no caminho de retorno normal
+// — a mesma limitação, documentada, de todo o resto do wiring gerado, que
+// não tem um caminho de graceful shutdown ainda).
+func NewObserver(ctx context.Context, cfg Config) (runtime.Observer, func(context.Context) error, error) {
+	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(cfg.Endpoint))
+	if err != nil {
+		return nil, nil, fmt.Errorf("otelruntime: exporter OTLP/HTTP: %w", err)
+	}
+
+	sampler, err := newSampler(cfg.Sampler, cfg.SampleRate)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	res := resource.NewSchemaless(attribute.String("service.name", cfg.ServiceName))
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sampler),
+	)
+
+	obs := &observer{tracer: tp.Tracer("domainscript")}
+	return obs, tp.Shutdown, nil
+}
+
+// newSampler traduz o Sampler configurado (spec §12) para o Sampler real do
+// SDK do OTel — "always_on" grava todo span; "parentbased_traceidratio"
+// grava a fração SampleRate dos traços raiz, respeitando a decisão do pai
+// quando o span já tem um (propagação dentro do mesmo processo). Qualquer
+// outro valor já teria sido barrado por codegen/decl_telemetry.go — o erro
+// aqui é só uma rede de segurança defensiva (REQ-14.4).
+func newSampler(kind string, rate float64) (sdktrace.Sampler, error) {
+	switch kind {
+	case "", "always_on":
+		return sdktrace.AlwaysSample(), nil
+	case "parentbased_traceidratio":
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(rate)), nil
+	default:
+		return nil, fmt.Errorf("otelruntime: sampler %q não suportado (only always_on/parentbased_traceidratio)", kind)
+	}
+}
+
+// observer implementa runtime.Observer (rtsrc/observer.go.txt) sobre um
+// trace.Tracer real do SDK do OTel.
+type observer struct {
+	tracer trace.Tracer
+}
+
+// RecordSpan implementa runtime.Observer: inicia um span de verdade via o
+// SDK do OTel, devolvendo o ctx atualizado (carrega o span, para que
+// TraceID/spans aninhados o enxerguem) e a função de fechamento — marca erro
+// (RecordError + SetStatus) quando err != nil, sempre chama End().
+func (o *observer) RecordSpan(ctx context.Context, name string) (context.Context, func(err error)) {
+	spanCtx, span := o.tracer.Start(ctx, name)
+	return spanCtx, func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}
+}
+
+// TraceID implementa runtime.Observer: devolve o trace id do span OTel ativo
+// em ctx, se houver um span válido — ok=false quando ctx não carrega nenhum
+// span OTel (ex.: um corpo lowerizado fora de qualquer RecordSpan), caso em
+// que runtime.TraceIDFrom cai para o id stdlib simples (runtime.WithTrace).
+func (o *observer) TraceID(ctx context.Context) (string, bool) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() || !sc.HasTraceID() {
+		return "", false
+	}
+	return sc.TraceID().String(), true
+}

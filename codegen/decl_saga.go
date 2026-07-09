@@ -224,7 +224,7 @@ func emitSagaStepPhaseFunc(e *emit.Emitter, funcName string, block *ast.Block, l
 
 	var bodyErr error
 	e.Block(sig, func() {
-		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
+		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil", CtxVar: "ctx"}
 		sl := lower.NewStmtLowerer(l, e, stmtCtx)
 		if bodyErr = sl.Block(block); bodyErr != nil {
 			return

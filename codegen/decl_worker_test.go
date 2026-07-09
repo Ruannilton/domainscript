@@ -162,7 +162,7 @@ func TestEmitWorkersGolden(t *testing.T) {
 		"ticker := time.NewTicker(time.Duration(50000000))",
 		"execCtx, cancel := context.WithTimeout(ctx, time.Duration(300000000000))",
 		"func processExpiredReservationsTick(ctx context.Context) error",
-		`slog.Info("worker tick")`,
+		`slog.Info("worker tick", "trace_id", runtime.TraceIDFrom(ctx))`,
 		// cron
 		"func DailySettlement(ctx context.Context)",
 		`sched, err := runtime.ParseCron("0 2 * * *")`,

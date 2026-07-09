@@ -37,6 +37,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		}
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -70,8 +71,11 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		cmd.AccountId = accountIdVal
-		if err := billing.ChargeAccount(ctx, cmd); err != nil {
-			writeBusinessError(w, err)
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.ChargeAccount")
+		ucErr := billing.ChargeAccount(ctx, cmd)
+		ucSpanEnd(ucErr)
+		if ucErr != nil {
+			writeBusinessError(w, ucErr)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -85,6 +89,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		case "v1":
 			caller := devCallerFromRequest(r)
 			ctx := runtime.WithCaller(r.Context(), caller)
+			ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 			if key := r.Header.Get("Idempotency-Key"); key != "" {
 				ctx = runtime.WithIdempotencyKey(ctx, key)
 			}
@@ -110,6 +115,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		}
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -143,8 +149,11 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		cmd.AccountId = accountIdVal
-		if err := billing.ChargeAccount(ctx, cmd); err != nil {
-			writeBusinessError(w, err)
+		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.ChargeAccount")
+		ucErr := billing.ChargeAccount(ctx, cmd)
+		ucSpanEnd(ucErr)
+		if ucErr != nil {
+			writeBusinessError(w, ucErr)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -156,6 +165,7 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		}
 		caller := devCallerFromRequest(r)
 		ctx := runtime.WithCaller(r.Context(), caller)
+		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
@@ -164,7 +174,9 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "accountId", err), http.StatusBadRequest)
 			return
 		}
+		ctx, qSpanEnd := runtime.RecordSpan(ctx, "Query.GetAccount")
 		result, err := billing.GetAccount(ctx, store, accountIdVal)
+		qSpanEnd(err)
 		if err != nil {
 			writeBusinessError(w, err)
 			return

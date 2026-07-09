@@ -305,7 +305,7 @@ func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[stri
 			emitCrossTenantBypass(e, decl, runtimeAlias)
 		}
 
-		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil"}
+		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil", CtxVar: "ctx"}
 
 		if needs2PC {
 			sl := lower.NewStmtLowerer(l, e, stmtCtx).WithHandleDispatchRouted(aggregates, txGoNameFor).WithNotifyAdapters(adapters, "ctx")

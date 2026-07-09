@@ -598,14 +598,101 @@ O `mod.ds` (`ast.ModuleDecl` + `program.Module`/`Database`) vira **wiring**: o
   (G4-G6) não têm equivalente na borda gRPC ainda — fora do escopo de REQ-29,
   registrado aqui de propósito para não travar a extensão futura.
 
-### 3.13. Observabilidade (`observ.go`) — REQ-30
+### 3.13. Observabilidade (`decl_telemetry.go`, `lower/stmt.go`, `codegen/otelrt`) — REQ-30 (H2)
 
-- Padrão: `log/slog` (stdlib) para logs estruturados com trace context; sem dep
-  externa (REQ-30.1).
-- `Telemetry` (OTel) declarado → adapter atrás de `runtime.Observer`, dep externa
-  isolada e opt-in (REQ-30.2).
-- `Metric` → atualização de counter/histogram no gatilho `on Evento` (subscriber no
-  dispatcher) com labels (REQ-30.3).
+**Padrão (REQ-30.1), sempre presente, sem dep externa.** Todo `log Level Msg {
+campos }` lowerizado dentro de um corpo que TEM um `context.Context` em escopo
+(`StmtContext.CtxVar`, ver §3.6 — UseCase/Policy/Query/Worker/passo de Saga;
+não Handle/Apply, ver a nota de escopo abaixo) ganha um campo `"trace_id"`
+adicional: `slog.<Level>(<Msg>, "trace_id", runtime.TraceIDFrom(ctx), …)`.
+`runtime.TraceIDFrom` (novo, `rtsrc/observer.go.txt`) resolve o id em duas
+fontes, na ordem: o span OTel ATIVO em `ctx` (quando o adapter opt-in está
+instalado, ver abaixo) e, na ausência de um, o id stdlib simples carregado
+por `runtime.WithTrace` — um hex de 128 bits (`runtime.NewTraceID`,
+`crypto/rand`) mintado uma vez por requisição/RPC de entrada na borda
+(`emitCallerAndIdempotency`, `http.go`; o equivalente em `grpc.go`), logo
+depois do `caller`. Este mecanismo é deliberadamente **não-W3C**: correlaciona
+logs *dentro* de um mesmo processo/request, não propaga um `traceparent`
+entre serviços — decisão de escopo, não uma limitação temporária (ver riscos,
+§7).
+
+**Seam de trace/span (`runtime.Observer`, `rtsrc/observer.go.txt`), sempre
+presente, custo zero até ser usado.** Uma interface pequena —
+`RecordSpan(ctx, name) (context.Context, func(err error))` e `TraceID(ctx)
+(string, bool)` — com um `noopObserver` default (`RecordSpan` é passthrough;
+`TraceID` nunca acha nada) instalável via `runtime.SetObserver`. O Go gerado
+SEMPRE chama `runtime.RecordSpan`/`runtime.TraceIDFrom` (nunca checa se
+Telemetry foi declarado) — a troca no-op↔OTel é só a instalação do Observer,
+nunca uma ramificação no código gerado por programa. Pontos de chamada de
+`RecordSpan` (a interpretação deste gerador de "traces automáticos", **não**
+para todo construto exaustivamente — decisão de escopo documentada):
+
+- a borda HTTP/gRPC, em torno do despacho do UseCase/Query alvo da rota/rpc
+  (`emitUseCaseRoute`/`emitQueryRoute`, `http.go`; `emitGRPCUseCaseHandlerBody`/
+  `emitGRPCQueryHandlerBody`, `grpc.go`) — nomeado `"UseCase.<Nome>"`/
+  `"Query.<Nome>"`;
+- o `Dispatcher` núcleo, em torno de CADA invocação de handler de Policy
+  (`memoryDispatcher.Publish`, `rtsrc/dispatcher.go.txt`) — nomeado
+  `"policy:<eventType>"`; cobre BestEffort (in-process) e AtLeastOnce (via
+  Outbox, que despacha através do MESMO Dispatcher) com uma única mudança,
+  sem nenhum codegen por programa.
+
+Worker/Saga/Upcast-Downcast de versão não ganham span nesta task (mas
+Worker/Saga JÁ têm `ctx` em escopo, então seus `log` ganham `trace_id` do
+mecanismo default acima).
+
+**Adapter OTel opt-in (REQ-30.2), `codegen/otelrt` + `decl_telemetry.go`.**
+`Module X { Telemetry { exporter: "otlp", endpoint: env(...), traces {
+sampler, sampleRate } } }` (spec §12) é o único gatilho: `programNeedsOTel`
+decide, uma vez por programa, se `otelruntime/*.go` (vendorado a partir de
+`codegen/otelrt/*.go.txt`, mesmo mecanismo `.go.txt`+`//go:embed` de
+`sqlrt`/`grpcrt`) e o `require` de 4 módulos OTel entram no `go.mod`
+(`EmitGoMod`, `project.go`); ausente em qualquer outro caso (NFR-12,
+wallet/shop incluídos). `groupTelemetryBlock` resolve, por `cmd/<service>`, o
+(no máximo um) módulo do grupo que declara o bloco — dois no mesmo grupo é
+erro de geração claro (um processo só tem um Observer). Quando presente,
+`generateCmdMainFile` emite, como as PRIMEIRAS linhas de `func main()` (antes
+até de `store := …`): `otelruntime.NewObserver(ctx, otelruntime.Config{…})` +
+`log.Fatal` em erro + `defer otelShutdown(…)` + `runtime.SetObserver(…)`.
+
+Decisões de implementação do adapter (`codegen/otelrt/observer.go.txt`):
+exporter **OTLP sobre HTTP** (`otlptracehttp`), não sobre gRPC — evita que o
+caminho OTel dependa de `google.golang.org/grpc` mesmo quando o programa não
+declara `Interface GRPC` (confirmado via `go mod why`: o grafo de módulos do
+exporter HTTP lista grpc-go como indireto, mas nenhum código o importa).
+Módulos fixados (não "latest", mesma razão de determinismo de
+`sqliteDriverModule`/`grpcModule`): `go.opentelemetry.io/otel{,/sdk,/trace}` +
+`.../exporters/otlp/otlptrace/otlptracehttp`, todos `v1.44.0` (exige `go
+1.25`, coincide com `sqliteMinGoVersion`). Sampler: `"always_on"` (default)
+ou `"parentbased_traceidratio"` com `sampleRate` — qualquer outro valor é
+erro de geração. `traces.sampler`/`traces.sampleRate` são os únicos campos de
+`Telemetry` que este adapter honra; `logs { … }`/`metrics { … }` são aceitos
+pelo parser mas IGNORADOS (logs continuam por `log/slog` incondicionalmente,
+sem bridge para um exporter de logs OTel; `metrics` é `Metric` de negócio,
+H3, fora desta task).
+
+**Nota de escopo — Handle/Apply sem `ctx` (limitação preexistente, não
+introduzida por H2).** `§3.1a` já previa "um Handle recebe … o ctx quando seu
+corpo precisa (`now()`/`load`/log)", mas `decl_aggregate.go` nunca chegou a
+implementar isso: `emitHandle`/`emitApply` não têm parâmetro `ctx` nem
+`BuiltinLowerer` anexado hoje — `now()`/`load` dentro de um Handle já eram
+"não suportados" antes de H2, independente de log. Estender Handle para
+aceitar `ctx` sob demanda (detectar estaticamente se o corpo usa `log`, somar
+o parâmetro, ajustar `handleDispatchCall`/todo chamador) é uma mudança
+arquitetural maior, fora do orçamento mínimo de H2 (REQ-30 pede
+instrumentação nas fronteiras de despacho — UseCase/Policy/Query — que já
+têm `ctx` por construção, não em Handle/Apply). `logStmt` dentro de
+Handle/Apply continua saindo sem `"trace_id"`, byte a byte igual a antes de
+H2 (`StmtContext.CtxVar == ""` para os dois).
+
+**Trace id sob OTel ativo (decisão do design, não relitigada).** Nunca dois
+esquemas de trace id divergentes ao mesmo tempo: com o adapter instalado,
+`runtime.TraceIDFrom` LÊ o trace id do span OTel ativo (via
+`Observer.TraceID`), nunca o id stdlib mintado por `WithTrace` — o carrier
+stdlib continua sendo escrito (idempotente, nunca lido nesse caso) só para
+não exigir um `if` no gerador sobre se o Observer é real.
+
+### 3.14. Testes gerados (`gentest.go`) — REQ-31
 
 ### 3.14. Testes gerados (`gentest.go`) — REQ-31
 
@@ -715,6 +802,9 @@ de `Interface GRPC`/`Telemetry` ⇒ nenhum código com dep externa é gerado.
 | Um pacote Go por módulo de domínio | Um pacote único | Espelha a fronteira de módulo do domínio; imports claros (NFR-11) |
 | Só gera programa válido | Gerar best-effort com erros | Correção por construção; o gerado sempre compila (NFR-14, REQ-14.1) |
 | gRPC/OTel isolados e opt-in | Sempre presentes | Manter o núcleo sem dep externa; exceção documentada (NFR-12) |
+| Trace id default: hex de 128 bits via `crypto/rand`, mintado na borda, sem propagação W3C entre serviços | Implementar `traceparent` (W3C) completo desde já | Correlação de log DENTRO de um processo/request já cobre REQ-30.1; W3C cross-service é trabalho futuro, documentado (§design 3.13) |
+| `runtime.Observer` com um único hook (`RecordSpan`) na borda HTTP/gRPC + no `Dispatcher` núcleo (Policy) | Instrumentar todo construto (UseCase/Query/Policy/Worker/Saga) individualmente no codegen | Cobre as fronteiras de despacho reais sem cascatear mudanças por 8+ `decl_*.go`; Policy "de graça" via um único ponto no runtime (`dispatcher.go.txt`) — escopo documentado, não é "tudo" (§design 3.13) |
+| OTel adapter sobre `otlptracehttp` (OTLP/HTTP) | `otlptracegrpc` (OTLP/gRPC) | Evita amarrar o caminho OTel a `google.golang.org/grpc` mesmo sem `Interface GRPC` — confirmado via `go mod why` que nenhum código do exporter HTTP o importa (§design 3.13) |
 | Lowering reusa `astutil` | Novo percurso | Extensibilidade e consistência com as fases (NFR-8/16) |
 | `context.Context` em toda fronteira desde E2.1 | `ctx` só quando tenancy/idempotência chegarem | Evita reescrever todas as assinaturas do runtime em G/H; ambiente (caller/tenant/trace) nunca é param de domínio (§3.1a) |
 | `runtime.Decimal` de escala fixa (`big.Int` + escala 4, half-even) | `*big.Rat`; `float64` | Dinheiro exato sem frações infinitas na divisão; sem dep externa (§3.3) |
@@ -745,3 +835,5 @@ de `Interface GRPC`/`Telemetry` ⇒ nenhum código com dep externa é gerado.
 | Dep externa vaza pro núcleo | Seam por interface; ausência do recurso ⇒ nenhum import externo (NFR-12, §4.4) |
 | Runtime vendorado diverge e não compila | Teste que compila `rtsrc/` isoladamente (NFR-17) |
 | Semântica do domínio distorcida no lowering | Testes gerados de `*.test.ds` rodam sobre o gerado (NFR-15, REQ-31) |
+| Handle/Apply sem `ctx` — `log` dentro deles nunca ganha `trace_id` | Limitação preexistente (não introduzida por H2), documentada em §design 3.13; Handle/Apply nunca usaram `now()`/`load` também, então não é regressão de escopo |
+| Adapter OTel (H2) puxa uma árvore de dependências maior que grpc-go sozinho | Só emitido quando "Telemetry" é declarado (opt-in, NFR-12); versões fixadas (v1.44.0) e confirmadas resolvíveis/compiláveis/testáveis via probe isolado antes da task |

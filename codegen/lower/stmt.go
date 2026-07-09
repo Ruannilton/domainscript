@@ -66,6 +66,19 @@ type StmtContext struct {
 	// existem para dizer a forma de sucesso do CONSTRUTO ao redor). Vazio ⇒
 	// "return" cru.
 	SuccessReturn string
+	// CtxVar é o nome Go do parâmetro/local context.Context em escopo no
+	// corpo sendo lowerizado (ex. "ctx"), "" quando nenhum ctx alcança este
+	// corpo (H2, REQ-30.1, §design 3.13). logStmt usa isto para decidir se
+	// anexa um campo "trace_id" (via runtime.TraceIDFrom(CtxVar)) a cada log
+	// — UseCase/Policy/Query/Worker/Saga step já recebem ctx por construção
+	// (§3.1a) e por isso setam CtxVar; Handle/Apply (decl_aggregate.go) e um
+	// Upcast/Downcast de versão (versioning.go) NÃO recebem ctx hoje —
+	// CtxVar fica "" para eles, deliberadamente (ver a doc de
+	// codegen/decl_aggregate.go e codegen/decl_telemetry.go sobre o porquê:
+	// estender Handle para aceitar ctx sob demanda é uma mudança
+	// arquitetural maior, fora do escopo mínimo de H2, e nem o wallet nem o
+	// shop têm um Handle/Apply com "log" para exercitá-la).
+	CtxVar string
 }
 
 // ExitOnError devolve a linha Go que sai da função ao encontrar errExpr (uma
@@ -1426,9 +1439,17 @@ func builtinReceiverShape(t types.Type) string {
 	}
 }
 
-// logStmt traduz "log Level Message { Fields }" para uma chamada simples de
-// log/slog (REQ-22.8) — sem contexto de trace completo (isso é observabilidade
-// avançada, H2); aqui só o básico: slog.<Level>(<Message>, "campo1", valor1, ...).
+// logStmt traduz "log Level Message { Fields }" para uma chamada de log/slog
+// (REQ-22.1/30.1, §design 3.13): slog.<Level>(<Message>, "trace_id", <id>,
+// "campo1", valor1, ...) — o campo "trace_id" só aparece quando o corpo
+// sendo lowerizado TEM um ctx em escopo (sl.ctx.CtxVar != "", ver a doc de
+// StmtContext.CtxVar): UseCase/Policy/Query/Worker/Saga step sempre o têm;
+// Handle/Apply e Upcast/Downcast de versão não, hoje (limitação documentada,
+// mesmo lugar) — um log dentro deles continua saindo sem "trace_id", byte a
+// byte igual a antes de H2. runtime.TraceIDFrom (rtsrc/observer.go.txt)
+// resolve o id de fato: o do span OTel ativo quando o adapter real está
+// instalado (Telemetry declarado), senão o id stdlib simples mintado na
+// borda (runtime.WithTrace) — logStmt não precisa saber qual dos dois é.
 func (sl *StmtLowerer) logStmt(n *ast.LogStmt) error {
 	slogAlias := sl.e.Import("log/slog")
 
@@ -1443,6 +1464,9 @@ func (sl *StmtLowerer) logStmt(n *ast.LogStmt) error {
 	}
 
 	args := []string{msgGo}
+	if sl.ctx.CtxVar != "" {
+		args = append(args, strconv.Quote("trace_id"), fmt.Sprintf("%s.TraceIDFrom(%s)", sl.runtimeAlias, sl.ctx.CtxVar))
+	}
 	for _, f := range n.Fields {
 		fg, hoisted, err := sl.exprHoisted(f.Value, sl.ctx)
 		if err != nil {

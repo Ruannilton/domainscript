@@ -457,9 +457,25 @@
   `grpc_test.go`).
   **Commit:** `feat(codegen): exposição gRPC (dep isolada)`
 
-- [ ] **H2** Observabilidade: `log/slog` (stdlib) por padrão com trace context; adapter
+- [x] **H2** Observabilidade: `log/slog` (stdlib) por padrão com trace context; adapter
   OTel atrás de `runtime.Observer`, opt-in quando `Telemetry` é declarado.
   _(REQ-30.1/30.2, §design 3.13)_
+  **Conclusão:** trace id stdlib (`runtime.WithTrace`/`NewTraceID`, hex de 128
+  bits, mintado na borda HTTP/gRPC) propagado a todo `log` cujo corpo tem
+  `ctx` em escopo (`StmtContext.CtxVar`, UseCase/Policy/Query/Worker/passo de
+  Saga — Handle/Apply ficam de fora, limitação preexistente documentada);
+  seam `runtime.Observer` (`RecordSpan`/`TraceID`, no-op default,
+  `rtsrc/observer.go.txt`) ligado na borda HTTP/gRPC (span por despacho de
+  UseCase/Query) e no `Dispatcher` núcleo (span por invocação de Policy,
+  cobre BestEffort+AtLeastOnce de graça); adapter OTel real isolado em
+  `codegen/otelrt` (OTLP sobre HTTP, `v1.44.0`, opt-in via `Telemetry` no
+  mod.ds — `go.mod`/`otelruntime/*.go` ausentes sem ela); fixture sintética
+  `TelemetryDemo` com golden/determinismo/smoke-compile (`go mod tidy` real)
+  e dois testes comportamentais (`RunTests` sobre o projeto gerado inteiro,
+  incl. `otelruntime/observer_test.go` embutido sobre `tracetest.
+  SpanRecorder`; e um `runtime.Observer` fake instalado provando que a borda
+  HTTP de fato chama `RecordSpan`); regressão: wallet/shop sem `Telemetry`
+  continuam sem nenhum artefato `otelruntime/*`/`require` OTel em `go.mod`.
   **Commit:** `feat(codegen): observabilidade (slog + OTel opt-in)`
 
 - [ ] **H3** `Metric` de negócio (`MetricDecl`: counter/histogram no gatilho `on`,

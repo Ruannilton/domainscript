@@ -1,0 +1,109 @@
+package otelruntime
+
+// observer_test.go.txt prova o comportamento de observer.RecordSpan/TraceID
+// (H2, REQ-30.2) sobre um in-memory tracetest.SpanRecorder — a forma padrão
+// de testar instrumentação OTel sem um collector real (ver a doc do arquivo
+// em observer.go.txt para o porquê de NewObserver em si, que abre um
+// exporter OTLP/HTTP de verdade, não ser exercitado aqui: é coberto pelo
+// smoke-compile/behavioral test do PROJETO GERADO inteiro,
+// codegen/otel_test.go, que só precisa provar que ele constrói e liga sem
+// depender de rede/collector — otlptracehttp.New nunca conecta na hora da
+// criação, só no 1º export em batch). Embutido junto de observer.go.txt
+// (mesmo padrão de codegen/rtsrc/runtime_test.go.txt): roda tanto isolado
+// (codegen/otelrt/otelrt_test.go, TestSourcesBehavioralTestsPass) quanto
+// como parte do projeto Go gerado de verdade, quando "Telemetry" é
+// declarado.
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+)
+
+// newTestObserver monta um observer sobre um TracerProvider com um
+// SpanRecorder in-memory (sempre amostra, sem exportar de verdade) — o
+// mesmo shape que NewObserver monta, só trocando o exporter/sampler reais
+// pelo recorder de teste.
+func newTestObserver(sr *tracetest.SpanRecorder) *observer {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	return &observer{tracer: tp.Tracer("test")}
+}
+
+func TestObserverRecordSpanProducesSpan(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	obs := newTestObserver(sr)
+
+	ctx, end := obs.RecordSpan(context.Background(), "UseCase.Deposit")
+	if _, ok := obs.TraceID(ctx); !ok {
+		t.Fatal("esperava TraceID válido dentro do span iniciado por RecordSpan")
+	}
+	end(nil)
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("esperava 1 span finalizado, achei %d", len(spans))
+	}
+	if got := spans[0].Name(); got != "UseCase.Deposit" {
+		t.Fatalf("nome do span = %q, quero %q", got, "UseCase.Deposit")
+	}
+	if spans[0].Status().Code != codes.Unset {
+		t.Fatalf("status = %v, quero Unset (end(nil), sem erro)", spans[0].Status().Code)
+	}
+}
+
+func TestObserverRecordSpanMarksError(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	obs := newTestObserver(sr)
+
+	_, end := obs.RecordSpan(context.Background(), "Query.GetWallet")
+	end(errors.New("boom"))
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("esperava 1 span finalizado, achei %d", len(spans))
+	}
+	if spans[0].Status().Code != codes.Error {
+		t.Fatalf("status = %v, quero Error (end(err) deve marcar falha)", spans[0].Status().Code)
+	}
+}
+
+func TestObserverTraceIDFalseWithoutSpan(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	obs := newTestObserver(sr)
+
+	if _, ok := obs.TraceID(context.Background()); ok {
+		t.Fatal("esperava ok=false: ctx sem nenhum span OTel ativo")
+	}
+}
+
+// TestNewObserverBuildsWithoutNetworkAccess prova que NewObserver (o
+// caminho REAL, usado por cmd/<service>/main.go via emitOTelWiring) monta o
+// exporter/TracerProvider e devolve um shutdown funcional SEM exigir um
+// collector de verdade escutando: otlptracehttp.New nunca conecta na
+// criação (só no 1º export em batch), e Shutdown sobre um provider sem
+// nenhum span pendente retorna quase instantaneamente, mesmo apontando para
+// um endereço que não responde — confirmado em isolamento antes desta task
+// (probe manual, ver o relatório de H2). Evita a fixture de smoke-compile
+// precisar de um collector real só para este teste passar.
+func TestNewObserverBuildsWithoutNetworkAccess(t *testing.T) {
+	obs, shutdown, err := NewObserver(context.Background(), Config{
+		Endpoint:    "http://127.0.0.1:4318",
+		ServiceName: "test",
+		Sampler:     "always_on",
+	})
+	if err != nil {
+		t.Fatalf("NewObserver: %v (não deveria exigir um collector real para construir)", err)
+	}
+	if obs == nil {
+		t.Fatal("esperava um Observer não-nil")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}

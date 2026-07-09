@@ -88,9 +88,10 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 
 	needsSQL := programNeedsSQLAdapter(prog) // G1, NFR-12 — true só quando ao menos um Database é provider:"sqlite"
 	needsGRPC := programNeedsGRPC(prog)      // H1, NFR-12 — true só quando ao menos um arquivo declara "Interface GRPC"
+	needsOTel := programNeedsOTel(prog)      // H2, NFR-12 — true só quando ao menos um mod.ds declara "Telemetry { ... }"
 
 	var files []File
-	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", needsSQL, needsGRPC)})
+	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", needsSQL, needsGRPC, needsOTel)})
 
 	runtimeFiles, err := generateRuntimeFiles()
 	if err != nil {
@@ -112,6 +113,14 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 			return nil, err
 		}
 		files = append(files, grpcFiles...)
+	}
+
+	if needsOTel {
+		otelFiles, err := generateOTelRuntimeFiles()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, otelFiles...)
 	}
 
 	moduleNames := make([]string, 0, len(prog.Modules))
@@ -971,11 +980,34 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	grpcIface := findGroupGRPCInterface(prog, group.modules)
 	hasGRPC := grpcInterfaceHasServices(grpcIface)
 
+	// telemetryPlan (H2, REQ-30.2, §design 3.13) é resolvido aqui — ANTES da
+	// emissão de func main() — mesma razão de tenantPlan/verEnv (http.go):
+	// resolveTelemetryPlan chama e.Import (para "os", quando "endpoint" usa
+	// env(...)) e pode falhar com um erro de geração claro, e é mais simples
+	// propagar esse erro ANTES de abrir o bloco de func main() do que dentro
+	// dele. plan == nil (nenhum módulo do grupo declara "Telemetry" — o caso
+	// comum, wallet/shop incluídos) não muda NADA: nenhuma linha de wiring é
+	// emitida, o Observer do processo permanece o no-op default.
+	telemetryBlock, telemetryModule, err := groupTelemetryBlock(prog, group.modules)
+	if err != nil {
+		return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+	}
+	var telemetryPlan *telemetryPlan
+	if telemetryBlock != nil {
+		telemetryPlan, err = resolveTelemetryPlan(e, telemetryBlock)
+		if err != nil {
+			return nil, fmt.Errorf("cmd/%s/main.go: módulo %s: %w", group.dirName, telemetryModule, err)
+		}
+	}
+
 	e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
 	e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
 	e.Line("// geração, não editar à mão.")
 	var mainErr error
 	e.Block("func main()", func() {
+		if telemetryPlan != nil {
+			emitOTelWiring(e, telemetryPlan, group.dirName)
+		}
 		e.Line("store := %s.NewMemoryEventStore()", runtimeAlias)
 
 		var channelVarName string
