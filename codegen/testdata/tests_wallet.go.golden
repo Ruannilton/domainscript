@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	context "context"
 	runtime "domainscript/generated/runtime"
 	errors "errors"
 	reflect "reflect"
@@ -99,5 +100,61 @@ func TestWallet_SaqueComSaldoInsuficienteFalha(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInsufficientBalance) {
 		t.Fatalf("esperava errors.Is(err, ErrInsufficientBalance), got: %v", err)
+	}
+}
+
+// TestPerformDeposit_DepositoBemSucedidoCommita prova o cenário "depósito bem-sucedido commita" de Test PerformDeposit (§22.2, REQ-31).
+func TestPerformDeposit_DepositoBemSucedidoCommita(t *testing.T) {
+	store := runtime.NewMemoryEventStore()
+	if err := store.Append(context.Background(), "W1", []runtime.Event{&WalletCreated{Id: "W1", Holder: "Ana"}}); err != nil {
+		t.Fatalf("given %v: %v", "W1", err)
+	}
+	uow := runtime.NewUnitOfWork(store)
+	Wire(uow)
+	ctx := runtime.WithCaller(context.Background(), runtime.NewTestCaller("test-caller"))
+	var err error
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(50), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	err = PerformDeposit(ctx, Deposit{WalletId: "W1", Amount: tmp1, Description: "Salário"})
+	after1, after1Err := store.Load(context.Background(), "W1")
+	if after1Err != nil {
+		t.Fatalf("Load(\"W1\"): %v", after1Err)
+	}
+	tmp2, err := NewMoney(runtime.NewDecimalFromInt(50), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	after1Want1 := &DepositPerformed{Id: "W1", Amount: tmp2, Description: "Salário"}
+	if len(after1) <= 1 {
+		t.Fatalf("esperava ao menos 2 evento(s) novo(s) em \"W1\", got %d", len(after1))
+	}
+	after1[1].SetMeta(runtime.EventMeta{})
+	if !reflect.DeepEqual(after1[1], after1Want1) {
+		t.Fatalf("\"W1\"[1]: got %+v, want %+v", after1[1], after1Want1)
+	}
+	if err != nil {
+		t.Fatalf("esperava committed (sucesso), erro inesperado: %v", err)
+	}
+}
+
+// TestPerformDeposit_CarteiraNuncaCriadaFalhaENaoCommita prova o cenário "carteira nunca criada falha e não commita" de Test PerformDeposit (§22.2, REQ-31).
+func TestPerformDeposit_CarteiraNuncaCriadaFalhaENaoCommita(t *testing.T) {
+	store := runtime.NewMemoryEventStore()
+	uow := runtime.NewUnitOfWork(store)
+	Wire(uow)
+	ctx := runtime.WithCaller(context.Background(), runtime.NewTestCaller("test-caller"))
+	var err error
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(50), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	err = PerformDeposit(ctx, Deposit{WalletId: "W2", Amount: tmp1, Description: "x"})
+	if !errors.Is(err, ErrInactiveWallet) {
+		t.Fatalf("esperava errors.Is(err, ErrInactiveWallet), got: %v", err)
+	}
+	if err == nil {
+		t.Fatalf("esperava rolledback (erro), sucesso")
 	}
 }

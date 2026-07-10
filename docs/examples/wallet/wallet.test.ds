@@ -41,3 +41,23 @@ Test Wallet {
         then error InsufficientBalance
     }
 }
+
+// Test PerformDeposit — asserção transacional sobre o UseCase PerformDeposit
+// (§22.2, H4): "given Subject from [...]" semeia o EventStore de verdade que
+// PerformDeposit's "load Wallet(cmd.walletId)" lê; "then { Subject emitted
+// ..., committed }" verifica o evento persistido no stream do Subject.
+Test PerformDeposit {
+    scenario "depósito bem-sucedido commita" {
+        given Wallet("W1") from [ WalletCreated(id: "W1", holder: "Ana") ]
+        when Deposit(walletId: "W1", amount: Money(50, "BRL"), description: "Salário")
+        then {
+            Wallet("W1") emitted DepositPerformed(id: "W1", amount: Money(50, "BRL"), description: "Salário")
+            committed
+        }
+    }
+
+    scenario "carteira nunca criada falha e não commita" {
+        when Deposit(walletId: "W2", amount: Money(50, "BRL"), description: "x")
+        then { error InactiveWallet, rolledback }
+    }
+}

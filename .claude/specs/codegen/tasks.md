@@ -533,17 +533,44 @@
   inativa) gera `wallet_test.go` que roda `go test` verde sobre o projeto
   gerado inteiro (`TestEmitTestsWalletRunsGreen`) — fidelidade semântica
   (NFR-15) sobre o alvo de conclusão nomeado por esta task.
+  **Progresso parcial (2ª fatia):** cenário de UseCase (§22.2) — um `Test`
+  cujo `Name` resolve a um `*ast.UseCaseDecl` do módulo (checado depois de
+  Aggregate, mesmo mapa nome→decl) vira `func TestX(t *testing.T)` que
+  invoca a função gerada do UseCase como CAIXA-PRETA (`PerformDeposit(ctx,
+  cmd)`, decl_usecase.go), MECANISMO ESTRUTURALMENTE DIFERENTE de §22.1: já
+  que o UseCase carrega o Aggregate de dentro do próprio corpo ("load
+  Wallet(cmd.walletId)"), `given Subject from [eventos]` (ex. `Wallet("W1")
+  from [...]`) semeia um `runtime.EventStore` de verdade (`store.Append`) em
+  vez de construir o Aggregate direto — `LoadWallet`, já testado, faz o
+  replay quando o UseCase chamar `load`. `then { ... }`: `Subject emitted
+  Evento` resolve por ÍNDICE ESTÁTICO (quantos eventos aquele Subject já
+  tinha ANTES, fixado em tempo de geração, mais quantas asserções `emitted`
+  já foram consumidas para o MESMO Subject — `ucSubject`/`ucSubjects`) e
+  zera a `EventMeta` do evento persistido antes do `reflect.DeepEqual`
+  (`Event.SetMeta`, já que `AggregateID`/`Sequence`/`Timestamp` são
+  carimbados por `store.Append`, nunca conhecidos pelo `.test.ds`);
+  `committed`/`rolledback` são só `err == nil`/`err != nil` —
+  `rtsrc/uow.go.txt` documenta que a UnitOfWork em memória não tem stage
+  nenhum (Append já é durável no instante em que retorna), então rollback de
+  verdade não existe para desfazer-se-precisar-verificar; caller é sempre
+  `runtime.NewTestCaller("test-caller")` (fixo — um cenário de UseCase pode
+  envolver MAIS de um Aggregate, não há um "self" único para bater
+  `caller.id`). `wallet.test.ds` ganhou `Test PerformDeposit` (2 cenários:
+  sucesso com `committed` + evento persistido, e carteira nunca criada com
+  `error InactiveWallet, rolledback`) — passa por `TestEmitTestsWalletRunsGreen`
+  junto do cenário de Aggregate, no projeto wallet gerado INTEIRO (a prova
+  agora usa `generateWalletProject`, não mais um subconjunto de arquivos, já
+  que exercita `usecases.go`/`Wire` de verdade).
   **Deliberadamente adiado** (decisão explícita, não esquecimento — cada um é
-  uma fatia comparável em tamanho à 1ª, nenhuma exercitada por wallet/shop
-  hoje): UseCase (§22.2, `given Subject from [...]`, `then {emitted,
-  committed/rolledback}` — precisa de `EventStore`/UOW de verdade, não do
-  seed direto desta fase); Policy/Query (§22.4, `given binding [...]`, `when
+  uma fatia comparável em tamanho às 2 primeiras, nenhuma exercitada por
+  wallet/shop hoje): Policy/Query (§22.4, `given binding [...]`, `when
   event`, `emitted count N`); Saga com `mock`/`fail step` (§22.3 — exigiria
   seams novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5);
   `Fixture` como helper reusável (§22.6 — hoje só `TestDecl` é consumido,
   `FixtureDecl` continua coletado em `moduleBucket.fixtures` sem emissor,
   ver `codegen.go`).
-  **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`
+  **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`,
+  `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`
 
 - [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,

@@ -492,6 +492,14 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	for _, a := range b.aggregates {
 		aggregates[a.Name] = a
 	}
+	// usecasesByName (H4, gentest.go, §22.2) resolve o alvo de um Test por
+	// nome — mesmo mapa nome->decl de aggregates acima, indexando b.usecases
+	// (NÃO "repaired", abaixo: EmitTests só precisa de Name/Handles, nunca do
+	// corpo Execute que o repair corrige para EmitUseCases).
+	usecasesByName := make(map[string]*ast.UseCaseDecl, len(b.usecases))
+	for _, uc := range b.usecases {
+		usecasesByName[uc.Name] = uc
+	}
 	// adapterByName indexa os Adapter do módulo por nome (F4, REQ-25.3) — o
 	// registry que StmtLowerer.WithNotifyAdapters consulta para reconhecer
 	// "Xxx(...)" como notify/call de uma Notification (ver decl_io.go/
@@ -733,7 +741,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	// "<pkg>_test.go" — package pkg (interno, ver a doc de gentest.go).
 	// aggregates é o MESMO mapa já construído acima para EmitUseCases.
 	if len(b.tests) > 0 {
-		content, err := EmitTests(pkg, b.tests, model, tab, moduleName, reg, aggregates)
+		content, err := EmitTests(pkg, b.tests, model, tab, moduleName, reg, aggregates, usecasesByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("%s_test.go: %w", pkg, err)
 		}
