@@ -561,12 +561,32 @@
   junto do cenário de Aggregate, no projeto wallet gerado INTEIRO (a prova
   agora usa `generateWalletProject`, não mais um subconjunto de arquivos, já
   que exercita `usecases.go`/`Wire` de verdade).
+  **Progresso parcial (3ª fatia):** `Fixture` como helper reusável (§22.6) —
+  "Fixture Nome { Subject from [eventos] }" vira "func fixture<Nome>(t
+  *testing.T) *<AggType>" no MESMO "<pkg>_test.go" (`EmitTests` passa a
+  receber também `[]*ast.FixtureDecl`; `emitFixtureDecl`/`emitFixtureBody`/
+  `resolveFixtureAggregate`, `gentest.go`): reusa a MESMA máquina de given de
+  §22.1 (`emitAggregateGivenEntity` — Apply real quando existe, seed
+  campo-a-campo quando não, ver a doc do arquivo sobre "seed direto, não
+  replay de EventStore") porque a gramática não tem NENHUMA forma de ligar
+  uma Fixture a um Test (confirmado: nem parser nem sema referenciam
+  `FixtureDecl` fora de coletar) — o helper gerado não tem chamador dentro do
+  projeto gerado, e Go não recusa uma func de topo não usada; sua corretude é
+  provada por um teste hand-written que a CHAMA
+  (`TestEmitFixturesWalletBehavior`, gentest_test.go, mesmo espírito dos
+  testes comportamentais hand-written já existentes do pacote). Escopo
+  restrito, documentado (não esquecimento): só "Subject from [eventos]" (a
+  forma do próprio exemplo do spec) é suportada — uma Fixture sem Subject
+  (lista de eventos ambígua, qual Aggregate?), com "state {...}"/"binding
+  [...]" (StateStored/Policy), ou referenciando mais de um Aggregate (um
+  helper multi-Subject precisaria devolver vários valores/um struct) são erro
+  de geração claro, nunca geradas silenciosamente erradas
+  (`resolveFixtureAggregate`). `wallet.test.ds` ganhou `Fixture
+  activeWallet` (§22.6, o mesmo exemplo do spec, adaptado ao wallet real).
   **Deliberadamente adiado** (decisão explícita, não esquecimento — cada um é
-  uma fatia comparável em tamanho às 2 primeiras, nenhuma exercitada por
+  uma fatia comparável em tamanho às anteriores, nenhuma exercitada por
   wallet/shop hoje): Saga com `mock`/`fail step` (§22.3 — exigiria seams
-  novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5); `Fixture`
-  como helper reusável (§22.6 — hoje só `TestDecl` é consumido, `FixtureDecl`
-  continua coletado em `moduleBucket.fixtures` sem emissor, ver `codegen.go`).
+  novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5).
 
   **Policy/Query (§22.4) investigado e adiado — cadeia de achados (não
   esquecimento, uma investigação real que aprofundou 3 vezes antes de
@@ -598,7 +618,8 @@
   TESTE sobre capacidade já existente, não de construção de Read Side) —
   registrado aqui para a PRÓXIMA sessão não precisar redescobrir a cadeia.
   **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`,
-  `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`
+  `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`,
+  `feat(codegen): geração de testes a partir de *.test.ds (Fixture reusável)`
 
 - [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,

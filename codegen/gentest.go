@@ -25,15 +25,17 @@ import (
 //
 // §22 declara sete formas de cenário cruzando 4 famílias de alvo (Aggregate,
 // UseCase, Policy/Query, Saga) mais mock/fail-step/property/Fixture (REQ-
-// 31.1-4). Esta fase cobre §22.1 (Aggregate) e §22.2 (UseCase): um Test cujo
-// Name resolve a um *ast.AggregateDecl OU a um *ast.UseCaseDecl DESTE módulo
-// — achado por casamento de nome exato contra o mapa recebido (mesmo padrão
-// de sema/rules_test_files.go:sagaSteps, que já faz esse casamento por nome
-// para Saga). Policy/Query (§22.4, emitted count sem Subject)/Saga (§22.3,
-// mock/fail-step)/property (§22.5)/Fixture (§22.6) ficam para fases
-// seguintes — um Test cujo nome não resolve a um Aggregate NEM a um UseCase
-// deste módulo, ou cujo cenário usa uma forma ainda não coberta, é um erro de
-// geração claro agora, nunca gerado silenciosamente errado.
+// 31.1-4). Esta fase cobre §22.1 (Aggregate), §22.2 (UseCase) e §22.6
+// (Fixture): um Test cujo Name resolve a um *ast.AggregateDecl OU a um
+// *ast.UseCaseDecl DESTE módulo — achado por casamento de nome exato contra o
+// mapa recebido (mesmo padrão de sema/rules_test_files.go:sagaSteps, que já faz
+// esse casamento por nome para Saga) — e cada *ast.FixtureDecl "Subject from
+// [eventos]" (helper reusável, ver a doc de emitFixtureDecl). Policy/Query
+// (§22.4, emitted count sem Subject)/Saga (§22.3, mock/fail-step)/property
+// (§22.5) ficam para fases seguintes — um Test cujo nome não resolve a um
+// Aggregate NEM a um UseCase deste módulo, ou cujo cenário usa uma forma ainda
+// não coberta, é um erro de geração claro agora, nunca gerado silenciosamente
+// errado.
 //
 // --- given: seed direto, não replay de EventStore (achado documentado) ---
 //
@@ -127,16 +129,19 @@ import (
 // §22.1 (a gramática não tem forma de expressar "como o caller X"),
 // carregada para UseCase.
 
-// EmitTests emite o Go de todas as ast.TestDecl de um módulo (H4, REQ-31) num
-// único arquivo "<pkg>_test.go" — package pkg (interno, ver a doc do
-// arquivo). aggregates/usecases são os mapas nome->Decl deste módulo (mesma
-// forma que EmitUseCases já recebe) usados para resolver o alvo de cada Test
-// (§22.1/22.2, ver a doc do arquivo) — aggregates checado primeiro
+// EmitTests emite o Go de todas as ast.TestDecl E ast.FixtureDecl de um módulo
+// (H4, REQ-31) num único arquivo "<pkg>_test.go" — package pkg (interno, ver a
+// doc do arquivo). aggregates/usecases são os mapas nome->Decl deste módulo
+// (mesma forma que EmitUseCases já recebe) usados para resolver o alvo de cada
+// Test (§22.1/22.2, ver a doc do arquivo) — aggregates checado primeiro
 // (§22.1/§22.2 não colidem: um nome de módulo não nomeia as duas coisas ao
-// mesmo tempo). decls vazio devolve (nil, nil): o CHAMADOR
-// (generateModuleFiles) decide, a partir disso, se escreve o arquivo.
-func EmitTests(pkg string, decls []*ast.TestDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl) ([]byte, error) {
-	if len(decls) == 0 {
+// mesmo tempo). fixtures (§22.6, ver a doc de emitFixtureDecl) viram helpers
+// "func fixture<Nome>(t *testing.T) *<AggType>" ao lado dos Test — reusam o
+// MESMO mapa aggregates para resolver o Aggregate do Subject. decls E fixtures
+// vazios devolvem (nil, nil): o CHAMADOR (generateModuleFiles) decide, a partir
+// disso, se escreve o arquivo.
+func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl) ([]byte, error) {
+	if len(decls) == 0 && len(fixtures) == 0 {
 		return nil, nil
 	}
 	e := emit.New(pkg)
@@ -171,6 +176,12 @@ func EmitTests(pkg string, decls []*ast.TestDecl, model *types.Model, tab *symbo
 			continue
 		}
 		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate nem a um UseCase deste módulo — só §22.1/22.2 são suportados nesta fase de H4", t.Name)
+	}
+
+	for _, f := range fixtures {
+		if err := emitFixtureDecl(e, f, model, tab, module, reg, runtimeAlias, aggregates); err != nil {
+			return nil, fmt.Errorf("Fixture %s: %w", f.Name, err)
+		}
 	}
 	return e.Bytes()
 }
@@ -501,6 +512,151 @@ func emitAggregateThen(e *emit.Emitter, sl *lower.StmtLowerer, then *ast.ThenCla
 		})
 	}
 	return nil
+}
+
+// --- Fixture (§22.6, REQ-31.4) ---
+//
+// Uma Fixture (§22.6) é uma pré-condição REUSÁVEL: "Fixture activeWallet {
+// Wallet(\"W1\") from [eventos] }" descreve um Aggregate já semeado, sem when/
+// then. Nada no front-end (parser/resolver/sema) liga uma Fixture a um Test —
+// não há sintaxe "use Fixture X" na gramática de §22 (confirmado). Logo o
+// helper gerado ("func fixtureActiveWallet(t *testing.T) *Wallet") não tem
+// chamador DENTRO do projeto gerado — o que é esperado e OK (Go não recusa uma
+// func de topo não usada). Sua corretude é provada por um chamador de teste
+// escrito à mão (gentest_test.go), no mesmo espírito dos testes comportamentais
+// hand-written do pacote.
+//
+// --- Forma suportada e escopo (documentado, não esquecimento) ---
+//
+// Suportada: a forma do PRÓPRIO exemplo do spec (§22.6), "Subject from
+// [eventos]" — GivenClause.Subject == Wallet(\"W1\"), Entities == a lista. O
+// Subject nomeia um Aggregate por TIPO (a cabeça do CallExpr, "Wallet"),
+// resolvido contra o MESMO mapa aggregates de EmitTests/EmitUseCases; o helper
+// constrói o Aggregate DIRETO ("w := &Wallet{}") e reusa EXATAMENTE a máquina
+// de given de §22.1 (emitAggregateGivenEntity: Apply real quando existe, seed
+// campo-a-campo quando não) — a MESMA filosofia "seed direto, não replay de
+// EventStore" (ver a doc do arquivo sobre por quê: bootstrapping de um VO com
+// Operator como Money a partir de um zero-value quebraria). O id vem dos
+// próprios eventos (via Apply/seed), como em §22.1 — o Subject só resolve o
+// TIPO. Várias givens acumulam sobre o MESMO receiver, na ordem declarada
+// (idêntico a §22.1).
+//
+// Escopo deliberadamente recusado com erro claro (nunca gerado errado):
+// (a) uma lista de eventos sem Subject ("given [eventos]") é ambígua (qual
+// Aggregate?) — precisaria inferir o alvo casando os tipos de evento contra
+// applyByEvent de TODOS os Aggregates, adiado; (b) "given state {...}"/"given
+// binding [...]" (StateStored/Policy, §22.4); (c) uma Fixture que referencia
+// MAIS de um Aggregate (dois Subjects de tipos diferentes) — um helper
+// multi-Subject retornaria vários valores/um struct, adiado: use uma Fixture
+// por Aggregate.
+
+// emitFixtureDecl emite "func fixture<Nome>(t *testing.T) *<AggType>" para uma
+// Fixture (§22.6) — reusa a máquina de given de §22.1 (ver a doc acima).
+func emitFixtureDecl(e *emit.Emitter, f *ast.FixtureDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias string, aggregates map[string]*ast.AggregateDecl) error {
+	agg, err := resolveFixtureAggregate(f, aggregates)
+	if err != nil {
+		return err
+	}
+	applyByEvent := make(map[string]bool, len(agg.Appliers))
+	for _, a := range agg.Appliers {
+		applyByEvent[a.Event] = true
+	}
+	stateFields := make(map[string]*ast.Field, len(agg.State))
+	for _, fld := range agg.State {
+		if fld != nil {
+			stateFields[fld.Name] = fld
+		}
+	}
+
+	env := lower.New(model, tab, module)
+	l := lower.NewLowerer(env, reg, runtimeAlias)
+	sl := lower.NewStmtLowerer(l, e, lower.StmtContext{Panics: true})
+
+	fn := "fixture" + goname.ExportField(f.Name)
+	receiver := aggregateReceiver(agg.Name)
+
+	e.Line("")
+	e.Line("// %s constrói o Aggregate %s semeado pela Fixture %s (§22.6, REQ-31).", fn, agg.Name, f.Name)
+	var bodyErr error
+	e.Block(fmt.Sprintf("func %s(t *testing.T) *%s", fn, agg.Name), func() {
+		bodyErr = emitFixtureBody(e, sl, f, agg, applyByEvent, stateFields, receiver)
+	})
+	if bodyErr != nil {
+		return bodyErr
+	}
+	return nil
+}
+
+// emitFixtureBody emite o corpo de um helper de Fixture: "w := &Agg{}", cada
+// entidade de cada given semeada na ordem declarada (emitAggregateGivenEntity,
+// reuso de §22.1), e "return w". t.Helper() marca o helper para o report de
+// falha do testing apontar o CHAMADOR (idioma de helper de teste Go).
+func emitFixtureBody(e *emit.Emitter, sl *lower.StmtLowerer, f *ast.FixtureDecl, agg *ast.AggregateDecl, applyByEvent map[string]bool, stateFields map[string]*ast.Field, receiver string) error {
+	e.Line("t.Helper()")
+	e.Line("%s := &%s{}", receiver, agg.Name)
+	for _, g := range f.Givens {
+		for _, entity := range g.Entities {
+			if err := emitAggregateGivenEntity(e, sl, entity, applyByEvent, stateFields, receiver); err != nil {
+				return fmt.Errorf("given: %w", err)
+			}
+		}
+	}
+	e.Line("return %s", receiver)
+	return nil
+}
+
+// resolveFixtureAggregate valida a forma de CADA given de f (só "Subject from
+// [eventos]", §22.6 — ver a doc de emitFixtureDecl) e devolve o ÚNICO
+// AggregateDecl que todos os Subjects nomeiam. Uma segunda given com Subject de
+// tipo diferente, uma given sem Subject, ou "state {...}"/"binding [...]" são
+// erro de geração claro (fase futura).
+func resolveFixtureAggregate(f *ast.FixtureDecl, aggregates map[string]*ast.AggregateDecl) (*ast.AggregateDecl, error) {
+	if len(f.Givens) == 0 {
+		return nil, fmt.Errorf("Fixture sem nenhum given — nada a semear")
+	}
+	var agg *ast.AggregateDecl
+	var aggName string
+	for _, g := range f.Givens {
+		if g.Binding != "" {
+			return nil, fmt.Errorf("\"given binding [...]\" (§22.4, Policy) não é suportado em Fixture nesta fase de H4 — use \"Subject from [eventos]\" (§22.6)")
+		}
+		if g.Subject == nil {
+			if g.State != nil {
+				return nil, fmt.Errorf("\"state { ... }\" (StateStored) não é suportado em Fixture nesta fase de H4 — use \"Subject from [eventos]\" (§22.6)")
+			}
+			return nil, fmt.Errorf("lista de eventos sem Subject (\"[...]\") é ambígua (qual Aggregate?) — não suportada nesta fase de H4, use \"Subject from [eventos]\" (§22.6)")
+		}
+		name, err := fixtureSubjectAggregateName(g.Subject)
+		if err != nil {
+			return nil, err
+		}
+		if aggName == "" {
+			a, ok := aggregates[name]
+			if !ok {
+				return nil, fmt.Errorf("Subject %q não resolve a um Aggregate deste módulo — só uma Fixture sobre um Aggregate local é suportada nesta fase de H4", name)
+			}
+			agg, aggName = a, name
+		} else if name != aggName {
+			return nil, fmt.Errorf("Fixture referencia mais de um Aggregate (%q e %q) — helper multi-Subject (vários valores/struct) não é suportado nesta fase de H4; use uma Fixture por Aggregate", aggName, name)
+		}
+	}
+	return agg, nil
+}
+
+// fixtureSubjectAggregateName extrai o nome do Aggregate da cabeça de um
+// Subject "Type(id)" (ex. Wallet(\"W1\") -> "Wallet"). O id em si não é usado
+// no seed (os eventos o carregam, como em §22.1) — só o TIPO resolve o
+// Aggregate. Qualquer outra forma é erro de geração claro.
+func fixtureSubjectAggregateName(subject ast.Expr) (string, error) {
+	call, ok := subject.(*ast.CallExpr)
+	if !ok {
+		return "", fmt.Errorf("esperava um Subject \"Type(id)\" (ex. Wallet(\"W1\")), got %T", subject)
+	}
+	id, ok := call.Fn.(*ast.Ident)
+	if !ok {
+		return "", fmt.Errorf("esperava um Aggregate nomeado no Subject, got %T", call.Fn)
+	}
+	return id.Name, nil
 }
 
 // --- UseCase (§22.2, REQ-31.1) ---

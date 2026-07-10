@@ -158,3 +158,16 @@ func TestPerformDeposit_CarteiraNuncaCriadaFalhaENaoCommita(t *testing.T) {
 		t.Fatalf("esperava rolledback (erro), sucesso")
 	}
 }
+
+// fixtureActiveWallet constrói o Aggregate Wallet semeado pela Fixture activeWallet (§22.6, REQ-31).
+func fixtureActiveWallet(t *testing.T) *Wallet {
+	t.Helper()
+	w := &Wallet{}
+	w.applyWalletCreated(WalletCreated{Id: "W1", Holder: "João"})
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(100), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	w.applyDepositPerformed(DepositPerformed{Id: "W1", Amount: tmp1, Description: "init"})
+	return w
+}

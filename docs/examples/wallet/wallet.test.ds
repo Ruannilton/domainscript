@@ -61,3 +61,17 @@ Test PerformDeposit {
         then { error InactiveWallet, rolledback }
     }
 }
+
+// Fixture activeWallet — pré-condição reutilizável (§22.6, H4): descreve uma
+// carteira ativa com saldo, sem when/then. Gera "func fixtureActiveWallet(t
+// *testing.T) *Wallet", que constrói o Aggregate direto e o semeia com os
+// eventos abaixo (Apply real: WalletCreated seta active/balance zerado,
+// DepositPerformed acumula o saldo — mesma máquina de given de §22.1). O helper
+// não tem chamador no projeto gerado (a gramática não liga Fixture a Test) — é
+// exercitado por um teste comportamental escrito à mão (gentest_test.go).
+Fixture activeWallet {
+    Wallet("W1") from [
+        WalletCreated(id: "W1", holder: "João"),
+        DepositPerformed(id: "W1", amount: Money(100, "BRL"), description: "init")
+    ]
+}

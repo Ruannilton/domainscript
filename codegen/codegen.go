@@ -309,9 +309,8 @@ type moduleBucket struct {
 	// *.test.ds do módulo — consumidos por EmitTests (gentest.go), que emite
 	// um único "<pkg>_test.go" (package pkg, interno — precisa acessar
 	// state/id/applyX não-exportados dos Aggregates testados, ver a doc de
-	// gentest.go). fixtures ainda não tem emissor (fase futura de H4) —
-	// coletado por simetria com versions (§design), ignorado por
-	// generateModuleFiles hoje.
+	// gentest.go). fixtures (§22.6) viram helpers "func fixture<Nome>(...)"
+	// no MESMO arquivo, ao lado dos Test (ver a doc de emitFixtureDecl).
 	tests    []*ast.TestDecl
 	fixtures []*ast.FixtureDecl
 }
@@ -329,8 +328,8 @@ type moduleBucket struct {
 // mas também não vira arquivo próprio — collectVersionDecls
 // (codegen/versioning.go) o reconsulta por GRUPO de service a partir daqui.
 // *ast.TestDecl (H4, *.test.ds, spec §22) É coletado (b.tests) e vira
-// "<pkg>_test.go" via EmitTests (gentest.go). *ast.FixtureDecl é coletado
-// (b.fixtures) mas ainda não tem emissor (fase futura de H4).
+// "<pkg>_test.go" via EmitTests (gentest.go); *ast.FixtureDecl (b.fixtures,
+// §22.6) entra no MESMO arquivo como helper via EmitTests (emitFixtureDecl).
 func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 	var paths []string
 	for p := range prog.Files {
@@ -740,8 +739,10 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	// Testes nativos (H4, *.test.ds, spec §22, REQ-31): um único
 	// "<pkg>_test.go" — package pkg (interno, ver a doc de gentest.go).
 	// aggregates é o MESMO mapa já construído acima para EmitUseCases.
-	if len(b.tests) > 0 {
-		content, err := EmitTests(pkg, b.tests, model, tab, moduleName, reg, aggregates, usecasesByName)
+	// b.fixtures (§22.6) viram helpers "func fixture<Nome>(...)" no MESMO
+	// arquivo, ao lado dos Test (ver a doc de emitFixtureDecl).
+	if len(b.tests) > 0 || len(b.fixtures) > 0 {
+		content, err := EmitTests(pkg, b.tests, b.fixtures, model, tab, moduleName, reg, aggregates, usecasesByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("%s_test.go: %w", pkg, err)
 		}

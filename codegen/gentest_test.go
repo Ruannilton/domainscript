@@ -48,19 +48,36 @@ func findUseCaseDecl(t *testing.T, prog *program.Program, name string) *ast.UseC
 	return nil
 }
 
+// findFixtureDecl acha o *ast.FixtureDecl de nome name em qualquer arquivo do
+// programa.
+func findFixtureDecl(t *testing.T, prog *program.Program, name string) *ast.FixtureDecl {
+	t.Helper()
+	for _, f := range prog.Files {
+		for _, d := range f.Decls {
+			if fx, ok := d.(*ast.FixtureDecl); ok && fx.Name == name {
+				return fx
+			}
+		}
+	}
+	t.Fatalf("Fixture %q não encontrada no wallet — o exemplo mudou?", name)
+	return nil
+}
+
 // emitWalletTests gera o Go de wallet.test.ds (Test Wallet, §22.1 + Test
-// PerformDeposit, §22.2) sobre o programa real do wallet.
+// PerformDeposit, §22.2 + Fixture activeWallet, §22.6) sobre o programa real do
+// wallet.
 func emitWalletTests(t *testing.T) []byte {
 	t.Helper()
 	prog := parseWalletProgram(t)
 	tdWallet := findTestDecl(t, prog, "Wallet")
 	tdDeposit := findTestDecl(t, prog, "PerformDeposit")
+	fxActive := findFixtureDecl(t, prog, "activeWallet")
 	agg := findAggregateDecl(t, prog, "Wallet")
 	uc := findUseCaseDecl(t, prog, "PerformDeposit")
 	reg := walletVOOperatorRegistryFromProgram(prog)
 	model := types.NewModel(prog.Symbols)
 
-	got, err := codegen.EmitTests("wallet", []*ast.TestDecl{tdWallet, tdDeposit}, model, prog.Symbols, "Wallet", reg, map[string]*ast.AggregateDecl{"Wallet": agg}, map[string]*ast.UseCaseDecl{"PerformDeposit": uc})
+	got, err := codegen.EmitTests("wallet", []*ast.TestDecl{tdWallet, tdDeposit}, []*ast.FixtureDecl{fxActive}, model, prog.Symbols, "Wallet", reg, map[string]*ast.AggregateDecl{"Wallet": agg}, map[string]*ast.UseCaseDecl{"PerformDeposit": uc})
 	if err != nil {
 		t.Fatalf("EmitTests: erro inesperado: %v", err)
 	}
@@ -93,6 +110,10 @@ func TestEmitTestsWalletGolden(t *testing.T) {
 		"err = PerformDeposit(ctx, Deposit{",
 		"after1, after1Err := store.Load(context.Background(), \"W1\")",
 		"if err != nil {",
+		"func fixtureActiveWallet(t *testing.T) *Wallet {",
+		"w.applyWalletCreated(WalletCreated{Id: \"W1\", Holder: \"João\"})",
+		"w.applyDepositPerformed(DepositPerformed{Id: \"W1\", Amount:",
+		"return w",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("esperava %q no Go gerado de Test Wallet/PerformDeposit, não achei:\n%s", want, got)
@@ -116,4 +137,48 @@ func TestEmitTestsWalletDeterministic(t *testing.T) {
 // UseCase/Wire (usecases.go), não só o Aggregate.
 func TestEmitTestsWalletRunsGreen(t *testing.T) {
 	runGeneratedTests(t, filesToMap(generateWalletProject(t)))
+}
+
+// walletFixtureBehaviorTest é um teste Go escrito à mão que CHAMA o helper
+// gerado fixtureActiveWallet (§22.6, H4) — a gramática de §22 não liga uma
+// Fixture a um Test, então o helper não tem chamador no projeto gerado; este
+// caller de teste (mesmo espírito de walletAggregateBehaviorTest, E6.1) prova a
+// corretude do que foi semeado: id/holder/active vêm do Apply de WalletCreated,
+// balance acumula pelo Apply de DepositPerformed.
+const walletFixtureBehaviorTest = `package wallet
+
+import (
+	"testing"
+
+	"domainscript/generated/runtime"
+)
+
+func TestFixtureActiveWalletSeeds(t *testing.T) {
+	w := fixtureActiveWallet(t)
+	if string(w.state.Id) != "W1" {
+		t.Fatalf("state.Id: got %q, want W1", string(w.state.Id))
+	}
+	if string(w.state.Holder) != "João" {
+		t.Fatalf("state.Holder: got %q, want João", string(w.state.Holder))
+	}
+	if !bool(w.state.Active) {
+		t.Fatalf("state.Active: esperava true (Apply de WalletCreated seta active)")
+	}
+	if w.state.Balance.Currency != "BRL" {
+		t.Fatalf("state.Balance.Currency: got %q, want BRL", w.state.Balance.Currency)
+	}
+	if w.state.Balance.Amount.Cmp(runtime.NewDecimalFromInt(100)) != 0 {
+		t.Fatalf("state.Balance.Amount: got %s, want 100 (Apply de DepositPerformed acumula)", w.state.Balance.Amount)
+	}
+}
+`
+
+// TestEmitFixturesWalletBehavior prova NFR-15 sobre o helper de Fixture de fato
+// gerado: gera o projeto wallet INTEIRO (que já inclui fixtureActiveWallet em
+// wallet_test.go via EmitTests), acrescenta um teste comportamental à mão que o
+// chama e roda `go test ./...` de verdade sobre o gerado.
+func TestEmitFixturesWalletBehavior(t *testing.T) {
+	files := filesToMap(generateWalletProject(t))
+	files[filepath.Join("wallet", "fixture_behavior_test.go")] = []byte(walletFixtureBehaviorTest)
+	runGeneratedTests(t, files)
 }
