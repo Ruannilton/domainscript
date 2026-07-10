@@ -478,8 +478,30 @@
   continuam sem nenhum artefato `otelruntime/*`/`require` OTel em `go.mod`.
   **Commit:** `feat(codegen): observabilidade (slog + OTel opt-in)`
 
-- [ ] **H3** `Metric` de negócio (`MetricDecl`: counter/histogram no gatilho `on`,
+- [x] **H3** `Metric` de negócio (`MetricDecl`: counter/histogram no gatilho `on`,
   `buckets`, `labels`). _(REQ-30.3)_
+  **Conclusão:** registry em memória sempre presente, stdlib-only, no runtime
+  núcleo (`Counter`/`Histogram`, `rtsrc/metrics.go.txt` — sem opt-in, ao
+  contrário do adapter OTel de H2, que documenta métricas como fora de
+  escopo). Dois gatilhos: `on Evento` vira subscriber no
+  `runtime.Dispatcher` (`WireMetrics`, `decl_metric.go`, mesmo padrão de
+  `decl_policy.go`; `needsDispatcher` como `hasCachedQueries`); `on
+  Saga.completed` vira hook direto no código gerado da própria Saga
+  (`decl_saga.go` — sem Dispatcher, já que uma Saga não publica nada ao
+  concluir), atualizado logo após sucesso com a duração
+  (`time.Since(start).Seconds()`) quando um histogram não declara `value`.
+  Fecha um gap do front-end: `MetricDecl` não passa por nenhuma resolução de
+  nomes em REQ-9 (confirmado empiricamente — `resolveMetricOn` é a ÚNICA
+  validação do gatilho `on`; `value`/`labels` são cruzados direto contra
+  `types.Model` em `decl_metric.go` antes de aceitar qualquer texto Go).
+  Buckets de DURATION materializados em segundos em tempo de geração
+  (`lower.DurationLiteralSeconds`). Fixture sintética `MetricsDemo`
+  (counter `DepositVolume` sobre o wallet real + histogram
+  `PurchaseLatency` reaproveitando a Saga `PurchaseTickets` de F3) com
+  golden/determinismo/smoke-compile e dois testes comportamentais
+  (`Dispatcher.Publish` atualiza o Counter; a Saga completando com sucesso
+  observa uma amostra no Histogram); regressão: wallet/shop sem `Metric`
+  continuam sem `<módulo>/metrics.go`/`WireMetrics`.
   **Commit:** `feat(codegen): métricas de negócio`
 
 - [ ] **H4** Testes gerados de `*.test.ds`: `given`/`when`/`then` (`ThenClause`/

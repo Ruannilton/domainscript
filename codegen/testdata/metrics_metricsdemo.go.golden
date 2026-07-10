@@ -1,0 +1,34 @@
+package metricsdemo
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+)
+
+// DepositVolumeCounter é o registry runtime da Metric DepositVolume (§21, REQ-30.3): counter em
+// memória, sempre presente (sem dependência externa — ver a doc do arquivo).
+var DepositVolumeCounter = runtime.NewCounter("DepositVolume")
+
+// DepositVolumeOnDepositPerformed é o subscriber Go da Metric DepositVolume (§21, REQ-30.3): reage a DepositPerformed
+// publicado no Dispatcher e atualiza DepositVolumeCounter com o value/labels declarados.
+// Assinatura igual a runtime.Dispatcher.Subscribe — registrada por WireMetrics
+// (abaixo).
+func DepositVolumeOnDepositPerformed(ctx context.Context, ev runtime.Event) error {
+	event, ok := ev.(*DepositPerformed)
+	if !ok {
+		return fmt.Errorf("metric DepositVolume: evento inesperado %T (esperava *DepositPerformed)", ev)
+	}
+	_ = event
+	DepositVolumeCounter.Add(event.Amount.Amount.Float64(), map[string]string{"currency": fmt.Sprintf("%v", event.Amount.Currency)})
+	return nil
+}
+
+// WireMetrics registra cada Metric de negócio acionada por evento deste
+// pacote no runtime.Dispatcher (§21, REQ-30.3) — chamada por
+// cmd/<service>/main.go na inicialização, ao lado de Wire/WireQueryCache.
+// Uma Metric "on Saga.completed" NÃO passa por aqui: é atualizada direto no
+// código gerado da própria Saga (ver codegen/decl_saga.go).
+func WireMetrics(d runtime.Dispatcher) {
+	d.Subscribe("DepositPerformed", DepositVolumeOnDepositPerformed)
+}

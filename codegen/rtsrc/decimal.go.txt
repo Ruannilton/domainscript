@@ -111,6 +111,19 @@ func (d Decimal) String() string {
 	return sign + intPart + "." + fracPart
 }
 
+// Float64 converts d to an approximate float64 — used ONLY by consumers
+// that explicitly tolerate float64 imprecision, e.g. a business Metric's
+// numeric value (H3, spec §21/REQ-30.3, codegen/decl_metric.go): money
+// ARITHMETIC itself never goes through this (Add/Sub/Cmp stay exact via
+// big.Int, decimalScale) — Float64 exists purely for observability, where
+// approximate aggregation is an accepted tradeoff.
+func (d Decimal) Float64() float64 {
+	unscaledF := new(big.Float).SetInt(&d.unscaled)
+	scaleF := new(big.Float).SetInt(pow10(decimalScale))
+	f, _ := new(big.Float).Quo(unscaledF, scaleF).Float64()
+	return f
+}
+
 // MarshalJSON implements json.Marshaler, encoding d as a JSON string —
 // never a bare JSON number, since Go's encoding/json decodes bare numbers
 // into float64 by default, which would silently reintroduce the precision

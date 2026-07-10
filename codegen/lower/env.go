@@ -224,6 +224,19 @@ func (env *TypeEnv) SeedPolicyExecute(eventName string) {
 	env.seedIfKnown("event", env.typeOfName(eventName))
 }
 
+// SeedMetricEvent semeia o escopo raiz do Value/Labels de uma Metric de
+// negócio acionada por Event (H3, REQ-30.3, "on Evento"): event = o tipo do
+// Event/PublicEvent nomeado em MetricDecl.On. Mesma forma de
+// SeedPolicyExecute — mas MetricDecl não tem construct/receptor algum no
+// front-end (resolver/receivers.go não lista Metric, confirmado
+// empiricamente: um corpo de Metric nunca passa por resolução de nomes,
+// REQ-9 não cobre este construto) — esta semeadura e a lowering que a usa
+// (codegen/decl_metric.go) são a ÚNICA resolução de nomes que Value/Labels
+// recebem em todo o pipeline, não uma reconstrução de algo já validado.
+func (env *TypeEnv) SeedMetricEvent(eventName string) {
+	env.seedIfKnown("event", env.typeOfName(eventName))
+}
+
 // SeedQuery semeia o escopo raiz de uma Query (constructQuery): só os
 // parâmetros declarados — Query não tem receptor contextual algum
 // (resolver/receivers.go não lista constructQuery em contextualReceiverNames).

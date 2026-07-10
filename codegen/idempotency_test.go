@@ -752,7 +752,7 @@ func emitIdemSaga(t *testing.T) []byte {
 	model := types.NewModel(prog.Symbols)
 	reg := walletVOOperatorRegistryFromProgram(prog)
 
-	got, err := codegen.EmitSaga("reports", saga, model, prog.Symbols, "Reports", reg)
+	got, err := codegen.EmitSaga("reports", saga, model, prog.Symbols, "Reports", reg, nil)
 	if err != nil {
 		t.Fatalf("EmitSaga(GenerateReport): erro inesperado: %v", err)
 	}

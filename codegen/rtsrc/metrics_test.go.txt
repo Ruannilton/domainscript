@@ -1,0 +1,83 @@
+package runtime
+
+import "testing"
+
+// metrics_test.go.txt prova o comportamento do registry em memória de
+// Metric de negócio (H3, spec §21, REQ-30.3): Counter acumula por conjunto
+// de labels, Histogram observa e conta por bucket (convenção cumulativa),
+// e os dois distinguem conjuntos de labels diferentes.
+
+func TestCounterAddAccumulatesPerLabelSet(t *testing.T) {
+	c := NewCounter("DepositVolume")
+
+	c.Add(10, map[string]string{"currency": "USD"})
+	c.Add(5, map[string]string{"currency": "USD"})
+	c.Add(7, map[string]string{"currency": "EUR"})
+	c.Add(1, nil)
+
+	if got := c.Value(map[string]string{"currency": "USD"}); got != 15 {
+		t.Fatalf("Value(USD) = %v, want 15", got)
+	}
+	if got := c.Value(map[string]string{"currency": "EUR"}); got != 7 {
+		t.Fatalf("Value(EUR) = %v, want 7", got)
+	}
+	if got := c.Value(nil); got != 1 {
+		t.Fatalf("Value(nil) = %v, want 1", got)
+	}
+	if got := c.Value(map[string]string{"currency": "BRL"}); got != 0 {
+		t.Fatalf("Value(BRL) (nunca observado) = %v, want 0", got)
+	}
+	if c.Name() != "DepositVolume" {
+		t.Fatalf("Name() = %q, want %q", c.Name(), "DepositVolume")
+	}
+}
+
+func TestHistogramObserveCountsCumulativeBuckets(t *testing.T) {
+	h := NewHistogram("PurchaseLatency", []float64{0.1, 0.25, 0.5, 1, 2, 5, 10})
+
+	h.Observe(0.05, nil)  // cabe em todos os buckets
+	h.Observe(0.3, nil)   // cabe a partir de 0.5
+	h.Observe(3.0, nil)   // cabe a partir de 5
+	h.Observe(20.0, nil)  // acima do último bucket: só Count/Sum, nenhum BucketCounts
+
+	snap := h.Snapshot(nil)
+	if snap.Count != 4 {
+		t.Fatalf("Count = %d, want 4", snap.Count)
+	}
+	wantSum := 0.05 + 0.3 + 3.0 + 20.0
+	if snap.Sum != wantSum {
+		t.Fatalf("Sum = %v, want %v", snap.Sum, wantSum)
+	}
+	want := []int64{1, 1, 2, 2, 2, 3, 3}
+	for i, w := range want {
+		if snap.BucketCounts[i] != w {
+			t.Fatalf("BucketCounts[%d] = %d, want %d (full: %v)", i, snap.BucketCounts[i], w, snap.BucketCounts)
+		}
+	}
+	if h.Name() != "PurchaseLatency" {
+		t.Fatalf("Name() = %q, want %q", h.Name(), "PurchaseLatency")
+	}
+}
+
+func TestHistogramSnapshotUnobservedLabelsIsZeroed(t *testing.T) {
+	h := NewHistogram("X", []float64{1, 2, 3})
+	snap := h.Snapshot(map[string]string{"region": "never-seen"})
+	if snap.Count != 0 || snap.Sum != 0 {
+		t.Fatalf("esperava snapshot zerado, got %+v", snap)
+	}
+	if len(snap.BucketCounts) != 3 {
+		t.Fatalf("BucketCounts deveria ter 3 posições (mesmo sem observação), tem %d", len(snap.BucketCounts))
+	}
+}
+
+func TestLabelKeyDistinguishesLabelSetsRegardlessOfInsertionOrder(t *testing.T) {
+	a := map[string]string{"currency": "USD", "region": "us"}
+	b := map[string]string{"region": "us", "currency": "USD"}
+	if labelKey(a) != labelKey(b) {
+		t.Fatalf("labelKey deveria ser igual independente da ordem de inserção do map: %q != %q", labelKey(a), labelKey(b))
+	}
+	c := map[string]string{"currency": "EUR", "region": "us"}
+	if labelKey(a) == labelKey(c) {
+		t.Fatalf("labelKey de conjuntos DIFERENTES não deveria colidir: %q", labelKey(a))
+	}
+}

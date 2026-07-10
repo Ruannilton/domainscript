@@ -159,6 +159,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	modulesWithWorkers := make(map[string]bool, len(moduleNames))
 	modulesWithIdempotency := make(map[string]bool, len(moduleNames))   // G2, REQ-20.4
 	modulesWithCachedQueries := make(map[string]bool, len(moduleNames)) // G3, REQ-21.3
+	modulesWithMetrics := make(map[string]bool, len(moduleNames))       // H3, REQ-30.3
 	modulesXADatabases := make(map[string][]string, len(moduleNames))   // G1, REQ-20.5
 
 	for _, name := range moduleNames {
@@ -174,6 +175,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		modulesWithWorkers[name] = marks.hasWorkers
 		modulesWithIdempotency[name] = marks.hasIdempotency
 		modulesWithCachedQueries[name] = marks.hasCachedQueries
+		modulesWithMetrics[name] = marks.hasMetrics
 		modulesXADatabases[name] = marks.xaDatabases
 		allPublicEvents = append(allPublicEvents, b.pubEvents...)
 		for _, ev := range b.pubEvents {
@@ -190,7 +192,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range groups {
-		fs, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesXADatabases, buckets, model, tab)
+		fs, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesWithMetrics, modulesXADatabases, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -288,6 +290,13 @@ type moduleBucket struct {
 	notifications []*ast.NotificationDecl
 	adapters      []*ast.AdapterDecl
 	foreigns      []*ast.ForeignDecl
+	// metrics (H3, REQ-30.3, spec §21) são as Metric de negócio do módulo —
+	// consumidas por EmitMetrics (decl_metric.go), que emite metrics.go
+	// (registry + subscriber/WireMetrics de cada Metric "on Evento") e
+	// devolve o agrupamento por Saga de cada Metric "on Saga.completed", que
+	// generateModuleFiles repassa a EmitSagas (hook direto no código gerado
+	// da Saga, ver decl_saga.go).
+	metrics []*ast.MetricDecl
 	// versions (G6, spec §17) são os VersionDecl de versions/*.ds — o
 	// diretório herda o módulo do mod.ds mais próximo (program.go), exatamente
 	// como contracts/ (ver a doc de ModuleOf). Consumidos por
@@ -302,9 +311,9 @@ type moduleBucket struct {
 // por prog.ModuleOf, ORDENADOS por path — NFR-13) e roteia cada Decl por
 // tipo concreto. *ast.ModuleDecl/*ast.InterfaceDecl/*ast.TopologyDecl/
 // *ast.UpcastDecl e os construtos de Marco F+ que AINDA não têm emissor
-// (Metric — Policy ganhou o dela em F1, Worker em F2, Saga em F3,
-// Notification/Adapter/Foreign em F4) não são emitidos por este orquestrador
-// (wiring/borda tratados à parte) — caem no default, ignorados
+// (Policy ganhou o dela em F1, Worker em F2, Saga em F3, Notification/
+// Adapter/Foreign em F4, Metric em H3) não são emitidos por este
+// orquestrador (wiring/borda tratados à parte) — caem no default, ignorados
 // silenciosamente, junto de qualquer nó de erro (rede de segurança
 // defensiva sobre um programa já validado sem erros, REQ-14.4).
 // *ast.VersionDecl (G6, versions/*.ds, spec §17) É coletado (b.versions),
@@ -361,6 +370,8 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 				b.foreigns = append(b.foreigns, n)
 			case *ast.VersionDecl:
 				b.versions = append(b.versions, n)
+			case *ast.MetricDecl:
+				b.metrics = append(b.metrics, n)
 			}
 		}
 	}
@@ -413,6 +424,15 @@ type moduleMarks struct {
 	// StartWorkers/StartIdempotencyCleanup (mesma razão de não reusar "Wire",
 	// ver a doc de decl_worker.go).
 	hasCachedQueries bool
+	// hasMetrics (H3, REQ-30.3, spec §21) é true quando ao menos uma Metric
+	// deste módulo dispara "on Evento" (EmitMetrics, decl_metric.go) — vazio
+	// no caso comum (nenhuma Metric declarada, ou só "on Saga.completed",
+	// que NÃO precisa de Dispatcher — hook direto no código gerado da
+	// própria Saga, decl_saga.go). generateCmdMainFile usa isto EXATAMENTE
+	// como hasCachedQueries: garante Dispatcher mesmo sem Policy e chama
+	// "<pkg>.WireMetrics(dispatcher)" — nome próprio, ao lado de
+	// WireQueryCache/StartWorkers/StartIdempotencyCleanup.
+	hasMetrics bool
 }
 
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
@@ -635,13 +655,37 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "foreign.go"), Content: content})
 	}
 
+	// Metric (H3, REQ-30.3, spec §21): calculado ANTES de Sagas — uma Metric
+	// "on Saga.completed" precisa que EmitSagas receba o agrupamento
+	// (sagaMetrics) para injetar o hook direto no código gerado da Saga (ver
+	// decl_saga.go); uma Metric "on Evento" vira o subscriber/WireMetrics em
+	// metrics.go, aqui. hasMetrics só conta o segundo caso (o primeiro não
+	// precisa de Dispatcher algum — ver a doc de moduleMarks.hasMetrics).
+	var sagaMetrics map[string][]*ast.MetricDecl
+	hasMetrics := false
+	if len(b.metrics) > 0 {
+		content, sm, needsDisp, merr := EmitMetrics(pkg, b.metrics, model, tab, moduleName, reg)
+		if merr != nil {
+			return nil, moduleMarks{}, fmt.Errorf("metrics.go: %w", merr)
+		}
+		if needsDisp {
+			// Só escreve metrics.go quando há ao menos uma Metric "on Evento"
+			// (needsDisp=false ⇒ conteúdo vazio, todas as Metric do módulo
+			// são "on Saga.completed" — ver a doc de EmitMetrics).
+			files = append(files, File{Path: path.Join(pkg, "metrics.go"), Content: content})
+		}
+		sagaMetrics = sm
+		hasMetrics = needsDisp
+	}
+
 	if len(b.sagas) > 0 {
 		// Sagas não somam a moduleMarks/wireTargets (generateCmdMainFile): ao
 		// contrário de UseCase/Policy/Worker, uma Saga não precisa de nenhum
 		// ponto de entrada injetado por cmd/<service>/main.go — sua função de
 		// entrada é diretamente chamável e seu SagaStore (mode async) é uma var
-		// de pacote auto-inicializada (ver a doc de decl_saga.go).
-		content, err := EmitSagas(pkg, b.sagas, model, tab, moduleName, reg)
+		// de pacote auto-inicializada (ver a doc de decl_saga.go). sagaMetrics
+		// (H3) é repassado para o hook de Metric "on Saga.completed".
+		content, err := EmitSagas(pkg, b.sagas, model, tab, moduleName, reg, sagaMetrics)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("sagas.go: %w", err)
 		}
@@ -669,7 +713,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "api_versions.go"), Content: apiVersionsContent})
 	}
 
-	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries}, nil
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries, hasMetrics: hasMetrics}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -868,7 +912,18 @@ func defaultCmdDirName(modules []string) string {
 // produz para um canal "queue" cai no mesmo erro claro, documentado como
 // wiring ainda não combinado (nem wallet nem shop hoje combinam nenhum dos
 // dois casos).
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) ([]File, error) {
+//
+// --- Metric de negócio (H3, REQ-30.3, spec §21) ---
+//
+// Um módulo com ao menos uma Metric "on Evento" (modulesWithMetrics) força
+// needsDispatcher=true EXATAMENTE como modulesWithCachedQueries acima: o
+// subscriber que atualiza o Counter/Histogram assina o MESMO
+// runtime.Dispatcher que Policy/cache de Query já usam (WireMetrics, ver
+// decl_metric.go). Uma Metric "on Saga.completed" NÃO passa por aqui: não
+// precisa de Dispatcher algum (hook direto no código gerado da própria
+// Saga, decl_saga.go) — só entra em modulesWithMetrics quando o módulo tem
+// ao menos uma Metric do primeiro tipo.
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesWithMetrics map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) ([]File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -884,6 +939,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		hasWorkers       bool
 		hasIdempotency   bool     // G2, REQ-20.4 — chama StartIdempotencyCleanup (ver emitIdempotencyCleanupStarter)
 		hasCachedQueries bool     // G3, REQ-21.3 — chama WireQueryCache(dispatcher) (ver decl_query_cache.go)
+		hasMetrics       bool     // H3, REQ-30.3 — chama WireMetrics(dispatcher) (ver decl_metric.go)
 		xaDatabases      []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
 		fileStorages     []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
 	}
@@ -896,18 +952,22 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		hu, hp, hw := modulesWithUseCases[m], modulesWithPolicies[m], modulesWithWorkers[m]
 		hi := modulesWithIdempotency[m]
 		hc := modulesWithCachedQueries[m] // G3
+		hm := modulesWithMetrics[m]       // H3
 		fsNames := moduleFileStorageNames(programModule(prog, m))
-		if !hu && !hp && !hw && !hc && len(fsNames) == 0 {
+		if !hu && !hp && !hw && !hc && !hm && len(fsNames) == 0 {
 			continue
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, hasCachedQueries: hc, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, hasCachedQueries: hc, hasMetrics: hm, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
 		if hp {
 			needsDispatcher = true
 		}
 		if hc {
 			needsDispatcher = true // G3: WireQueryCache também assina o Dispatcher
+		}
+		if hm {
+			needsDispatcher = true // H3: WireMetrics também assina o Dispatcher
 		}
 		if hi {
 			anyIdempotency = true
@@ -1059,6 +1119,12 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					// MESMO Dispatcher que Policy usa, garantido acima por
 					// needsDispatcher.
 					e.Line("%s.WireQueryCache(dispatcher)", wt.alias)
+				}
+				if wt.hasMetrics {
+					// WireMetrics (H3, decl_metric.go): nome PRÓPRIO, mesma
+					// razão de WireQueryCache — assina o MESMO Dispatcher,
+					// garantido acima por needsDispatcher.
+					e.Line("%s.WireMetrics(dispatcher)", wt.alias)
 				}
 				if len(wt.xaDatabases) > 0 {
 					if err := emitXADatabaseWiring(e, prog, wt.module, wt.alias, wt.xaDatabases, ctxAlias); err != nil {

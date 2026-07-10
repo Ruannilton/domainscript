@@ -1,0 +1,154 @@
+package runtime
+
+import (
+	"sort"
+	"strings"
+	"sync"
+)
+
+// metrics.go implementa o registry EM MEMÓRIA de Metric de negócio (spec
+// §21, REQ-30.3, H3): Counter (soma monótona) e Histogram (distribuição em
+// buckets), os dois quebrados por um conjunto arbitrário de labels
+// (map[string]string). Ao contrário do adapter OTel opt-in de H2 (otelrt) —
+// que só existe quando um mod.ds declara "Telemetry { ... }" — este registry
+// é parte do runtime NÚCLEO, sempre presente (mesmo nível de
+// EventStore/Dispatcher): REQ-30.3 não cita nenhum sistema externo (ao
+// contrário de REQ-30.2, que documenta a exceção do OTel explicitamente),
+// então nenhum Metric depende de opt-in algum para funcionar.
+//
+// Cada Metric declarado (codegen/decl_metric.go) vira uma var de pacote
+// deste tipo, atualizada no gatilho declarado: "on Evento" via um subscriber
+// registrado no Dispatcher (WireMetrics, gerado em metrics.go do módulo), ou
+// "on Saga.completed" direto no código gerado da própria Saga (uma Saga não
+// publica nada ao concluir, então não há Dispatcher envolvido nesse caso).
+
+// labelKey serializa um conjunto de labels numa chave determinística
+// (ordenada por nome de label) — a granularidade de agregação de cada valor
+// acumulado/observado: duas chamadas com o MESMO conjunto de pares
+// nome=valor acumulam juntas; conjuntos diferentes (incl. ausência de
+// labels, chave "") são contados separadamente.
+func labelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
+	}
+	return b.String()
+}
+
+// Counter é uma Metric de negócio monótona (spec §21, "type counter"): soma
+// um valor a cada disparo do gatilho declarado, quebrado por labels.
+// Thread-safe.
+type Counter struct {
+	mu     sync.Mutex
+	name   string
+	values map[string]float64
+}
+
+// NewCounter cria um Counter vazio de nome name — o nome DomainScript do
+// Metric, só para inspeção/depuração, não usado como chave de agregação.
+func NewCounter(name string) *Counter {
+	return &Counter{name: name, values: make(map[string]float64)}
+}
+
+// Name devolve o nome DomainScript do Metric.
+func (c *Counter) Name() string { return c.name }
+
+// Add soma delta ao valor acumulado sob labels (nil/vazio ⇒ sem labels).
+func (c *Counter) Add(delta float64, labels map[string]string) {
+	key := labelKey(labels)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.values[key] += delta
+}
+
+// Value lê o valor acumulado sob labels — existe para que um teste (gerado
+// ou deste próprio pacote) verifique o que um Metric registrou, sem precisar
+// de um backend de métricas real.
+func (c *Counter) Value(labels map[string]string) float64 {
+	key := labelKey(labels)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.values[key]
+}
+
+// HistogramSnapshot é o estado observável de um Histogram sob um conjunto de
+// labels: quantas observações, a soma delas, e a contagem CUMULATIVA por
+// bucket (BucketCounts[i] = nº de observações <= o limite superior do
+// bucket i — a mesma convenção do Prometheus; uma observação acima do último
+// bucket entra em Count/Sum mas em nenhum BucketCounts, o "+Inf" implícito).
+type HistogramSnapshot struct {
+	Count        int64
+	Sum          float64
+	BucketCounts []int64
+}
+
+// Histogram é uma Metric de negócio de distribuição (spec §21, "type
+// histogram"): observa um valor a cada disparo do gatilho declarado,
+// quebrado por labels, contra buckets de limite superior fixos e
+// ASCENDENTES (spec §21, ex. "buckets [100ms, 250ms, ...]" — já
+// materializados em segundos por codegen/decl_metric.go,
+// lower.DurationLiteralSeconds). Thread-safe.
+type Histogram struct {
+	mu      sync.Mutex
+	name    string
+	buckets []float64
+	snaps   map[string]*HistogramSnapshot
+}
+
+// NewHistogram cria um Histogram vazio de nome name com os limites
+// superiores buckets (esperados ascendentes — a ordem do literal declarado,
+// spec §21; não validado aqui).
+func NewHistogram(name string, buckets []float64) *Histogram {
+	return &Histogram{name: name, buckets: buckets, snaps: make(map[string]*HistogramSnapshot)}
+}
+
+// Name devolve o nome DomainScript do Metric.
+func (h *Histogram) Name() string { return h.name }
+
+// Observe registra value sob labels: incrementa Count/Sum e todo
+// BucketCounts[i] cujo limite (h.buckets[i]) seja >= value (convenção
+// cumulativa do Prometheus).
+func (h *Histogram) Observe(value float64, labels map[string]string) {
+	key := labelKey(labels)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	snap, ok := h.snaps[key]
+	if !ok {
+		snap = &HistogramSnapshot{BucketCounts: make([]int64, len(h.buckets))}
+		h.snaps[key] = snap
+	}
+	snap.Count++
+	snap.Sum += value
+	for i, upper := range h.buckets {
+		if value <= upper {
+			snap.BucketCounts[i]++
+		}
+	}
+}
+
+// Snapshot lê o estado acumulado sob labels — existe para que um teste
+// verifique o que um Metric observou, mesmo espírito de Counter.Value.
+// labels sem nenhuma observação ainda devolve uma HistogramSnapshot zerada
+// (BucketCounts do tamanho certo, todo zero), nunca um snapshot ausente.
+func (h *Histogram) Snapshot(labels map[string]string) HistogramSnapshot {
+	key := labelKey(labels)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if snap, ok := h.snaps[key]; ok {
+		return HistogramSnapshot{Count: snap.Count, Sum: snap.Sum, BucketCounts: append([]int64(nil), snap.BucketCounts...)}
+	}
+	return HistogramSnapshot{BucketCounts: make([]int64, len(h.buckets))}
+}

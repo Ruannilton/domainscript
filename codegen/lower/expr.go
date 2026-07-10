@@ -183,6 +183,28 @@ func lowerDurationLiteral(lex string) (string, error) {
 	return fmt.Sprintf("time.Duration(%d)", nanos), nil
 }
 
+// DurationLiteralSeconds converte o lexema de um literal DURATION (ex.
+// "100ms", "1s") para segundos, como float64 — usado por
+// codegen/decl_metric.go (H3, REQ-30.3) para materializar os buckets de um
+// Metric histogram em tempo de GERAÇÃO como um literal Go nativo
+// ([]float64{...}), em vez de reconstruir "time.Duration(N).Seconds()" em
+// tempo de EXECUÇÃO para um valor que já é conhecido em tempo de compilação
+// do transpiler. Reaproveita a MESMA tabela de unidades de
+// lowerDurationLiteral (durationUnitNanos) — fonte única de verdade de
+// quanto vale cada sufixo de DURATION.
+func DurationLiteralSeconds(lex string) (float64, error) {
+	numPart, unit := splitNumberUnit(lex)
+	unitNanos, ok := durationUnitNanos[unit]
+	if numPart == "" || !ok {
+		return 0, fmt.Errorf("codegen: literal DURATION malformado ou unidade desconhecida: %q", lex)
+	}
+	nanos, err := scaleNumberToInt(numPart, unitNanos)
+	if err != nil {
+		return 0, fmt.Errorf("codegen: literal DURATION %q: %w", lex, err)
+	}
+	return float64(nanos) / 1e9, nil
+}
+
 // lowerSizeLiteral traduz o lexema de um literal SIZE (ex. "100MB") para o
 // número cru de bytes (int64), resolvido em tempo de geração.
 func lowerSizeLiteral(lex string) (string, error) {

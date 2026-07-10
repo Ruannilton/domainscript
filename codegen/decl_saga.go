@@ -334,7 +334,14 @@ func emitSagaSeed(e *emit.Emitter, seedLines []string) {
 // continua e ainda é a ÚNICA a escrever em *state depois disso, evitando uma
 // corrida de dados entre ela e um chamador que tivesse recebido o mesmo
 // ponteiro no caminho de timeout.
-func emitSagaAwaitEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, runStepsFn string, seedLines []string, l *lower.Lowerer, ctxAlias, runtimeAlias string) error {
+//
+// hooks (H3, REQ-30.3) são as Metric "on <ESTA Saga>.completed" já
+// resolvidas (resolveSagaCompletionHooks) — atualizadas logo que "case res
+// := <-done" reporta sucesso (res.Err == nil), ANTES do "return state,
+// res.Err": a duração observada por um histogram implícito é "time.
+// Since(start).Seconds()", start marcado ANTES de disparar a goroutine dos
+// passos (mede o tempo de ponta a ponta da Saga, não só de RunSteps).
+func emitSagaAwaitEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, runStepsFn string, seedLines []string, l *lower.Lowerer, ctxAlias, runtimeAlias string, hooks []sagaCompletionHook) error {
 	var timeoutGo string
 	if decl.Timeout != nil {
 		e.Import("time") // decl.Timeout lowereiza para time.Duration(...) (lower/expr.go, lowerDurationLiteral)
@@ -343,6 +350,9 @@ func emitSagaAwaitEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 			return fmt.Errorf("timeout: %w", err)
 		}
 		timeoutGo = g
+	}
+	if len(hooks) > 0 {
+		e.Import("time")
 	}
 
 	e.Line("")
@@ -355,6 +365,9 @@ func emitSagaAwaitEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 	e.Block(sig, func() {
 		e.Line("state := &%s{}", stateType)
 		emitSagaSeed(e, seedLines)
+		if len(hooks) > 0 {
+			e.Line("start := time.Now()")
+		}
 		e.Line("done := make(chan %s.SagaResult, 1)", runtimeAlias)
 		e.BlockSuffix("go func()", "()", func() {
 			e.Line("done <- %s(%s.Background(), state)", runStepsFn, ctxAlias)
@@ -366,6 +379,11 @@ func emitSagaAwaitEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 		}
 		e.Block("select", func() {
 			e.Line("case res := <-done:")
+			if len(hooks) > 0 {
+				e.Block("if res.Err == nil", func() {
+					emitSagaCompletionHookCalls(e, hooks, "time.Since(start).Seconds()")
+				})
+			}
 			e.Line("return state, res.Err")
 			e.Line("case <-ctx.Done():")
 			e.Line("return nil, ctx.Err()")
@@ -381,7 +399,16 @@ func emitSagaAwaitEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 // destacada (context.Background()) contra um runtime.SagaStore em memória
 // PRÓPRIO do pacote (var de pacote, sem Wire — ver a doc do arquivo), e a
 // função de entrada devolve o sagaId de imediato.
-func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, runStepsFn string, seedLines []string, ctxAlias, runtimeAlias string) error {
+//
+// hooks (H3, REQ-30.3) são as Metric "on <ESTA Saga>.completed" já
+// resolvidas — atualizadas dentro da MESMA goroutine que roda os passos,
+// logo após "res := ...RunSteps(...)" reportar sucesso (res.Err == nil),
+// ANTES de gravar o SagaStatus final — mesmo raciocínio de duração
+// (start marcado antes de disparar a goroutine) do modo await.
+func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, runStepsFn string, seedLines []string, ctxAlias, runtimeAlias string, hooks []sagaCompletionHook) error {
+	if len(hooks) > 0 {
+		e.Import("time")
+	}
 	storeVar := base + "SagaStore"
 
 	e.Line("")
@@ -400,6 +427,9 @@ func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 	e.Block(sig, func() {
 		e.Line("state := &%s{}", stateType)
 		emitSagaSeed(e, seedLines)
+		if len(hooks) > 0 {
+			e.Line("start := time.Now()")
+		}
 		e.Line("sagaID := %s.UUID()", runtimeAlias)
 		// Idempotency-Key -> sagaId estável (spec §14, G2 — REQ-20.4/REQ-24.3):
 		// quando o chamador trouxe uma Idempotency-Key (repassada ao ctx desde
@@ -424,6 +454,11 @@ func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 		e.BlockSuffix("go func()", "()", func() {
 			e.Line("bgCtx := %s.Background()", ctxAlias)
 			e.Line("res := %s(bgCtx, state)", runStepsFn)
+			if len(hooks) > 0 {
+				e.Block("if res.Err == nil", func() {
+					emitSagaCompletionHookCalls(e, hooks, "time.Since(start).Seconds()")
+				})
+			}
 			e.Line("status := %s.SagaStatus{ID: sagaID, State: res.FinalState()}", runtimeAlias)
 			e.Block("if res.Err != nil", func() {
 				e.Line("status.Err = res.Err.Error()")
@@ -450,16 +485,20 @@ func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 
 // EmitSaga gera o Go de um único SagaDecl — a mesma forma de EmitSagas,
 // mantendo o contrato uniforme entre as duas funções (mesmo padrão de
-// EmitWorker/EmitWorkers).
-func EmitSaga(pkg string, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
-	return EmitSagas(pkg, []*ast.SagaDecl{decl}, model, tab, module, reg)
+// EmitWorker/EmitWorkers). sagaMetrics (H3, REQ-30.3) é o mapa nome-da-Saga
+// -> Metric de negócio que dispara "on <ESTA Saga>.completed" (calculado
+// pelo CHAMADOR via EmitMetrics — ver a doc de codegen/decl_metric.go); nil
+// preserva o comportamento anterior a H3 (nenhum hook de Metric emitido).
+func EmitSaga(pkg string, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, sagaMetrics map[string][]*ast.MetricDecl) ([]byte, error) {
+	return EmitSagas(pkg, []*ast.SagaDecl{decl}, model, tab, module, reg, sagaMetrics)
 }
 
 // EmitSagas gera o Go de várias SagaDecl num único arquivo (sagas.go), sem
 // nenhum estado de pacote COMPARTILHADO entre elas (ao contrário de
 // UseCase/Policy — "uow"/nada — cada Saga tem seu próprio SagaStore quando
-// async; ver a doc do arquivo).
-func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+// async; ver a doc do arquivo). sagaMetrics é repassado a emitSagaDecl (ver
+// a doc de EmitSaga).
+func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, sagaMetrics map[string][]*ast.MetricDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -468,7 +507,7 @@ func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbo
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitSagaDecl(e, decl, model, tab, module, reg, ctxAlias, runtimeAlias); err != nil {
+		if err := emitSagaDecl(e, decl, model, tab, module, reg, ctxAlias, runtimeAlias, sagaMetrics[decl.Name]); err != nil {
 			return nil, fmt.Errorf("codegen: Saga %s: %w", decl.Name, err)
 		}
 	}
@@ -478,8 +517,13 @@ func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbo
 
 // emitSagaDecl emite o Go de uma única SagaDecl: o struct de state, as
 // funções de cada passo, a tabela de runtime.Step, a função de execução
-// (RunSteps) e a entrada por modo (ver a doc do arquivo).
-func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string) error {
+// (RunSteps) e a entrada por modo (ver a doc do arquivo). metrics (H3) são
+// as Metric de negócio que disparam "on <ESTA Saga>.completed" — resolvidas
+// aqui (resolveSagaCompletionHooks) contra o MESMO env/l já seedado com
+// "state" (SeedSagaStep, único receptor que existe no ponto de conclusão de
+// uma Saga) e injetadas por emitSagaAwaitEntry/emitSagaAsyncEntry no ponto
+// de sucesso.
+func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, metrics []*ast.MetricDecl) error {
 	stateFields, err := sagaStateFields(decl)
 	if err != nil {
 		return err
@@ -505,6 +549,11 @@ func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *
 	// configurado mas sem uso de store), nunca Go quebrado.
 	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, ctxAlias, ""))
 
+	hooks, err := resolveSagaCompletionHooks(e, env, l, metrics, runtimeAlias)
+	if err != nil {
+		return fmt.Errorf("metric on %s.completed: %w", decl.Name, err)
+	}
+
 	base := sagaBase(decl.Name)
 
 	steps := make([]sagaStepEmit, 0, len(decl.Steps))
@@ -522,7 +571,101 @@ func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *
 	emitSagaRunStepsFunc(e, base, runStepsFn, ctxAlias, runtimeAlias, stateType)
 
 	if decl.Mode == "async" {
-		return emitSagaAsyncEntry(e, decl, base, stateType, runStepsFn, seedLines, ctxAlias, runtimeAlias)
+		return emitSagaAsyncEntry(e, decl, base, stateType, runStepsFn, seedLines, ctxAlias, runtimeAlias, hooks)
 	}
-	return emitSagaAwaitEntry(e, decl, base, stateType, runStepsFn, seedLines, l, ctxAlias, runtimeAlias)
+	return emitSagaAwaitEntry(e, decl, base, stateType, runStepsFn, seedLines, l, ctxAlias, runtimeAlias, hooks)
+}
+
+// --- 5. Metric "on Saga.completed" (H3, REQ-30.3). ---
+
+// sagaCompletionHook é a forma já lowerizada de UMA Metric acionada por "on
+// <ESTA Saga>.completed": o nome Go da var de registry (metrics.go,
+// EmitMetrics — que emite a var mas NÃO o subscriber para este caso, ver a
+// doc de codegen/decl_metric.go), se é counter (Add) ou histogram
+// (Observe), e o texto Go já pronto do valor/labels ("" ⇒ implícito: 1 para
+// counter, a duração da Saga para histogram — ver a doc do arquivo).
+type sagaCompletionHook struct {
+	varName   string
+	isCounter bool
+	valueGo   string
+	labelsGo  string
+}
+
+// resolveSagaCompletionHooks lowereiza, para CADA Metric em metrics, o valor
+// numérico (ou "" quando implícito) e os labels (ou "" quando ausentes)
+// contra env/l JÁ seedados com "state" (SeedSagaStep, emitSagaDecl) — o
+// único receptor que existe no ponto de conclusão de uma Saga (não há
+// "event": uma Saga não publica nada ao concluir). Emite a var de registry
+// de cada Metric (emitMetricRegistryVar, decl_metric.go) e devolve os hooks
+// prontos para emitSagaAwaitEntry/emitSagaAsyncEntry injetarem no ponto de
+// sucesso. metrics vazio/nil devolve (nil, nil) sem emitir nada.
+func resolveSagaCompletionHooks(e *emit.Emitter, env *lower.TypeEnv, l *lower.Lowerer, metrics []*ast.MetricDecl, runtimeAlias string) ([]sagaCompletionHook, error) {
+	if len(metrics) == 0 {
+		return nil, nil
+	}
+	var fmtAlias string
+	hooks := make([]sagaCompletionHook, 0, len(metrics))
+	for _, m := range metrics {
+		isCounter, err := metricIsCounter(m)
+		if err != nil {
+			return nil, err
+		}
+		varName, err := emitMetricRegistryVar(e, m, runtimeAlias)
+		if err != nil {
+			return nil, err
+		}
+
+		var valueGo string
+		if m.Value != nil {
+			valueGo, err = metricNumericGo(env, l, m.Value)
+			if err != nil {
+				return nil, fmt.Errorf("Metric %s: value: %w", m.Name, err)
+			}
+		}
+		// valueGo == "" e histogram: implícito = duração da Saga (§21, exemplo
+		// PurchaseLatency) — sempre válido aqui, já que só entramos nesta
+		// função para Metric agrupadas por "on <ESTA Saga>.completed".
+
+		var labelsGo string
+		if len(m.Labels) > 0 {
+			if fmtAlias == "" {
+				fmtAlias = e.Import("fmt")
+			}
+			labelsGo, err = metricLabelsGo(env, l, fmtAlias, m.Labels)
+			if err != nil {
+				return nil, fmt.Errorf("Metric %s: labels: %w", m.Name, err)
+			}
+		}
+
+		hooks = append(hooks, sagaCompletionHook{varName: varName, isCounter: isCounter, valueGo: valueGo, labelsGo: labelsGo})
+	}
+	return hooks, nil
+}
+
+// emitSagaCompletionHookCalls emite uma linha "<var>.Add(...)"/"<var>.
+// Observe(...)" por hook — chamada de dentro do "if res.Err == nil" do
+// ponto de sucesso de emitSagaAwaitEntry/emitSagaAsyncEntry. durationGo é o
+// texto Go já pronto da duração observada (ex. "time.Since(start).
+// Seconds()"), usado como valor quando um histogram não declara "value"
+// (ver a doc de sagaCompletionHook).
+func emitSagaCompletionHookCalls(e *emit.Emitter, hooks []sagaCompletionHook, durationGo string) {
+	for _, h := range hooks {
+		valueGo := h.valueGo
+		if valueGo == "" {
+			if h.isCounter {
+				valueGo = "1"
+			} else {
+				valueGo = durationGo
+			}
+		}
+		labelsGo := h.labelsGo
+		if labelsGo == "" {
+			labelsGo = "nil"
+		}
+		method := "Observe"
+		if h.isCounter {
+			method = "Add"
+		}
+		e.Line("%s.%s(%s, %s)", h.varName, method, valueGo, labelsGo)
+	}
 }
