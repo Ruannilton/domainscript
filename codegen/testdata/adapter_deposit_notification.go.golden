@@ -35,13 +35,19 @@ func sendDepositNotification(ctx context.Context, n DepositNotification) error {
 	return nil
 }
 
+// sendDepositNotificationFn invoca a implementação real de sendDepositNotification por padrão — var de pacote
+// (não uma chamada direta) para que um teste de Saga gerado (H4,
+// REQ-31.3, "mock ... returns ...") possa substituí-la e simular a
+// resposta do Adapter sem tocar no wiring de produção.
+var sendDepositNotificationFn = sendDepositNotification
+
 // NotifyDepositNotification dispara o Adapter DepositNotification de forma ASSÍNCRONA (REQ-25.3,
 // fire-and-forget): falhas são logadas, NUNCA propagadas ao chamador. A
 // fila/outbox de verdade (dispatch desacoplado do caller) é Marco F5 — este
 // seam já roda a chamada de forma síncrona por trás da cortina, só sem
 // devolver erro ao chamador (o contrato que o Marco F5 precisa preservar).
 func NotifyDepositNotification(ctx context.Context, n DepositNotification) {
-	if err := sendDepositNotification(ctx, n); err != nil {
+	if err := sendDepositNotificationFn(ctx, n); err != nil {
 		slog.Default().ErrorContext(ctx, "notify falhou", "notification", "DepositNotification", "error", err)
 	}
 }

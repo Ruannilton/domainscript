@@ -583,10 +583,94 @@
   de geração claro, nunca geradas silenciosamente erradas
   (`resolveFixtureAggregate`). `wallet.test.ds` ganhou `Fixture
   activeWallet` (§22.6, o mesmo exemplo do spec, adaptado ao wallet real).
+  **Progresso parcial (4ª fatia):** cenário de Saga com `mock`/`fail step`
+  (§22.3) — um `Test` cujo `Name` resolve a um `*ast.SagaDecl` do módulo
+  (checado depois de Aggregate/UseCase, mesmo mapa nome->decl) vira `func
+  TestX(t *testing.T)` que chama `<base>RunSteps` DIRETO em vez da entrada
+  pública gerada (`PurchaseTickets(ctx, cmd)`, `decl_saga.go`): a entrada
+  "await" só devolve `(*State, error)`, nenhuma forma pública expõe
+  `runtime.SagaResult` (`Compensated`/`Unrecoverable`/`FinalState`), exatamente
+  o que `saga compensated`/`compensated [...]` precisam observar - `RunSteps`
+  é a MESMA função que a entrada pública chama por baixo (dentro de uma
+  goroutine, para "await"), então chamá-la direto reproduz a orquestração
+  real byte a byte, só pulando o wrapper de goroutine+timeout (fora de
+  escopo aqui) e evitando de graça a janela de corrida que a entrada "await"
+  documenta. `given state {...}` (a ÚNICA forma suportada - uma Saga não tem
+  Event/EventStore) sobrescreve `state.<Campo>` direto, ANTES do seed
+  automático de `when Cmd(...)` (que copia todo campo de `state` cujo nome
+  bate com um campo do Command - mecanismo preexistente de `decl_saga.go`,
+  não novo nesta fatia); o `cmd` vence em caso de colisão de nome (não há um
+  2º `given` para desempatar como em §22.1). `mock Target returns X` resolve
+  Target a um Adapter do módulo e reatribui a var de pacote que
+  `Call<Nome>`/`Notify<Nome>` invocam por baixo (`adapterCallVarName`,
+  `decl_io.go` - NOVO seam desta fatia: antes, `Call`/`Notify` chamavam o
+  leaf HTTP/FFI direto, sem nenhum ponto de interceptação) para uma closure
+  que registra a chamada (`then { called Target }`) e SEMPRE sucede - `X` é
+  construído e type-checked como Go real, mas não pode desviar o fluxo de
+  negócio hoje (`Call`/`Notify` só devolvem `error`; simular uma falha
+  causada por um Adapter é papel de `fail step`, não de `mock`, documentado
+  como lacuna para uma evolução futura). `fail step Name with Err` troca
+  `<base>Steps[idx].Up` por uma função que devolve um erro SINTÉTICO via
+  `errors.New` - NUNCA `runtime.BusinessError` - simulando estritamente uma
+  falha de INFRAESTRUTURA (§19); `Err` é texto livre, nunca validado contra
+  nenhum `Error` declarado (não há Error de infra no domínio), só embutido na
+  mensagem para diagnóstico. Como `<base>Steps` é uma var de PACOTE
+  compartilhada entre os cenários de uma mesma suíte (sem `t.Parallel()`, mas
+  sem isolamento automático também), uma `<base>StepsOriginal` é emitida UMA
+  VEZ por Saga (cópia pristina capturada por um inicializador, antes de
+  qualquer `func` de teste rodar) e CADA cenário a restaura como primeira
+  linha do seu corpo, antes de aplicar `mock`/`fail step` - garante que a
+  mutação de um cenário nunca vaze para o próximo. Habilitar um passo de
+  Saga a CHAMAR um Adapter (pré-requisito para `mock`/`called` terem algo de
+  verdade para instalar/observar - nenhuma Saga anterior a esta task chamava
+  um Adapter) exigiu passar `adapterByName` por `EmitSaga`/`EmitSagas`/
+  `emitSagaDecl`/`emitSagaStepFuncs`/`emitSagaStepPhaseFunc` até
+  `StmtLowerer.WithNotifyAdapters` (mesmo registry que `EmitPolicies`/
+  `EmitUseCases` já recebem - `decl_saga.go`), e o novo seam de
+  `decl_io.go` (`var send<Nome>Fn = send<Nome>` / `var
+  call<Nome>ForeignFn = call<Nome>Foreign`, com `Call<Nome>`/`Notify<Nome>`
+  agora invocando a VAR em vez do leaf direto) precisou de golden files
+  atualizados (`adapter_deposit_notification.go.golden`,
+  `adapter_payment_request.go.golden`) e das asserções `strings.Contains`
+  correspondentes em `decl_io_test.go`, que ainda checavam a chamada direta
+  pré-seam. Dois achados corrigidos nesta fatia, sobre o Go de fato gerado
+  (não hipóteses): (1) um cenário cujo ÚNICO `then` é `called Adapter` (o
+  único verbo que não lê `res`) gerava `res declared and not used` - erro de
+  COMPILAÇÃO, não só de `go vet` -, corrigido com um `_ = res` logo após
+  `res := <base>RunSteps(...)`, incondicional; (2) `then { compensated [] }`
+  (a forma correta de provar "nenhum step foi compensado", êxito total) batia
+  `reflect.DeepEqual` contra `res.Compensated`, que fica `nil` (nunca
+  inicializado) no caminho 100% feliz - `nil` e `[]string{}` são
+  estruturalmente diferentes para `DeepEqual`, então a asserção SEMPRE
+  falhava; corrigido normalizando com `gotCompensated := append([]string{},
+  res.Compensated...)` antes de comparar. Fixture sintética nova (módulo
+  isolado `Booking`, não a `PurchaseTickets` de F3 - mexer no golden já
+  congelado de F3 misturaria, no diff desta fatia, uma mudança de
+  comportamento não relacionada): mesma estrutura de passos do exemplo
+  canônico do spec (`ReserveTickets`/`ProcessPayment`/`ConfirmPurchase`,
+  `mock PaymentRequest`, `fail step ConfirmPurchase`), com `ProcessPayment`
+  chamando de fato o Adapter `PaymentRequest` (`mode async` - Notify nunca
+  propaga erro, então o cenário SEM mock nem fail step continua no caminho
+  feliz mesmo com a chamada HTTP real falhando rápido e local, `PAYMENT_URL`
+  não setada - sem DNS, sem rede, só logada); 3 cenários (sem mock/fail,
+  `then { compensated [] }`; `fail step ConfirmPurchase with InfraError`,
+  `then { saga compensated, compensated [ProcessPayment, ReserveTickets] }`;
+  `mock PaymentRequest returns true`, `then { called PaymentRequest }`) -
+  golden + determinismo + smoke-compile do projeto inteiro +
+  `TestEmitSagaTestsRunGreen` (`go test ./...` de verdade sobre o projeto
+  gerado, os 3 `func TestPurchaseTickets_*` gerados SÃO os testes que rodam,
+  mesmo espírito de `TestEmitTestsWalletRunsGreen`). Explicitamente NÃO
+  coberto (erro de geração claro, nunca gerado silenciosamente errado):
+  `Subject emitted Evento`/`Subject released` de dentro de um passo de Saga
+  (ex. "Order emitted OrderCancelled" do exemplo do spec) - um passo de Saga
+  não tem acesso a nenhum `runtime.Tx`/`Store`/`EventStore` (só `state`),
+  persistir um Event a partir de um passo exigiria um mecanismo novo
+  (análogo ao `ucSubjects` de §22.2, mas para dentro de um passo de Saga),
+  maior que o resto desta fatia; nenhuma fixture real (wallet/shop) tem uma
+  Saga que emite eventos hoje.
   **Deliberadamente adiado** (decisão explícita, não esquecimento — cada um é
   uma fatia comparável em tamanho às anteriores, nenhuma exercitada por
-  wallet/shop hoje): Saga com `mock`/`fail step` (§22.3 — exigiria seams
-  novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5).
+  wallet/shop hoje): `property` (§22.5).
 
   **Policy/Query (§22.4) investigado e adiado — cadeia de achados (não
   esquecimento, uma investigação real que aprofundou 3 vezes antes de
@@ -619,7 +703,8 @@
   registrado aqui para a PRÓXIMA sessão não precisar redescobrir a cadeia.
   **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`,
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`,
-  `feat(codegen): geração de testes a partir de *.test.ds (Fixture reusável)`
+  `feat(codegen): geração de testes a partir de *.test.ds (Fixture reusável)`,
+  `feat(codegen): geração de testes a partir de *.test.ds (cenário de Saga)`
 
 - [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,

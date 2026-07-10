@@ -213,7 +213,16 @@ func sagaBase(name string) string {
 // StmtLowerer/Lowerer (REQ-23.5). Chamada só quando block tem um corpo de
 // verdade a gerar (ver a doc do arquivo: um down "unrecoverable" NUNCA chega
 // aqui).
-func emitSagaStepPhaseFunc(e *emit.Emitter, funcName string, block *ast.Block, l *lower.Lowerer, ctxAlias, stateType string) error {
+//
+// adapterByName (F4/H4, REQ-25.3/31.3) habilita StmtLowerer.WithNotifyAdapters
+// sobre este corpo: SEM isso, um passo que chamasse "PaymentRequest(...)"
+// como statement (a MESMA forma que Policy/UseCase já reconhecem, ver
+// decl_io.go) falharia a geração ("ExprStmt de CallExpr... não suportado",
+// lower/stmt.go:exprStmtCall — Fn é um Ident nu, não um MemberExpr) —
+// nenhuma fixture de Saga anterior a esta task chamava um Adapter, então essa
+// lacuna nunca tinha sido exercitada. nil preserva o comportamento anterior
+// (nenhuma mudança para Sagas que não chamam Adapter, o caso comum).
+func emitSagaStepPhaseFunc(e *emit.Emitter, funcName string, block *ast.Block, l *lower.Lowerer, ctxAlias, stateType string, adapterByName map[string]*ast.AdapterDecl) error {
 	e.Line("")
 	sig := fmt.Sprintf("func %s(ctx %s.Context, state *%s) error", funcName, ctxAlias, stateType)
 
@@ -225,7 +234,7 @@ func emitSagaStepPhaseFunc(e *emit.Emitter, funcName string, block *ast.Block, l
 	var bodyErr error
 	e.Block(sig, func() {
 		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil", CtxVar: "ctx"}
-		sl := lower.NewStmtLowerer(l, e, stmtCtx)
+		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithNotifyAdapters(adapterByName, "ctx")
 		if bodyErr = sl.Block(block); bodyErr != nil {
 			return
 		}
@@ -248,7 +257,8 @@ type sagaStepEmit struct {
 // emitSagaStepFuncs emite as funções Go de um único SagaStep (up sempre;
 // down só quando presente e não "unrecoverable"; onInfraError só quando
 // presente) e devolve os nomes para montar o []runtime.Step depois.
-func emitSagaStepFuncs(e *emit.Emitter, base string, step *ast.SagaStep, l *lower.Lowerer, ctxAlias, stateType string) (sagaStepEmit, error) {
+// adapterByName é repassado a emitSagaStepPhaseFunc (ver a doc lá).
+func emitSagaStepFuncs(e *emit.Emitter, base string, step *ast.SagaStep, l *lower.Lowerer, ctxAlias, stateType string, adapterByName map[string]*ast.AdapterDecl) (sagaStepEmit, error) {
 	if step.Up == nil {
 		return sagaStepEmit{}, fmt.Errorf("passo %s: sem bloco \"up\" (bug de geração sobre um programa validado — REQ-24.1 exige up em todo passo)", step.Name)
 	}
@@ -256,21 +266,21 @@ func emitSagaStepFuncs(e *emit.Emitter, base string, step *ast.SagaStep, l *lowe
 	se := sagaStepEmit{name: step.Name}
 
 	se.upFn = base + step.Name + "Up"
-	if err := emitSagaStepPhaseFunc(e, se.upFn, step.Up, l, ctxAlias, stateType); err != nil {
+	if err := emitSagaStepPhaseFunc(e, se.upFn, step.Up, l, ctxAlias, stateType, adapterByName); err != nil {
 		return sagaStepEmit{}, fmt.Errorf("passo %s: up: %w", step.Name, err)
 	}
 
 	se.unrecoverable = isUnrecoverableDown(step.Down)
 	if step.Down != nil && !se.unrecoverable {
 		se.downFn = base + step.Name + "Down"
-		if err := emitSagaStepPhaseFunc(e, se.downFn, step.Down, l, ctxAlias, stateType); err != nil {
+		if err := emitSagaStepPhaseFunc(e, se.downFn, step.Down, l, ctxAlias, stateType, adapterByName); err != nil {
 			return sagaStepEmit{}, fmt.Errorf("passo %s: down: %w", step.Name, err)
 		}
 	}
 
 	if step.OnInfraError != nil {
 		se.onInfraErrFn = base + step.Name + "OnInfraError"
-		if err := emitSagaStepPhaseFunc(e, se.onInfraErrFn, step.OnInfraError, l, ctxAlias, stateType); err != nil {
+		if err := emitSagaStepPhaseFunc(e, se.onInfraErrFn, step.OnInfraError, l, ctxAlias, stateType, adapterByName); err != nil {
 			return sagaStepEmit{}, fmt.Errorf("passo %s: onInfraError: %w", step.Name, err)
 		}
 	}
@@ -485,20 +495,25 @@ func emitSagaAsyncEntry(e *emit.Emitter, decl *ast.SagaDecl, base, stateType, ru
 
 // EmitSaga gera o Go de um único SagaDecl — a mesma forma de EmitSagas,
 // mantendo o contrato uniforme entre as duas funções (mesmo padrão de
-// EmitWorker/EmitWorkers). sagaMetrics (H3, REQ-30.3) é o mapa nome-da-Saga
-// -> Metric de negócio que dispara "on <ESTA Saga>.completed" (calculado
-// pelo CHAMADOR via EmitMetrics — ver a doc de codegen/decl_metric.go); nil
-// preserva o comportamento anterior a H3 (nenhum hook de Metric emitido).
-func EmitSaga(pkg string, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, sagaMetrics map[string][]*ast.MetricDecl) ([]byte, error) {
-	return EmitSagas(pkg, []*ast.SagaDecl{decl}, model, tab, module, reg, sagaMetrics)
+// EmitWorker/EmitWorkers). adapterByName (H4, REQ-31.3) é o registry de
+// Adapter deste módulo (mesmo mapa que EmitPolicies/EmitUseCases já
+// recebem) — habilita um passo a chamar um Adapter (ver a doc de
+// emitSagaStepPhaseFunc); nil preserva o comportamento anterior a esta task
+// (nenhum passo consegue chamar Adapter, o caso de toda Saga anterior a
+// H4). sagaMetrics (H3, REQ-30.3) é o mapa nome-da-Saga -> Metric de
+// negócio que dispara "on <ESTA Saga>.completed" (calculado pelo CHAMADOR
+// via EmitMetrics — ver a doc de codegen/decl_metric.go); nil preserva o
+// comportamento anterior a H3 (nenhum hook de Metric emitido).
+func EmitSaga(pkg string, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapterByName map[string]*ast.AdapterDecl, sagaMetrics map[string][]*ast.MetricDecl) ([]byte, error) {
+	return EmitSagas(pkg, []*ast.SagaDecl{decl}, model, tab, module, reg, adapterByName, sagaMetrics)
 }
 
 // EmitSagas gera o Go de várias SagaDecl num único arquivo (sagas.go), sem
 // nenhum estado de pacote COMPARTILHADO entre elas (ao contrário de
 // UseCase/Policy — "uow"/nada — cada Saga tem seu próprio SagaStore quando
-// async; ver a doc do arquivo). sagaMetrics é repassado a emitSagaDecl (ver
-// a doc de EmitSaga).
-func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, sagaMetrics map[string][]*ast.MetricDecl) ([]byte, error) {
+// async; ver a doc do arquivo). adapterByName/sagaMetrics são repassados a
+// emitSagaDecl (ver a doc de EmitSaga).
+func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapterByName map[string]*ast.AdapterDecl, sagaMetrics map[string][]*ast.MetricDecl) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -507,7 +522,7 @@ func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbo
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitSagaDecl(e, decl, model, tab, module, reg, ctxAlias, runtimeAlias, sagaMetrics[decl.Name]); err != nil {
+		if err := emitSagaDecl(e, decl, model, tab, module, reg, ctxAlias, runtimeAlias, adapterByName, sagaMetrics[decl.Name]); err != nil {
 			return nil, fmt.Errorf("codegen: Saga %s: %w", decl.Name, err)
 		}
 	}
@@ -517,13 +532,14 @@ func EmitSagas(pkg string, decls []*ast.SagaDecl, model *types.Model, tab *symbo
 
 // emitSagaDecl emite o Go de uma única SagaDecl: o struct de state, as
 // funções de cada passo, a tabela de runtime.Step, a função de execução
-// (RunSteps) e a entrada por modo (ver a doc do arquivo). metrics (H3) são
-// as Metric de negócio que disparam "on <ESTA Saga>.completed" — resolvidas
-// aqui (resolveSagaCompletionHooks) contra o MESMO env/l já seedado com
-// "state" (SeedSagaStep, único receptor que existe no ponto de conclusão de
-// uma Saga) e injetadas por emitSagaAwaitEntry/emitSagaAsyncEntry no ponto
-// de sucesso.
-func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, metrics []*ast.MetricDecl) error {
+// (RunSteps) e a entrada por modo (ver a doc do arquivo). adapterByName (H4)
+// é repassado a cada passo (emitSagaStepFuncs). metrics (H3) são as Metric
+// de negócio que disparam "on <ESTA Saga>.completed" — resolvidas aqui
+// (resolveSagaCompletionHooks) contra o MESMO env/l já seedado com "state"
+// (SeedSagaStep, único receptor que existe no ponto de conclusão de uma
+// Saga) e injetadas por emitSagaAwaitEntry/emitSagaAsyncEntry no ponto de
+// sucesso.
+func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, adapterByName map[string]*ast.AdapterDecl, metrics []*ast.MetricDecl) error {
 	stateFields, err := sagaStateFields(decl)
 	if err != nil {
 		return err
@@ -558,7 +574,7 @@ func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *
 
 	steps := make([]sagaStepEmit, 0, len(decl.Steps))
 	for _, step := range decl.Steps {
-		se, err := emitSagaStepFuncs(e, base, step, l, ctxAlias, stateType)
+		se, err := emitSagaStepFuncs(e, base, step, l, ctxAlias, stateType, adapterByName)
 		if err != nil {
 			return err
 		}

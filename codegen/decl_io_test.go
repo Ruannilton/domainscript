@@ -215,9 +215,14 @@ func TestEmitAdapterHTTPGolden(t *testing.T) {
 		"resp, err := http.DefaultClient.Do(req)",
 		"defer resp.Body.Close()",
 		"if resp.StatusCode >= 400",
+		// sendDepositNotificationFn (H4, REQ-31.3): var de pacote que
+		// Notify<Nome> invoca por baixo — o seam que um teste de Saga gerado
+		// reatribui para instalar um mock (ver a doc de
+		// codegen/decl_io.go:adapterCallVarName/emitAdapterWrapper).
+		"var sendDepositNotificationFn = sendDepositNotification",
 		// notify (async): sem retorno, erro só logado — REQ-25.3
 		"func NotifyDepositNotification(ctx context.Context, n DepositNotification)",
-		"if err := sendDepositNotification(ctx, n); err != nil",
+		"if err := sendDepositNotificationFn(ctx, n); err != nil",
 		"slog.Default().ErrorContext(ctx",
 	} {
 		if !strings.Contains(string(got), want) {
@@ -245,9 +250,12 @@ func TestEmitAdapterFFIGolden(t *testing.T) {
 	for _, want := range []string{
 		"func callPaymentRequestForeign(ctx context.Context, n PaymentRequest) error",
 		"return payment_gateway.ProcessPayment(ctx, string(n.PaymentId), n.Amount)",
+		// callPaymentRequestForeignFn (H4, REQ-31.3): mesmo seam de mock que
+		// sendDepositNotificationFn acima, agora sobre o leaf FFI.
+		"var callPaymentRequestForeignFn = callPaymentRequestForeign",
 		// call (sync): erro propagado — REQ-25.3
 		"func CallPaymentRequest(ctx context.Context, n PaymentRequest) error",
-		"return callPaymentRequestForeign(ctx, n)",
+		"return callPaymentRequestForeignFn(ctx, n)",
 	} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("esperava %q no Go gerado, não achei:\n%s", want, got)

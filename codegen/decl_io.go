@@ -396,6 +396,24 @@ func ffiArgGo(model *types.Model, module string, env *lower.TypeEnv, l *lower.Lo
 	}
 }
 
+// adapterCallVarName (H4, REQ-31.3) devolve o nome Go da var de pacote que
+// Call<Nome>/Notify<Nome> invocam por baixo (ver emitAdapterWrapper) em vez
+// de chamar o leaf direto — o seam que um teste de Saga gerado (gentest.go,
+// §22.3) reatribui para instalar um mock ANTES de rodar o cenário, sem
+// tocar em nenhum wiring de produção. "" quando decl não é nem HTTP nem FFI
+// (forma vazia — já um erro de geração em emitAdapterDecl, nunca alcançado
+// por um Adapter real).
+func adapterCallVarName(decl *ast.AdapterDecl) string {
+	switch {
+	case decl.HTTPUrl != nil:
+		return "send" + decl.Name + "Fn"
+	case decl.Function != nil:
+		return "call" + decl.Name + "ForeignFn"
+	default:
+		return ""
+	}
+}
+
 // emitAdapterWrapper emite o ponto de entrada público conforme decl.Mode
 // (REQ-25.3, distinção notify/call — ver a doc do arquivo): "sync" ⇒
 // Call<Nome>(ctx, n) error, erro propagado; qualquer outro valor (o único
@@ -403,12 +421,29 @@ func ffiArgGo(model *types.Model, module string, env *lower.TypeEnv, l *lower.Lo
 // retorno — fire-and-forget, erro só logado (mesma postura conservadora de
 // decl_policy.go sobre Delivery: um valor desconhecido cai no caminho mais
 // seguro, nunca um erro de geração por um texto livre que o parser aceitou).
+//
+// Call<Nome>/Notify<Nome> invocam leafName através de uma VAR DE PACOTE
+// (adapterCallVarName(decl), acima) em vez de uma chamada direta ao leaf —
+// o seam de mock que um teste de Saga gerado (H4, REQ-31.3) precisa: por
+// default a var aponta para a implementação real (leafName), preservando o
+// comportamento de produção byte a byte fora de um cenário mockado; só um
+// teste no MESMO pacote (a convenção "package pkg" interno de gentest.go)
+// pode reatribuí-la. Nenhuma outra mudança de contrato: Call<Nome>/
+// Notify<Nome> continuam com a mesma assinatura pública de antes de H4.
 func emitAdapterWrapper(e *emit.Emitter, decl *ast.AdapterDecl, notif *ast.NotificationDecl, leafName, ctxAlias string) {
+	fnVar := adapterCallVarName(decl)
+	e.Line("// %s invoca a implementação real de %s por padrão — var de pacote", fnVar, leafName)
+	e.Line("// (não uma chamada direta) para que um teste de Saga gerado (H4,")
+	e.Line("// REQ-31.3, \"mock ... returns ...\") possa substituí-la e simular a")
+	e.Line("// resposta do Adapter sem tocar no wiring de produção.")
+	e.Line("var %s = %s", fnVar, leafName)
+	e.Line("")
+
 	if decl.Mode == "sync" {
 		e.Line("// Call%s é a chamada SÍNCRONA do Adapter %s (REQ-25.3): o erro É", decl.Name, decl.Name)
 		e.Line("// propagado ao chamador.")
 		e.Block(fmt.Sprintf("func Call%s(ctx %s.Context, n %s) error", decl.Name, ctxAlias, notif.Name), func() {
-			e.Line("return %s(ctx, n)", leafName)
+			e.Line("return %s(ctx, n)", fnVar)
 		})
 		return
 	}
@@ -420,7 +455,7 @@ func emitAdapterWrapper(e *emit.Emitter, decl *ast.AdapterDecl, notif *ast.Notif
 	e.Line("// seam já roda a chamada de forma síncrona por trás da cortina, só sem")
 	e.Line("// devolver erro ao chamador (o contrato que o Marco F5 precisa preservar).")
 	e.Block(fmt.Sprintf("func Notify%s(ctx %s.Context, n %s)", decl.Name, ctxAlias, notif.Name), func() {
-		e.Block(fmt.Sprintf("if err := %s(ctx, n); err != nil", leafName), func() {
+		e.Block(fmt.Sprintf("if err := %s(ctx, n); err != nil", fnVar), func() {
 			e.Line("%s.Default().ErrorContext(ctx, \"notify falhou\", \"notification\", %q, \"error\", err)", slogAlias, decl.Name)
 		})
 	})

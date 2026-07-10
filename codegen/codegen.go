@@ -499,6 +499,12 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	for _, uc := range b.usecases {
 		usecasesByName[uc.Name] = uc
 	}
+	// sagasByName (H4, gentest.go, §22.3) resolve o alvo de um Test por nome
+	// — mesmo padrão de aggregates/usecasesByName acima.
+	sagasByName := make(map[string]*ast.SagaDecl, len(b.sagas))
+	for _, s := range b.sagas {
+		sagasByName[s.Name] = s
+	}
 	// adapterByName indexa os Adapter do módulo por nome (F4, REQ-25.3) — o
 	// registry que StmtLowerer.WithNotifyAdapters consulta para reconhecer
 	// "Xxx(...)" como notify/call de uma Notification (ver decl_io.go/
@@ -708,7 +714,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		// entrada é diretamente chamável e seu SagaStore (mode async) é uma var
 		// de pacote auto-inicializada (ver a doc de decl_saga.go). sagaMetrics
 		// (H3) é repassado para o hook de Metric "on Saga.completed".
-		content, err := EmitSagas(pkg, b.sagas, model, tab, moduleName, reg, sagaMetrics)
+		content, err := EmitSagas(pkg, b.sagas, model, tab, moduleName, reg, adapterByName, sagaMetrics)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("sagas.go: %w", err)
 		}
@@ -742,7 +748,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	// b.fixtures (§22.6) viram helpers "func fixture<Nome>(...)" no MESMO
 	// arquivo, ao lado dos Test (ver a doc de emitFixtureDecl).
 	if len(b.tests) > 0 || len(b.fixtures) > 0 {
-		content, err := EmitTests(pkg, b.tests, b.fixtures, model, tab, moduleName, reg, aggregates, usecasesByName)
+		content, err := EmitTests(pkg, b.tests, b.fixtures, model, tab, moduleName, reg, aggregates, usecasesByName, sagasByName, adapterByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("%s_test.go: %w", pkg, err)
 		}

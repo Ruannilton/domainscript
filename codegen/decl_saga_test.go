@@ -163,7 +163,7 @@ func emitSagaFixture(t *testing.T) []byte {
 	model := types.NewModel(prog.Symbols)
 	reg := walletVOOperatorRegistryFromProgram(prog) // nenhum Operator na fixture, registry vazio é suficiente
 
-	got, err := codegen.EmitSaga("tickets", saga, model, prog.Symbols, "Tickets", reg, nil)
+	got, err := codegen.EmitSaga("tickets", saga, model, prog.Symbols, "Tickets", reg, nil, nil)
 	if err != nil {
 		t.Fatalf("EmitSaga: erro inesperado: %v", err)
 	}

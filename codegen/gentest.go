@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/codegen/lower"
@@ -25,17 +26,17 @@ import (
 //
 // §22 declara sete formas de cenário cruzando 4 famílias de alvo (Aggregate,
 // UseCase, Policy/Query, Saga) mais mock/fail-step/property/Fixture (REQ-
-// 31.1-4). Esta fase cobre §22.1 (Aggregate), §22.2 (UseCase) e §22.6
-// (Fixture): um Test cujo Name resolve a um *ast.AggregateDecl OU a um
-// *ast.UseCaseDecl DESTE módulo — achado por casamento de nome exato contra o
-// mapa recebido (mesmo padrão de sema/rules_test_files.go:sagaSteps, que já faz
-// esse casamento por nome para Saga) — e cada *ast.FixtureDecl "Subject from
-// [eventos]" (helper reusável, ver a doc de emitFixtureDecl). Policy/Query
-// (§22.4, emitted count sem Subject)/Saga (§22.3, mock/fail-step)/property
-// (§22.5) ficam para fases seguintes — um Test cujo nome não resolve a um
-// Aggregate NEM a um UseCase deste módulo, ou cujo cenário usa uma forma ainda
-// não coberta, é um erro de geração claro agora, nunca gerado silenciosamente
-// errado.
+// 31.1-4). Esta fase cobre §22.1 (Aggregate), §22.2 (UseCase), §22.3 (Saga,
+// mock/fail-step) e §22.6 (Fixture): um Test cujo Name resolve a um
+// *ast.AggregateDecl, *ast.UseCaseDecl OU *ast.SagaDecl DESTE módulo —
+// achado por casamento de nome exato contra o mapa recebido (mesmo padrão de
+// sema/rules_test_files.go:sagaSteps, que já faz esse casamento por nome
+// para Saga) — e cada *ast.FixtureDecl "Subject from [eventos]" (helper
+// reusável, ver a doc de emitFixtureDecl). Policy/Query (§22.4, emitted
+// count sem Subject)/property (§22.5) ficam para fases seguintes — um Test
+// cujo nome não resolve a um Aggregate, UseCase NEM Saga deste módulo, ou
+// cujo cenário usa uma forma ainda não coberta, é um erro de geração claro
+// agora, nunca gerado silenciosamente errado.
 //
 // --- given: seed direto, não replay de EventStore (achado documentado) ---
 //
@@ -131,22 +132,26 @@ import (
 
 // EmitTests emite o Go de todas as ast.TestDecl E ast.FixtureDecl de um módulo
 // (H4, REQ-31) num único arquivo "<pkg>_test.go" — package pkg (interno, ver a
-// doc do arquivo). aggregates/usecases são os mapas nome->Decl deste módulo
-// (mesma forma que EmitUseCases já recebe) usados para resolver o alvo de cada
-// Test (§22.1/22.2, ver a doc do arquivo) — aggregates checado primeiro
-// (§22.1/§22.2 não colidem: um nome de módulo não nomeia as duas coisas ao
-// mesmo tempo). fixtures (§22.6, ver a doc de emitFixtureDecl) viram helpers
-// "func fixture<Nome>(t *testing.T) *<AggType>" ao lado dos Test — reusam o
-// MESMO mapa aggregates para resolver o Aggregate do Subject. decls E fixtures
+// doc do arquivo). aggregates/usecases/sagas são os mapas nome->Decl deste
+// módulo (mesma forma que EmitUseCases já recebe) usados para resolver o alvo
+// de cada Test (§22.1/22.2/22.3, ver a doc do arquivo) — aggregates checado
+// primeiro, depois usecases, depois sagas (as três categorias não colidem: um
+// nome de módulo não nomeia duas ao mesmo tempo). adapterByName (H4, REQ-31.3)
+// é o registry de Adapter deste módulo (mesmo mapa que EmitPolicies/
+// EmitUseCases/EmitSagas já recebem) — usado só pelo caminho de Saga, para
+// resolver o alvo de "mock Target returns ..." (ver emitSagaMock). fixtures
+// (§22.6, ver a doc de emitFixtureDecl) viram helpers "func
+// fixture<Nome>(t *testing.T) *<AggType>" ao lado dos Test — reusam o MESMO
+// mapa aggregates para resolver o Aggregate do Subject. decls E fixtures
 // vazios devolvem (nil, nil): o CHAMADOR (generateModuleFiles) decide, a partir
 // disso, se escreve o arquivo.
-func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl) ([]byte, error) {
+func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl, adapterByName map[string]*ast.AdapterDecl) ([]byte, error) {
 	if len(decls) == 0 && len(fixtures) == 0 {
 		return nil, nil
 	}
 	e := emit.New(pkg)
 	e.Import("testing")
-	needsErrors, needsReflect, needsContext := scanTestNeeds(decls, aggregates, usecases)
+	needsErrors, needsReflect, needsContext := scanTestNeeds(decls, aggregates, usecases, sagas)
 	var errorsAlias, reflectAlias, contextAlias string
 	if needsErrors {
 		errorsAlias = e.Import("errors")
@@ -175,7 +180,13 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 			}
 			continue
 		}
-		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate nem a um UseCase deste módulo — só §22.1/22.2 são suportados nesta fase de H4", t.Name)
+		if saga, ok := sagas[t.Name]; ok {
+			if err := emitSagaTestDecl(e, t, saga, model, tab, module, reg, adapterByName, runtimeAlias, errorsAlias, reflectAlias, contextAlias); err != nil {
+				return nil, fmt.Errorf("Test %s: %w", t.Name, err)
+			}
+			continue
+		}
+		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate, UseCase nem Saga deste módulo — só §22.1/22.2/22.3 são suportados nesta fase de H4", t.Name)
 	}
 
 	for _, f := range fixtures {
@@ -190,16 +201,26 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 // import condicional (evita "importado e não usado" quando nenhum cenário de
 // nenhum Test do módulo usa aquela forma — mesmo padrão de EmitMetrics,
 // decl_metric.go, runtimeAlias lazy). needsContext é true quando ao menos um
-// Test resolve a um UseCase (§22.2 sempre usa context.Background(), ver a
+// Test resolve a um UseCase OU Saga (§22.2 sempre usa context.Background();
+// §22.3 sempre chama <base>RunSteps(context.Background(), state) — ver a
 // doc do arquivo) — independente da forma dos cenários dentro dele.
-func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl) (needsErrors, needsReflect, needsContext bool) {
+// needsErrors também é true quando ao menos um scenario de Saga declara
+// "fail step" (emite errors.New — ver emitSagaFailStep); needsReflect
+// também quando ao menos um ThenAssert usa "compensated [...]" (reflect.
+// DeepEqual sobre a ordem de compensação — ver emitSagaThenAssert).
+func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl) (needsErrors, needsReflect, needsContext bool) {
 	for _, t := range decls {
 		if _, isAgg := aggregates[t.Name]; !isAgg {
 			if _, isUC := usecases[t.Name]; isUC {
 				needsContext = true
+			} else if _, isSaga := sagas[t.Name]; isSaga {
+				needsContext = true
 			}
 		}
 		for _, sc := range t.Scenarios {
+			if len(sc.Fails) > 0 {
+				needsErrors = true
+			}
 			if sc.Then == nil {
 				continue
 			}
@@ -214,6 +235,9 @@ func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDe
 					needsErrors = true
 				}
 				if a.Verb == "emitted" && a.Subject != nil {
+					needsReflect = true
+				}
+				if a.Verb == "compensated" {
 					needsReflect = true
 				}
 			}
@@ -910,6 +934,386 @@ func emitUseCaseThenAssert(e *emit.Emitter, sl *lower.StmtLowerer, a *ast.ThenAs
 
 	default:
 		return fmt.Errorf("forma de then não suportada nesta fase de H4 (verbo %q)", a.Verb)
+	}
+}
+
+// --- Saga (§22.3, REQ-31.3) ---
+//
+// --- RunSteps direto, não a função de entrada (decisão documentada) ---
+//
+// A forma "natural" seria "when Cmd(...)" invocar a função de entrada
+// gerada (ex. "PurchaseTickets(ctx, cmd)", decl_saga.go) — mas a entrada
+// "await" (emitSagaAwaitEntry) devolve só (*State, error): NENHUMA forma
+// pública expõe runtime.SagaResult (Compensated/Unrecoverable/FinalState),
+// exatamente o que "saga compensated"/"compensated [...]" (REQ-31.3)
+// precisam observar. A ÚNICA função que expõe SagaResult é <base>RunSteps —
+// a MESMA que a entrada pública chama por baixo (dentro de uma goroutine,
+// para "await", ver a doc de emitSagaAwaitEntry). Chamar <base>RunSteps
+// DIRETO (mesmo padrão que decl_saga_test.go's próprios testes
+// comportamentais já usam — TestPurchaseTicketsFailureCompensatesInReverse...)
+// reproduz IDENTICAMENTE a orquestração real, só pulando o wrapper de
+// goroutine+timeout (que não está sob teste aqui) — e evita de graça a
+// janela de corrida entre um encerramento por timeout e a goroutine em
+// segundo plano que emitSagaAwaitEntry documenta. "when Cmd(...)" ainda
+// constrói o Command de verdade (Lowerer.ExprHoisted sobre o CallExpr) —
+// só a INVOCAÇÃO final troca de "entrada pública" para "RunSteps direto".
+//
+// --- given: seed direto do state (mesma filosofia de §22.1) ---
+//
+// "given state { campo: valor }" (a ÚNICA forma suportada aqui — uma Saga
+// não tem Event nem EventStore, ver a doc de decl_saga.go sobre "state" ser
+// o único receptor) sobrescreve "state.Campo" DIRETO, na ordem declarada,
+// ANTES do seed de "when" — um given que colida em nome com um campo do
+// Command é uma escolha rara e não exercitada pela fixture desta fase; a
+// ORDEM escolhida (given primeiro, cmd depois) segue a leitura cronológica
+// natural "dado que, quando" — o cmd vence em caso de colisão, documentado
+// aqui por não haver um 2º given para desempatar como em §22.1.
+//
+// --- mock: instala o seam, mas SEMPRE sucede (decisão documentada) ---
+//
+// Call<Nome>/Notify<Nome> (decl_io.go, REQ-25.3) devolvem só "error" — não
+// existe hoje um retorno estruturado que o corpo de um passo possa
+// inspecionar ("result = PaymentRequest(...)" não é lowerizável, só
+// ExprStmt solto — ver notifyOrCallStmt, lower/stmt.go). Por isso "mock
+// Target returns X" AQUI constrói X (hoisted — prova que a expressão é Go
+// válido, o mesmo tratamento que um "given"/"then" dá a qualquer expressão)
+// mas não pode, por si só, desviar o fluxo de negócio: a var de pacote que
+// Call<Nome>/Notify<Nome> invocam por baixo (adapterCallVarName, decl_io.go)
+// é substituída por uma closure que registra a chamada (para "then { called
+// Target }") e SEMPRE sucede (nil error) — simular uma falha causada por um
+// Adapter é papel de "fail step ... with ..." (efeito preciso e determinado
+// sobre RunSaga), não de "mock ... returns ...". Estender Adapter com um
+// retorno estruturado (para que um "PaymentResult declinado" pudesse, por
+// si só, desviar o passo) é trabalho futuro — mesma lacuna já documentada em
+// decl_io.go sobre o retorno de um Adapter ser só "error" hoje.
+//
+// --- fail step: erro sintético de INFRA (nunca BusinessError) ---
+//
+// "fail step Name with Err" troca <base>Steps[idx].Up por uma função que
+// devolve um erro sintético via errors.New — NUNCA runtime.BusinessError:
+// simula uma falha de INFRAESTRUTURA, o único tipo de falha que a forma
+// "with InfraError" do spec (§19: "Infraestrutura | Nunca no domínio")
+// descreve. Err (o "With" de ast.FailStep) é texto livre — sema
+// (rules_test_files.go) só valida que Step nomeia um step real desta Saga,
+// nunca valida With contra nenhum Error declarado (não HÁ Error de infra no
+// domínio) — With só é embutido na mensagem do erro sintético, para um
+// t.Fatalf apontar a causa simulada quando uma asserção falhar.
+//
+// --- Reset entre cenários: <base>StepsOriginal ---
+//
+// <base>Steps (decl_saga.go) é uma var de PACOTE — mock/fail-step de UM
+// cenário reatribui .Up/a var de Adapter, e essa mutação SOBREVIVERIA para
+// o próximo cenário (os testes deste pacote rodam sequencialmente, sem
+// t.Parallel(), então não há corrida — mas também não há isolamento
+// automático). <base>StepsOriginal (uma var de pacote emitida UMA VEZ,
+// capturada por um inicializador — roda ANTES de qualquer func de teste,
+// preservando os passos REAIS) é a cópia pristina que CADA cenário restaura
+// a partir dela, como a PRIMEIRA linha do seu corpo, antes de aplicar
+// mock/fail-step — garante que a mutação de um cenário nunca vaze para o
+// próximo, sem precisar de nenhuma ordem específica de execução dos testes.
+//
+// --- Segurança de dados sob "mode await" (goroutine) ---
+//
+// Uma reatribuição de <base>Steps[i]/de uma var de Adapter, feita pelo
+// teste ANTES de chamar RunSteps, sempre HAPPENS-BEFORE a leitura dessas
+// vars dentro de RunSaga: RunSteps não abre goroutine nenhuma (ao contrário
+// da entrada pública "await" — mais um motivo para chamá-la direto, ver
+// acima) — a leitura acontece na MESMA goroutine que a escrita, sequencial,
+// sem corrida possível.
+//
+// --- Formas de then NÃO cobertas nesta fase (documentado) ---
+//
+// "Subject emitted Evento"/"Subject released" (a Saga tocando um Aggregate
+// via Event, ex. "Order emitted OrderCancelled" do spec §22.3) ficam para
+// uma fatia futura: um passo de Saga não tem acesso a nenhum
+// runtime.Tx/Store/EventStore (só "state", ver a doc de decl_saga.go) —
+// persistir um Event a partir de um passo exigiria um mecanismo novo
+// (analógico ao ucSubjects de §22.2, mas para dentro de um passo de Saga),
+// maior que o resto desta fatia; nenhuma fixture real (wallet/shop) tem uma
+// Saga que emite eventos hoje. Um Test cujo cenário usa essas formas
+// recebe um erro de geração claro, nunca gerado silenciosamente errado.
+
+// sagaScenarioState é o estado acumulado ao emitir os cenários de UM Test
+// de Saga: stepIndex resolve "fail step Name" para o índice ordinal em
+// decl.Steps (mesma ordem de <base>Steps, decl_saga.go); backedUp marca se
+// "<base>StepsOriginal" já foi emitida (uma vez por Saga, não por
+// scenario).
+type sagaScenarioState struct {
+	base       string
+	stateType  string
+	runStepsFn string
+	stepIndex  map[string]int
+	seedLines  []string
+}
+
+// emitSagaTestDecl emite um func TestX por scenario de t (§22.3, REQ-31).
+func emitSagaTestDecl(e *emit.Emitter, t *ast.TestDecl, saga *ast.SagaDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapterByName map[string]*ast.AdapterDecl, runtimeAlias, errorsAlias, reflectAlias, contextAlias string) error {
+	stateFields, err := sagaStateFields(saga)
+	if err != nil {
+		return err
+	}
+	cmdDecl, err := resolveSagaCommand(tab, module, saga.Handles)
+	if err != nil {
+		return err
+	}
+
+	st := &sagaScenarioState{
+		base:       sagaBase(saga.Name),
+		stateType:  sagaStateTypeName(saga),
+		stepIndex:  make(map[string]int, len(saga.Steps)),
+		seedLines:  sagaSeedFromCommandLines(stateFields, cmdDecl.Fields),
+		runStepsFn: sagaBase(saga.Name) + "RunSteps",
+	}
+	for i, s := range saga.Steps {
+		if s != nil {
+			st.stepIndex[s.Name] = i
+		}
+	}
+
+	e.Line("")
+	e.Line("// %sStepsOriginal preserva os passos REAIS de %sSteps (decl_saga.go) —", st.base, st.base)
+	e.Line("// cada cenário desta suíte restaura a partir daqui antes de aplicar")
+	e.Line("// mock/fail step (§22.3, REQ-31.3): garante que a mutação de UM cenário")
+	e.Line("// nunca vaze para o próximo (ver a doc do arquivo).")
+	e.Line("var %sStepsOriginal = append([]%s.Step[%s](nil), %sSteps...)", st.base, runtimeAlias, st.stateType, st.base)
+
+	used := make(map[string]int)
+	for i, sc := range t.Scenarios {
+		fn := scenarioFuncName(t.Name, i, sc.Name, used)
+
+		env := lower.New(model, tab, module)
+		l := lower.NewLowerer(env, reg, runtimeAlias)
+		sl := lower.NewStmtLowerer(l, e, lower.StmtContext{Panics: true})
+
+		e.Line("")
+		e.Line("// %s prova o cenário %q de Test %s (§22.3, REQ-31).", fn, sc.Name, t.Name)
+		var bodyErr error
+		e.Block(fmt.Sprintf("func %s(t *testing.T)", fn), func() {
+			bodyErr = emitSagaScenarioBody(e, sl, sc, saga, st, adapterByName, runtimeAlias, errorsAlias, reflectAlias, contextAlias)
+		})
+		if bodyErr != nil {
+			return fmt.Errorf("scenario %q: %w", sc.Name, bodyErr)
+		}
+	}
+	return nil
+}
+
+// emitSagaScenarioBody emite o corpo de um func TestX de Saga: reset da
+// tabela de passos + mock + fail step + given (seed de state) + when
+// (Command, semeia state por nome) + res := RunSteps(...) + then (ver a
+// doc do arquivo para o raciocínio de cada peça).
+func emitSagaScenarioBody(e *emit.Emitter, sl *lower.StmtLowerer, sc *ast.ScenarioDecl, saga *ast.SagaDecl, st *sagaScenarioState, adapterByName map[string]*ast.AdapterDecl, runtimeAlias, errorsAlias, reflectAlias, contextAlias string) error {
+	if sc.When == nil {
+		return fmt.Errorf("cenário sem \"when\"")
+	}
+	if sc.When.IsEvent {
+		return fmt.Errorf("\"when event ...\" (§22.4) é de Policy/Query — Test %s é de Saga, fora de escopo de H4", saga.Name)
+	}
+	if sc.Then == nil {
+		return fmt.Errorf("cenário sem \"then\"")
+	}
+	if sc.Then.Error != "" || len(sc.Then.Events) > 0 {
+		return fmt.Errorf("\"then [eventos]\"/\"then error\" (fora de um bloco {...}) são de Aggregate — Test %s é de Saga, use \"then { ... }\" (§22.3)", saga.Name)
+	}
+
+	// Reset: desfaz qualquer mock/fail-step de um cenário ANTERIOR (mesma
+	// suíte, mesmo pacote — ver a doc do arquivo).
+	e.Line("%sSteps = append([]%s.Step[%s](nil), %sStepsOriginal...)", st.base, runtimeAlias, st.stateType, st.base)
+
+	callFlags := make(map[string]string) // nome do Adapter -> var Go "<nome>Called"
+	for _, m := range sc.Mocks {
+		if err := emitSagaMock(e, sl, m, adapterByName, callFlags, contextAlias); err != nil {
+			return fmt.Errorf("mock: %w", err)
+		}
+	}
+	for _, f := range sc.Fails {
+		if err := emitSagaFailStep(e, st, f, errorsAlias, contextAlias); err != nil {
+			return fmt.Errorf("fail step: %w", err)
+		}
+	}
+
+	e.Line("state := &%s{}", st.stateType)
+	for _, g := range sc.Givens {
+		if err := emitSagaGiven(e, sl, g, saga); err != nil {
+			return fmt.Errorf("given: %w", err)
+		}
+	}
+
+	call, ok := sc.When.Action.(*ast.CallExpr)
+	if !ok {
+		return fmt.Errorf("when: esperava uma construção de Command (%q(...)), got %T", saga.Handles, sc.When.Action)
+	}
+	id, ok := call.Fn.(*ast.Ident)
+	if !ok || id.Name != saga.Handles {
+		return fmt.Errorf("when: esperava o Command %q (o que a Saga %s handles), got %T", saga.Handles, saga.Name, call.Fn)
+	}
+	cmdGo, hoisted, err := sl.ExprHoisted(call)
+	if err != nil {
+		return fmt.Errorf("when: %w", err)
+	}
+	emitLines(e, hoisted)
+	e.Line("cmd := %s", cmdGo)
+	emitSagaSeed(e, st.seedLines)
+
+	e.Line("res := %s(%s.Background(), state)", st.runStepsFn, contextAlias)
+	// _ = res garante que "res" está USADO mesmo quando TODO ThenAssert deste
+	// cenário é "called ..." (o único verbo que não lê res — ver
+	// emitSagaThenAssert): sem isto, um cenário só com "called" geraria "res
+	// declared and not used", um erro de COMPILAÇÃO, não só um `go vet`
+	// cosmético — achado sobre o Go de fato gerado, não uma hipótese.
+	e.Line("_ = res")
+
+	for _, a := range sc.Then.Asserts {
+		if err := emitSagaThenAssert(e, a, saga, st, callFlags, runtimeAlias, reflectAlias); err != nil {
+			return fmt.Errorf("then: %w", err)
+		}
+	}
+	return nil
+}
+
+// emitSagaGiven aplica UMA GivenClause (§22.3): "given state {...}" semeia
+// campos de state DIRETO (mesmo formato Go de emitStateOverlay, adaptado —
+// aqui "state" É o receptor, sem um "receiver.state." aninhado, ao
+// contrário de Aggregate). Outras formas (given [eventos]/given Subject
+// from [...]/given binding [...]) não fazem sentido para Saga (uma Saga não
+// tem Event/EventStore — ver a doc do arquivo) — erro de geração claro.
+func emitSagaGiven(e *emit.Emitter, sl *lower.StmtLowerer, g *ast.GivenClause, saga *ast.SagaDecl) error {
+	if g.State == nil || g.Entities != nil || g.Subject != nil || g.Binding != "" {
+		return fmt.Errorf("\"given [eventos]\"/\"given Subject from [...]\"/\"given binding [...]\" não se aplicam a uma Saga — Test %s, use \"given state {...}\" (§22.3)", saga.Name)
+	}
+	for _, entry := range g.State.Entries {
+		goExpr, hoisted, err := sl.ExprHoisted(entry.Value)
+		if err != nil {
+			return fmt.Errorf("state.%s: %w", entry.Key, err)
+		}
+		emitLines(e, hoisted)
+		e.Line("state.%s = %s", goname.ExportField(entry.Key), goExpr)
+	}
+	return nil
+}
+
+// emitSagaMock instala um mock para "mock Target returns X" (§22.3):
+// resolve Target a um Adapter deste módulo (adapterByName), constrói X
+// (hoisted — ver a doc do arquivo sobre por que X não desvia o fluxo) e
+// reatribui a var de pacote que Call<Nome>/Notify<Nome> invocam por baixo
+// (adapterCallVarName, decl_io.go) para uma closure que registra a chamada
+// (callFlags, para "then { called Target }") e sempre sucede.
+func emitSagaMock(e *emit.Emitter, sl *lower.StmtLowerer, m *ast.MockClause, adapterByName map[string]*ast.AdapterDecl, callFlags map[string]string, contextAlias string) error {
+	name := astutil.HeadName(m.Target)
+	if name == "" {
+		return fmt.Errorf("mock: esperava um Adapter nomeado, got %T", m.Target)
+	}
+	adapter, ok := adapterByName[name]
+	if !ok {
+		return fmt.Errorf("mock %s: não é um Adapter deste módulo (bug de geração — REQ-9/sema já deveriam ter barrado isso)", name)
+	}
+	fnVar := adapterCallVarName(adapter)
+	if fnVar == "" {
+		return fmt.Errorf("mock %s: Adapter sem forma HTTP nem FFI reconhecida (bug de geração)", name)
+	}
+
+	if m.Returns != nil {
+		goExpr, hoisted, err := sl.ExprHoisted(m.Returns)
+		if err != nil {
+			return fmt.Errorf("mock %s: returns: %w", name, err)
+		}
+		emitLines(e, hoisted)
+		// returns construído e validado (Go real) — Call<Nome>/Notify<Nome>
+		// devolvem só error (REQ-25.3): o valor não influencia o fluxo de
+		// negócio nesta fase (ver a doc do arquivo).
+		e.Line("_ = %s", goExpr)
+	}
+
+	flagVar := strings.ToLower(name[:1]) + name[1:] + "Called"
+	callFlags[name] = flagVar
+	e.Line("var %s bool", flagVar)
+	e.Block(fmt.Sprintf("%s = func(ctx %s.Context, n %s) error", fnVar, contextAlias, name), func() {
+		e.Line("%s = true", flagVar)
+		e.Line("return nil")
+	})
+	return nil
+}
+
+// emitSagaFailStep aplica "fail step Name with Err" (§22.3, ver a doc do
+// arquivo): troca <base>Steps[idx].Up por uma função que devolve um erro
+// SINTÉTICO (nunca runtime.BusinessError).
+func emitSagaFailStep(e *emit.Emitter, st *sagaScenarioState, f *ast.FailStep, errorsAlias, contextAlias string) error {
+	idx, ok := st.stepIndex[f.Step]
+	if !ok {
+		return fmt.Errorf("fail step %q: não é um step desta Saga (bug de geração — sema já deveria ter barrado isso)", f.Step)
+	}
+	msg := fmt.Sprintf("fail step %s: %s (simulado)", f.Step, f.With)
+	e.Block(fmt.Sprintf("%sSteps[%d].Up = func(ctx %s.Context, state *%s) error", st.base, idx, contextAlias, st.stateType), func() {
+		e.Line("return %s.New(%q)", errorsAlias, msg)
+	})
+	return nil
+}
+
+// emitSagaThenAssert emite UMA linha de "then { ... }" (§22.3): "saga
+// compensated" (Verb=="saga", Object=Ident "compensated" —
+// res.FinalState() == runtime.SagaCompensated), "compensated [steps]"
+// (Verb=="compensated", List de Ident — compara res.Compensated, NA ORDEM,
+// via reflect.DeepEqual) e "called Adapter" (Verb=="called", Object=Ident —
+// o Adapter foi mockado E invocado nesta execução). "Subject emitted .../
+// Subject released" ficam para uma fatia futura (ver a doc do arquivo).
+func emitSagaThenAssert(e *emit.Emitter, a *ast.ThenAssert, saga *ast.SagaDecl, st *sagaScenarioState, callFlags map[string]string, runtimeAlias, reflectAlias string) error {
+	switch {
+	case a.Verb == "saga":
+		obj, ok := a.Object.(*ast.Ident)
+		if !ok || obj.Name != "compensated" {
+			return fmt.Errorf("\"saga %v\" não suportado nesta fase de H4 (só \"saga compensated\")", a.Object)
+		}
+		e.Block(fmt.Sprintf("if res.FinalState() != %s.SagaCompensated", runtimeAlias), func() {
+			e.Line("t.Fatalf(%q, res)", "esperava a Saga compensada (FinalState == SagaCompensated), got %+v")
+		})
+		return nil
+
+	case a.Verb == "compensated":
+		names := make([]string, 0, len(a.List))
+		for _, el := range a.List {
+			id, ok := el.(*ast.Ident)
+			if !ok {
+				return fmt.Errorf("\"compensated [...]\": esperava nomes de step (identificadores nus), got %T", el)
+			}
+			if _, ok := st.stepIndex[id.Name]; !ok {
+				return fmt.Errorf("\"compensated [...]\": %q não é um step da Saga %s", id.Name, saga.Name)
+			}
+			names = append(names, id.Name)
+		}
+		quoted := make([]string, len(names))
+		for i, n := range names {
+			quoted[i] = strconv.Quote(n)
+		}
+		e.Line("wantCompensated := []string{%s}", strings.Join(quoted, ", "))
+		// gotCompensated normaliza res.Compensated (nil no caminho 100% feliz —
+		// RunSaga, rtsrc/saga.go.txt, nunca inicializa o slice quando o loop de
+		// compensação não roda) para um slice NÃO nil antes de comparar: um
+		// slice nil e um slice vazio são estruturalmente diferentes para
+		// reflect.DeepEqual, o que quebraria "then { compensated [] }" — a
+		// forma correta de provar "nenhum step foi compensado" (êxito total) —
+		// mesmo com wantCompensated corretamente vazio.
+		e.Line("gotCompensated := append([]string{}, res.Compensated...)")
+		e.Block(fmt.Sprintf("if !%s.DeepEqual(gotCompensated, wantCompensated)", reflectAlias), func() {
+			e.Line("t.Fatalf(%q, gotCompensated, wantCompensated)", "compensated: got %v, want %v (ordem REVERSA)")
+		})
+		return nil
+
+	case a.Verb == "called":
+		id, ok := a.Object.(*ast.Ident)
+		if !ok {
+			return fmt.Errorf("\"called ...\": esperava um Adapter nomeado, got %T", a.Object)
+		}
+		flagVar, ok := callFlags[id.Name]
+		if !ok {
+			return fmt.Errorf("\"called %s\": nenhum \"mock %s returns ...\" neste cenário (H4 exige mock antes de \"called\")", id.Name, id.Name)
+		}
+		e.Block(fmt.Sprintf("if !%s", flagVar), func() {
+			e.Line("t.Fatalf(%q)", "esperava "+id.Name+" chamado, não foi")
+		})
+		return nil
+
+	default:
+		return fmt.Errorf("forma de then não suportada para Saga nesta fase de H4 (verbo %q)", a.Verb)
 	}
 }
 

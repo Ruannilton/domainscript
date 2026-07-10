@@ -14,8 +14,14 @@ func callPaymentRequestForeign(ctx context.Context, n PaymentRequest) error {
 	return payment_gateway.ProcessPayment(ctx, string(n.PaymentId), n.Amount)
 }
 
+// callPaymentRequestForeignFn invoca a implementação real de callPaymentRequestForeign por padrão — var de pacote
+// (não uma chamada direta) para que um teste de Saga gerado (H4,
+// REQ-31.3, "mock ... returns ...") possa substituí-la e simular a
+// resposta do Adapter sem tocar no wiring de produção.
+var callPaymentRequestForeignFn = callPaymentRequestForeign
+
 // CallPaymentRequest é a chamada SÍNCRONA do Adapter PaymentRequest (REQ-25.3): o erro É
 // propagado ao chamador.
 func CallPaymentRequest(ctx context.Context, n PaymentRequest) error {
-	return callPaymentRequestForeign(ctx, n)
+	return callPaymentRequestForeignFn(ctx, n)
 }

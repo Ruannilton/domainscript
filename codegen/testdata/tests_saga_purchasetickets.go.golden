@@ -1,0 +1,73 @@
+package booking
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	errors "errors"
+	reflect "reflect"
+	testing "testing"
+)
+
+// purchaseTicketsStepsOriginal preserva os passos REAIS de purchaseTicketsSteps (decl_saga.go) —
+// cada cenário desta suíte restaura a partir daqui antes de aplicar
+// mock/fail step (§22.3, REQ-31.3): garante que a mutação de UM cenário
+// nunca vaze para o próximo (ver a doc do arquivo).
+var purchaseTicketsStepsOriginal = append([]runtime.Step[PurchaseTicketsState](nil), purchaseTicketsSteps...)
+
+// TestPurchaseTickets_SemMockNemFailStepCompletaSemCompensacao prova o cenário "sem mock nem fail step completa sem compensacao" de Test PurchaseTickets (§22.3, REQ-31).
+func TestPurchaseTickets_SemMockNemFailStepCompletaSemCompensacao(t *testing.T) {
+	purchaseTicketsSteps = append([]runtime.Step[PurchaseTicketsState](nil), purchaseTicketsStepsOriginal...)
+	state := &PurchaseTicketsState{}
+	state.OrderId = OrderId("O-1")
+	cmd := PurchaseTicketsCmd{OrderId: OrderId("O-1")}
+	state.OrderId = cmd.OrderId
+	res := purchaseTicketsRunSteps(context.Background(), state)
+	_ = res
+	wantCompensated := []string{}
+	gotCompensated := append([]string{}, res.Compensated...)
+	if !reflect.DeepEqual(gotCompensated, wantCompensated) {
+		t.Fatalf("compensated: got %v, want %v (ordem REVERSA)", gotCompensated, wantCompensated)
+	}
+}
+
+// TestPurchaseTickets_FalhaDeInfraNaConfirmacaoCompensaPagamentoEReservaEmOrdemReversa prova o cenário "falha de infra na confirmacao compensa pagamento e reserva em ordem reversa" de Test PurchaseTickets (§22.3, REQ-31).
+func TestPurchaseTickets_FalhaDeInfraNaConfirmacaoCompensaPagamentoEReservaEmOrdemReversa(t *testing.T) {
+	purchaseTicketsSteps = append([]runtime.Step[PurchaseTicketsState](nil), purchaseTicketsStepsOriginal...)
+	purchaseTicketsSteps[2].Up = func(ctx context.Context, state *PurchaseTicketsState) error {
+		return errors.New("fail step ConfirmPurchase: InfraError (simulado)")
+	}
+	state := &PurchaseTicketsState{}
+	state.OrderId = OrderId("O-1")
+	cmd := PurchaseTicketsCmd{OrderId: OrderId("O-1")}
+	state.OrderId = cmd.OrderId
+	res := purchaseTicketsRunSteps(context.Background(), state)
+	_ = res
+	if res.FinalState() != runtime.SagaCompensated {
+		t.Fatalf("esperava a Saga compensada (FinalState == SagaCompensated), got %+v", res)
+	}
+	wantCompensated := []string{"ProcessPayment", "ReserveTickets"}
+	gotCompensated := append([]string{}, res.Compensated...)
+	if !reflect.DeepEqual(gotCompensated, wantCompensated) {
+		t.Fatalf("compensated: got %v, want %v (ordem REVERSA)", gotCompensated, wantCompensated)
+	}
+}
+
+// TestPurchaseTickets_AdapterDePagamentoMockadoRegistraAChamada prova o cenário "adapter de pagamento mockado registra a chamada" de Test PurchaseTickets (§22.3, REQ-31).
+func TestPurchaseTickets_AdapterDePagamentoMockadoRegistraAChamada(t *testing.T) {
+	purchaseTicketsSteps = append([]runtime.Step[PurchaseTicketsState](nil), purchaseTicketsStepsOriginal...)
+	_ = true
+	var paymentRequestCalled bool
+	sendPaymentRequestFn = func(ctx context.Context, n PaymentRequest) error {
+		paymentRequestCalled = true
+		return nil
+	}
+	state := &PurchaseTicketsState{}
+	state.OrderId = OrderId("O-1")
+	cmd := PurchaseTicketsCmd{OrderId: OrderId("O-1")}
+	state.OrderId = cmd.OrderId
+	res := purchaseTicketsRunSteps(context.Background(), state)
+	_ = res
+	if !paymentRequestCalled {
+		t.Fatalf("esperava PaymentRequest chamado, não foi")
+	}
+}
