@@ -563,12 +563,40 @@
   que exercita `usecases.go`/`Wire` de verdade).
   **Deliberadamente adiado** (decisão explícita, não esquecimento — cada um é
   uma fatia comparável em tamanho às 2 primeiras, nenhuma exercitada por
-  wallet/shop hoje): Policy/Query (§22.4, `given binding [...]`, `when
-  event`, `emitted count N`); Saga com `mock`/`fail step` (§22.3 — exigiria
-  seams novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5);
-  `Fixture` como helper reusável (§22.6 — hoje só `TestDecl` é consumido,
-  `FixtureDecl` continua coletado em `moduleBucket.fixtures` sem emissor,
-  ver `codegen.go`).
+  wallet/shop hoje): Saga com `mock`/`fail step` (§22.3 — exigiria seams
+  novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5); `Fixture`
+  como helper reusável (§22.6 — hoje só `TestDecl` é consumido, `FixtureDecl`
+  continua coletado em `moduleBucket.fixtures` sem emissor, ver `codegen.go`).
+
+  **Policy/Query (§22.4) investigado e adiado — cadeia de achados (não
+  esquecimento, uma investigação real que aprofundou 3 vezes antes de
+  parar):** o exemplo do próprio spec (`given tickets [...]`, uma Policy que
+  varre Tickets por `eventId` e emite reembolsos) parecia, à primeira vista,
+  só precisar plugar `Lowerer.WithBuiltins` em `decl_policy.go` (ausente hoje
+  — `EmitPolicy` nunca chama, confirmado; o próprio arquivo já documenta essa
+  ausência como deliberada, "fica para quando um exemplo real precisar").
+  Investigação revelou 3 camadas, cada uma maior que a anterior:
+  (1) nem wallet nem shop têm uma Policy com corpo de negócio de verdade (o
+  único Policy do shop é `execute { return }`) — qualquer teste precisaria de
+  uma fixture sintética nova;
+  (2) `list`/`count` (E5.3, `lower/builtins.go`) já existe na lowering mas é
+  documentado como API PROVISÓRIA — nenhum seam do runtime (`EventStore`/
+  `Tx`/`Repository[T]`, os 3 únicos que existem) tem `.List`/`.Count`; é
+  Marco E8 ("Read Side"), adiado por TODA task anterior;
+  (3) mais fundo ainda: a cláusula `where` nem lowereiza por item — confirmado
+  em `codegen/lower/builtins_test.go:TestStmt_List_Synthetic_WithWhere`,
+  `list StatementEntry where true` vira `tx.List(ctx, true)` — o `where` é
+  avaliado UMA VEZ como booleano solto no escopo atual, não por item (não
+  existe conceito de parâmetro de item/lambda em lugar nenhum da lowering
+  hoje). Um `where eventId == "E1"` de verdade, varrendo vários Tickets,
+  precisaria desse conceito construído do zero.
+  Ou seja: "conectar builtins na Policy" na prática significa "redesenhar a
+  lowering de predicado por item" + "construir um Collection[T] real no
+  runtime" + "só então" plugar Policy + gerar o teste — 3 peças novas de
+  infraestrutura empilhadas antes de qualquer geração de teste, essencialmente
+  fatiar o Marco E8 inteiro. Fora do escopo de H4 (uma task de GERAÇÃO DE
+  TESTE sobre capacidade já existente, não de construção de Read Side) —
+  registrado aqui para a PRÓXIMA sessão não precisar redescobrir a cadeia.
   **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`,
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`
 
