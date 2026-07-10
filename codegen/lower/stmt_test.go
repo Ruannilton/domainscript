@@ -141,9 +141,15 @@ func TestStmt_For_CompletionCriterion_BreakAllNestedLabel(t *testing.T) {
 func TestStmt_Apply_DepositPerformed_RealWallet(t *testing.T) {
 	prog, l := newWalletLowerer(t)
 	agg := findAggregate(t, prog, "Wallet")
-	apply := agg.Appliers[0]
-	if apply.Event != "DepositPerformed" {
-		t.Fatalf("esperava Apply DepositPerformed como o 1º Applier, achei Apply %s — o exemplo mudou?", apply.Event)
+	var apply *ast.ApplyDecl
+	for _, a := range agg.Appliers {
+		if a.Event == "DepositPerformed" {
+			apply = a
+			break
+		}
+	}
+	if apply == nil {
+		t.Fatalf("esperava Apply DepositPerformed no Aggregate Wallet — o exemplo mudou?")
 	}
 	l.env.SeedApply(agg.Name, apply.Event)
 	l.BindGoName("event", "ev")

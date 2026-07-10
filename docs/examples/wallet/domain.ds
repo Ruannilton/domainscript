@@ -93,6 +93,19 @@ Aggregate Wallet {
         Withdraw requires caller.id == self.id
     }
 
+    // Apply WalletCreated não tem Handle correspondente (este exemplo não
+    // modela um "criar carteira" de ponta a ponta, §design codegen 6 "fixtures
+    // não são fonte de verdade") — existe para que testes nativos (*.test.ds,
+    // §22/H4) possam usar "given [WalletCreated(...), ...]" para semear uma
+    // carteira ativa e com saldo zerado em BRL antes de exercitar Deposit/
+    // Withdraw, sem depender de um fluxo de criação real.
+    Apply WalletCreated {
+        state.id = event.id
+        state.holder = event.holder
+        state.active = ActiveStatus(true)
+        state.balance = Money(0, "BRL")
+    }
+
     Handle Deposit(amount Money, description TransactionDescription) {
         ensure state.active == ActiveStatus(true) else InactiveWallet
         emit DepositPerformed(self.id, amount, description)

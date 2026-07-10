@@ -20,6 +20,8 @@ func LoadWallet(store runtime.EventLoader, id WalletId) (*Wallet, error) {
 	w.state.Id = id
 	for _, ev := range events {
 		switch ev := ev.(type) {
+		case *WalletCreated:
+			w.applyWalletCreated(*ev)
 		case *DepositPerformed:
 			w.applyDepositPerformed(*ev)
 		case *WithdrawalPerformed:

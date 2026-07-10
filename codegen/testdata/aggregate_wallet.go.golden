@@ -61,6 +61,20 @@ func (w *Wallet) Withdraw(caller runtime.Caller, amount Money, description Trans
 	return events, nil
 }
 
+// applyWalletCreated aplica o evento WalletCreated ao state do Aggregate Wallet (§4.5): infalível
+// por construção (o Handle que emitiu já validou antes de emitir).
+func (w *Wallet) applyWalletCreated(ev WalletCreated) {
+	state := &w.state
+	state.Id = ev.Id
+	state.Holder = ev.Holder
+	state.Active = ActiveStatus(true)
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(0), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	state.Balance = tmp1
+}
+
 // applyDepositPerformed aplica o evento DepositPerformed ao state do Aggregate Wallet (§4.5): infalível
 // por construção (o Handle que emitiu já validou antes de emitir).
 func (w *Wallet) applyDepositPerformed(ev DepositPerformed) {

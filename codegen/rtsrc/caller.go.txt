@@ -13,3 +13,32 @@ type Caller interface {
 	// HasRole reports whether the caller holds role.
 	HasRole(role string) bool
 }
+
+// testCaller is a minimal Caller stub used ONLY by generated tests (H4,
+// *.test.ds, §22) that invoke a Handle/UseCase directly — the DS test
+// grammar (given/when/then) has no syntax to express "as caller X", so
+// generated tests always call through NewTestCaller (below) instead of a
+// per-test type.
+type testCaller struct {
+	authenticated bool
+	id            string
+	roles         map[string]bool
+}
+
+func (c testCaller) Authenticated() bool      { return c.authenticated }
+func (c testCaller) ID() string               { return c.id }
+func (c testCaller) HasRole(role string) bool { return c.roles[role] }
+
+// NewTestCaller builds an authenticated Caller with the given id and roles —
+// used by generated *.test.ds tests to drive a Handle/UseCase's `access`
+// rule (§22): every generated scenario calls a Handle as an authenticated
+// caller whose id matches the target aggregate, satisfying both
+// `caller.authenticated` and `caller.id == self.id` style rules uniformly,
+// since given/when/then has no way to express access denial scenarios.
+func NewTestCaller(id string, roles ...string) Caller {
+	set := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		set[r] = true
+	}
+	return testCaller{authenticated: true, id: id, roles: set}
+}

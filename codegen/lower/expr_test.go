@@ -70,7 +70,7 @@ func lit(kind token.Kind, value string) *ast.Literal { return ast.NewLiteral(kin
 func TestExpr_BinaryVOOperatorDeclared_StateBalancePlusEventAmount(t *testing.T) {
 	prog, l := newWalletLowerer(t)
 	agg := findAggregate(t, prog, "Wallet")
-	apply := agg.Appliers[0] // Apply DepositPerformed
+	apply := findApply(t, agg, "DepositPerformed")
 	l.env.SeedApply(agg.Name, apply.Event)
 	l.BindGoName("event", "ev")
 
@@ -137,7 +137,7 @@ func TestExpr_Ident_NoOverride_Self(t *testing.T) {
 func TestExpr_Ident_WithOverride_EventToEv(t *testing.T) {
 	prog, l := newWalletLowerer(t)
 	agg := findAggregate(t, prog, "Wallet")
-	apply := agg.Appliers[0]
+	apply := findApply(t, agg, "DepositPerformed")
 	l.env.SeedApply(agg.Name, apply.Event)
 	l.BindGoName("event", "ev")
 

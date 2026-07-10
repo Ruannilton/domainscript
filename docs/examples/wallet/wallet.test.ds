@@ -15,6 +15,10 @@ Test Wallet {
         given [
             WalletCreated(id: "W1", holder: "Ana")
         ]
+        // Apply WalletCreated semeia active=true (ver domain.ds) — este
+        // segundo given sobrescreve state.active para exercitar o caminho de
+        // erro do Handle.
+        given state { active: false }
         when Deposit(amount: Money(10, "BRL"), description: "x")
         then error InactiveWallet
     }

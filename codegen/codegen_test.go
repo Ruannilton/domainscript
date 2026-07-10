@@ -110,6 +110,7 @@ func TestGenerateWalletFileInventory(t *testing.T) {
 		"wallet/usecases.go",
 		"wallet/views.go",
 		"wallet/queries.go",
+		"wallet/wallet_test.go", // H4, *.test.ds (wallet.test.ds declara Test Wallet)
 	} {
 		if !has(want) {
 			t.Errorf("esperava %q na lista de arquivos gerados, não achei:\n%v", want, paths)

@@ -10,6 +10,7 @@ import (
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/symbols"
+	"domainscript/token"
 	"domainscript/types"
 )
 
@@ -219,6 +220,20 @@ func (sl *StmtLowerer) Block(b *ast.Block) error {
 		}
 	}
 	return nil
+}
+
+// ExprHoisted expõe exprHoisted (o mecanismo de HOISTING do arquivo, ver a
+// doc acima) para chamadores FORA do pacote lower que precisam de uma
+// expressão Go de UM valor a partir de e — incl. uma construção de VO
+// composto, que Lowerer.Expr sozinho rejeitaria (ver constructVO) — mesmo
+// mecanismo que assignStmt/returnStmt/etc. já usam internamente. Usado por
+// codegen/gentest.go (H4, REQ-31): um argumento de "when Action(...)" ou um
+// evento construído em "given"/"then" (ex. "Money(100, \"BRL\")") passa por
+// aqui para virar "tmp1" + as linhas hoisted (NewMoney + checagem de erro,
+// conforme sl.ctx — StmtContext{Panics:true} para geração de teste, mesma
+// convenção de Apply) a emitir ANTES do statement que usa o resultado.
+func (sl *StmtLowerer) ExprHoisted(e ast.Expr) (string, []string, error) {
+	return sl.exprHoisted(e, sl.ctx)
 }
 
 // Stmt lowereiza um único statement, despachando por tipo concreto (REQ-22).
@@ -677,6 +692,10 @@ func (sl *StmtLowerer) hoistVOConstruct(vo *types.VOType, call *ast.CallExpr, ct
 	}
 	argGo := make([]string, len(argExprs))
 	for i, a := range argExprs {
+		if g, ok := sl.decimalLiteralArg(vo, i, a); ok {
+			argGo[i] = g
+			continue
+		}
 		g, err := sl.Expr(a)
 		if err != nil {
 			return "", nil, err
@@ -691,6 +710,34 @@ func (sl *StmtLowerer) hoistVOConstruct(vo *types.VOType, call *ast.CallExpr, ct
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	}
 	return tmp, lines, nil
+}
+
+// decimalLiteralArg reporta se o argumento de índice i de uma construção de
+// VO composto (vo.Fields[i].Type == "decimal") é um literal INT/FLOAT nu
+// (ex. "Money(0, \"BRL\")") — caso em que Lowerer.Expr sozinho devolveria o
+// texto cru do literal ("0"), que NÃO compila contra o parâmetro
+// runtime.Decimal de NewX (struct, sem conversão implícita de constante).
+// Mesma lacuna que codegen/vobody.go:lowerDecimalOperand já resolve para
+// corpos de VO (Valid/Operator) — aqui é o EQUIVALENTE para argumentos de
+// construção de VO composto em corpos de Handle/Apply/UseCase (E5.2+), nunca
+// exercitada antes de H4 (nenhum *.ds existente construía um VO composto com
+// um literal decimal nu num desses corpos). Só INT é tratado (runtimeAlias +
+// ".NewDecimalFromInt(N)"): FLOAT decimal nesta posição continua não
+// suportado, mesma lacuna documentada de lowerDecimalOperand — não
+// exercitada por nenhum caso real (§21/§22).
+func (sl *StmtLowerer) decimalLiteralArg(vo *types.VOType, i int, a ast.Expr) (string, bool) {
+	if i >= len(vo.Fields) {
+		return "", false
+	}
+	prim, ok := vo.Fields[i].Type.(*types.Primitive)
+	if !ok || prim.Name != "decimal" {
+		return "", false
+	}
+	lit, ok := a.(*ast.Literal)
+	if !ok || lit.Kind != token.INT {
+		return "", false
+	}
+	return fmt.Sprintf("%s.NewDecimalFromInt(%s)", sl.runtimeAlias, lit.Value), true
 }
 
 // voConstructArgsGoOrder devolve os Args de uma construção de VO na ORDEM

@@ -1,0 +1,103 @@
+package wallet
+
+import (
+	runtime "domainscript/generated/runtime"
+	errors "errors"
+	reflect "reflect"
+	testing "testing"
+)
+
+// TestWallet_DepositoNumaCarteiraAtiva prova o cenário "depósito numa carteira ativa" de Test Wallet (§22.1, REQ-31).
+func TestWallet_DepositoNumaCarteiraAtiva(t *testing.T) {
+	w := &Wallet{}
+	w.applyWalletCreated(WalletCreated{Id: "W1", Holder: "Ana"})
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(100), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	events, err := w.Deposit(runtime.NewTestCaller(string(w.state.Id)), tmp1, "Salário")
+	if err != nil {
+		t.Fatalf("esperava sucesso, erro inesperado: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("esperava 1 evento(s), got %d: %+v", len(events), events)
+	}
+	tmp2, err := NewMoney(runtime.NewDecimalFromInt(100), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	want0 := &DepositPerformed{Id: "W1", Amount: tmp2, Description: "Salário"}
+	if !reflect.DeepEqual(events[0], want0) {
+		t.Fatalf("evento[%d]: got %+v, want %+v", 0, events[0], want0)
+	}
+}
+
+// TestWallet_DepositoNumaCarteiraInativaFalha prova o cenário "depósito numa carteira inativa falha" de Test Wallet (§22.1, REQ-31).
+func TestWallet_DepositoNumaCarteiraInativaFalha(t *testing.T) {
+	w := &Wallet{}
+	w.applyWalletCreated(WalletCreated{Id: "W1", Holder: "Ana"})
+	w.state.Active = false
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(10), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	events, err := w.Deposit(runtime.NewTestCaller(string(w.state.Id)), tmp1, "x")
+	if err == nil {
+		t.Fatalf("esperava erro InactiveWallet, sucesso com eventos: %+v", events)
+	}
+	if !errors.Is(err, ErrInactiveWallet) {
+		t.Fatalf("esperava errors.Is(err, ErrInactiveWallet), got: %v", err)
+	}
+}
+
+// TestWallet_SaqueComSaldoSuficiente prova o cenário "saque com saldo suficiente" de Test Wallet (§22.1, REQ-31).
+func TestWallet_SaqueComSaldoSuficiente(t *testing.T) {
+	w := &Wallet{}
+	w.applyWalletCreated(WalletCreated{Id: "W1", Holder: "Ana"})
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(100), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	w.applyDepositPerformed(DepositPerformed{Id: "W1", Amount: tmp1, Description: "Salário"})
+	tmp2, err := NewMoney(runtime.NewDecimalFromInt(30), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	events, err := w.Withdraw(runtime.NewTestCaller(string(w.state.Id)), tmp2, "Mercado")
+	if err != nil {
+		t.Fatalf("esperava sucesso, erro inesperado: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("esperava 1 evento(s), got %d: %+v", len(events), events)
+	}
+	tmp3, err := NewMoney(runtime.NewDecimalFromInt(30), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	want0 := &WithdrawalPerformed{Id: "W1", Amount: tmp3, Description: "Mercado"}
+	if !reflect.DeepEqual(events[0], want0) {
+		t.Fatalf("evento[%d]: got %+v, want %+v", 0, events[0], want0)
+	}
+}
+
+// TestWallet_SaqueComSaldoInsuficienteFalha prova o cenário "saque com saldo insuficiente falha" de Test Wallet (§22.1, REQ-31).
+func TestWallet_SaqueComSaldoInsuficienteFalha(t *testing.T) {
+	w := &Wallet{}
+	w.applyWalletCreated(WalletCreated{Id: "W1", Holder: "Ana"})
+	tmp1, err := NewMoney(runtime.NewDecimalFromInt(20), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	w.applyDepositPerformed(DepositPerformed{Id: "W1", Amount: tmp1, Description: "Salário"})
+	tmp2, err := NewMoney(runtime.NewDecimalFromInt(50), "BRL")
+	if err != nil {
+		panic(err)
+	}
+	events, err := w.Withdraw(runtime.NewTestCaller(string(w.state.Id)), tmp2, "Mercado")
+	if err == nil {
+		t.Fatalf("esperava erro InsufficientBalance, sucesso com eventos: %+v", events)
+	}
+	if !errors.Is(err, ErrInsufficientBalance) {
+		t.Fatalf("esperava errors.Is(err, ErrInsufficientBalance), got: %v", err)
+	}
+}

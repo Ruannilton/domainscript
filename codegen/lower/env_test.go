@@ -92,6 +92,18 @@ func findHandle(t *testing.T, agg *ast.AggregateDecl, name string) *ast.HandleDe
 	return nil
 }
 
+// findApply acha o *ast.ApplyDecl de evento name dentro de um Aggregate.
+func findApply(t *testing.T, agg *ast.AggregateDecl, name string) *ast.ApplyDecl {
+	t.Helper()
+	for _, a := range agg.Appliers {
+		if a.Event == name {
+			return a
+		}
+	}
+	t.Fatalf("Apply %q não encontrado em %s — o exemplo mudou?", name, agg.Name)
+	return nil
+}
+
 // shapeName devolve o nome de t se for um *types.ShapeType, senão "".
 func shapeName(t types.Type) string {
 	if s, ok := t.(*types.ShapeType); ok {
@@ -139,7 +151,7 @@ func TestChildForIter_StateEntriesFromRealAggregate(t *testing.T) {
 	agg := findAggregate(t, prog, "Wallet")
 
 	// Semeia o escopo raiz igual a um Apply real (state = tipo do Aggregate).
-	apply := agg.Appliers[0] // Apply DepositPerformed
+	apply := findApply(t, agg, "DepositPerformed")
 	env.SeedApply(agg.Name, apply.Event)
 
 	// state.entries — o campo real do state do Wallet (AppendList<StatementEntry>).

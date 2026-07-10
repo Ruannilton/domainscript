@@ -305,6 +305,15 @@ type moduleBucket struct {
 	// viram upcast/downcast/route/lifecycle wiring dentro de cmd/<group>/
 	// main.go, ao lado das rotas HTTP que versionam (http.go).
 	versions []*ast.VersionDecl
+	// tests/fixtures (H4, REQ-31, spec §22) são os Test/Fixture de
+	// *.test.ds do módulo — consumidos por EmitTests (gentest.go), que emite
+	// um único "<pkg>_test.go" (package pkg, interno — precisa acessar
+	// state/id/applyX não-exportados dos Aggregates testados, ver a doc de
+	// gentest.go). fixtures ainda não tem emissor (fase futura de H4) —
+	// coletado por simetria com versions (§design), ignorado por
+	// generateModuleFiles hoje.
+	tests    []*ast.TestDecl
+	fixtures []*ast.FixtureDecl
 }
 
 // bucketModuleDecls percorre os arquivos de moduleName (prog.Files filtrados
@@ -319,6 +328,9 @@ type moduleBucket struct {
 // *ast.VersionDecl (G6, versions/*.ds, spec §17) É coletado (b.versions),
 // mas também não vira arquivo próprio — collectVersionDecls
 // (codegen/versioning.go) o reconsulta por GRUPO de service a partir daqui.
+// *ast.TestDecl (H4, *.test.ds, spec §22) É coletado (b.tests) e vira
+// "<pkg>_test.go" via EmitTests (gentest.go). *ast.FixtureDecl é coletado
+// (b.fixtures) mas ainda não tem emissor (fase futura de H4).
 func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 	var paths []string
 	for p := range prog.Files {
@@ -372,6 +384,10 @@ func bucketModuleDecls(prog *program.Program, moduleName string) moduleBucket {
 				b.versions = append(b.versions, n)
 			case *ast.MetricDecl:
 				b.metrics = append(b.metrics, n)
+			case *ast.TestDecl:
+				b.tests = append(b.tests, n)
+			case *ast.FixtureDecl:
+				b.fixtures = append(b.fixtures, n)
 			}
 		}
 	}
@@ -711,6 +727,17 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	}
 	if apiVersionsContent != nil {
 		files = append(files, File{Path: path.Join(pkg, "api_versions.go"), Content: apiVersionsContent})
+	}
+
+	// Testes nativos (H4, *.test.ds, spec §22, REQ-31): um único
+	// "<pkg>_test.go" — package pkg (interno, ver a doc de gentest.go).
+	// aggregates é o MESMO mapa já construído acima para EmitUseCases.
+	if len(b.tests) > 0 {
+		content, err := EmitTests(pkg, b.tests, model, tab, moduleName, reg, aggregates)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("%s_test.go: %w", pkg, err)
+		}
+		files = append(files, File{Path: path.Join(pkg, pkg+"_test.go"), Content: content})
 	}
 
 	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries, hasMetrics: hasMetrics}, nil

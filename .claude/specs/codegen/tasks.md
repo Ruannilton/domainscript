@@ -507,9 +507,43 @@
 - [ ] **H4** Testes gerados de `*.test.ds`: `given`/`when`/`then` (`ThenClause`/
   `ThenAssert`), `mock … returns`, `fail step X with InfraError`, `property`,
   `Fixture` → testes Go (`testing`). _(REQ-31, §design 3.14)_
-  **Conclusão:** `wallet.test.ds` gera `_test.go` que roda `go test` verde sobre o
-  gerado — fidelidade semântica (NFR-15).
-  **Commit:** `feat(codegen): geração de testes a partir de *.test.ds`
+  **Progresso parcial (1ª fatia, `gentest.go`):** cenário de Aggregate (§22.1) —
+  um `Test` cujo `Name` resolve a um `*ast.AggregateDecl` do módulo (mesmo
+  casamento por nome que `sema/rules_test_files.go:sagaSteps` já faz para
+  Saga) vira `func TestX(t *testing.T)`: `given [eventos]`/`given state{...}`
+  (qualquer nº, aplicados em ordem — a 2ª `given` de "carteira inativa"
+  sobrescreve `active` depois da 1ª) semeia o Aggregate direto (Apply real
+  quando existe; seed campo-a-campo por nome quando não, ex. `WalletCreated`
+  antes desta task — nunca via `EventStore`+`LoadX`, que quebraria no bootstrap
+  de um VO com Operator como `Money`, ver a doc de `gentest.go`); `when
+  Action(...)` despacha o Handle de mesmo nome (nunca o Command homônimo,
+  convenção Command↔Handle do wallet); `then [eventos]` (via
+  `reflect.DeepEqual`)/`then error Name` (via `errors.Is`) verifica o
+  resultado; todo caller gerado é `runtime.NewTestCaller(id do aggregate)`
+  (rtsrc/caller.go.txt) — a gramática de §22 não tem forma de expressar "como
+  o caller X", então acesso NEGADO não é testável nesta fase. Corrigido de
+  quebra: `docs/examples/wallet/domain.ds` ganhou `Apply WalletCreated`
+  (seedava nada antes — `WalletCreated` nunca tinha `Apply`, gap preexistente
+  que só este `given` expôs) e `codegen/lower` ganhou coerção de literal
+  INT→`runtime.NewDecimalFromInt` em argumento de construção de VO composto
+  (`hoistVOConstruct`, mesma lacuna que `vobody.go:lowerDecimalOperand` já
+  fechava para corpo de VO, nunca fechada para Handle/Apply/UseCase por falta
+  de caso de uso — `Money(0, "BRL")` foi o primeiro). `wallet.test.ds` (real,
+  com um 2º `given state { active: false }` acrescentado para a carteira
+  inativa) gera `wallet_test.go` que roda `go test` verde sobre o projeto
+  gerado inteiro (`TestEmitTestsWalletRunsGreen`) — fidelidade semântica
+  (NFR-15) sobre o alvo de conclusão nomeado por esta task.
+  **Deliberadamente adiado** (decisão explícita, não esquecimento — cada um é
+  uma fatia comparável em tamanho à 1ª, nenhuma exercitada por wallet/shop
+  hoje): UseCase (§22.2, `given Subject from [...]`, `then {emitted,
+  committed/rolledback}` — precisa de `EventStore`/UOW de verdade, não do
+  seed direto desta fase); Policy/Query (§22.4, `given binding [...]`, `when
+  event`, `emitted count N`); Saga com `mock`/`fail step` (§22.3 — exigiria
+  seams novos de injeção em `decl_saga.go`/Adapter); `property` (§22.5);
+  `Fixture` como helper reusável (§22.6 — hoje só `TestDecl` é consumido,
+  `FixtureDecl` continua coletado em `moduleBucket.fixtures` sem emissor,
+  ver `codegen.go`).
+  **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`
 
 - [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,
