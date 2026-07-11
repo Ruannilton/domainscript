@@ -4,9 +4,43 @@ import (
 	context "context"
 	runtime "domainscript/generated/runtime"
 	errors "errors"
+	rand "math/rand"
 	reflect "reflect"
 	testing "testing"
 )
+
+// dsPropStep guarda um passo executado durante uma property (§22.5, H4): o
+// Handle chamado, os argumentos concretos e o erro de negócio (se houver) —
+// usado só para reportar o contra-exemplo em caso de falha (t.Fatalf com
+// "%+v" sobre o []dsPropStep acumulado), nunca lido para nenhuma outra
+// finalidade.
+type dsPropStep struct {
+	Handle string
+	Args   []any
+	Err    error
+}
+
+// dsPropRandString gera uma string ASCII curta e não vazia — heurística
+// conservadora do gerador de property-based testing (§22.5): comprimento
+// 1-16, caracteres 'a'-'z', suficiente para os Valid predicates de
+// comprimento mais comuns (ex. "value.length() > 0"/"<= 140").
+func dsPropRandString(r *rand.Rand) string {
+	n := 1 + r.Intn(16)
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte('a' + r.Intn(26))
+	}
+	return string(b)
+}
+
+// dsPropPickString escolhe um valor de opts (não vazio, garantido pelo
+// chamador) — os "shared vars" de campo string de ValueObject composto
+// (ver a doc do arquivo) usam isto: um pool de 1 valor (o caso comum, ex.
+// só "BRL" aparece no *.test.ds) escolhe deterministicamente esse único
+// valor; mais de um explora entre eles por iteração.
+func dsPropPickString(r *rand.Rand, opts []string) string {
+	return opts[r.Intn(len(opts))]
+}
 
 // TestWallet_DepositoNumaCarteiraAtiva prova o cenário "depósito numa carteira ativa" de Test Wallet (§22.1, REQ-31).
 func TestWallet_DepositoNumaCarteiraAtiva(t *testing.T) {
@@ -100,6 +134,159 @@ func TestWallet_SaqueComSaldoInsuficienteFalha(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInsufficientBalance) {
 		t.Fatalf("esperava errors.Is(err, ErrInsufficientBalance), got: %v", err)
+	}
+}
+
+// TestWallet_SaldoNuncaFicaNegativo prova a property "saldo nunca fica negativo" de Test Wallet (§22.5, REQ-31.3): gera
+// 100 sequências aleatórias de até 20 passos (Deposit/Withdraw-like, ver a
+// doc do arquivo) e checa a invariante após cada transição bem-sucedida,
+// reportando a sequência completa como contra-exemplo em caso de falha.
+func TestWallet_SaldoNuncaFicaNegativo(t *testing.T) {
+	r := rand.New(rand.NewSource(6398026445632698174))
+	for iter := 0; iter < 100; iter++ {
+		sharedMoneyCurrency := dsPropPickString(r, []string{"BRL"})
+		w := &Wallet{}
+		var v1 WalletId
+		for attempt := 0; ; attempt++ {
+			if attempt > 1000 {
+				t.Fatalf("gerador de property (§22.5): não consegui produzir um WalletId válido em 1000 tentativas")
+			}
+			v2 := dsPropRandString(r)
+			cand3, err := NewWalletId(v2)
+			if err == nil {
+				v1 = cand3
+				break
+			}
+		}
+		w.state.Id = v1
+		var v4 Money
+		for attempt := 0; ; attempt++ {
+			if attempt > 1000 {
+				t.Fatalf("gerador de property (§22.5): não consegui produzir um Money válido em 1000 tentativas")
+			}
+			v5 := runtime.NewDecimalFromInt(r.Int63n(1_000_000))
+			cand6, err := NewMoney(v5, sharedMoneyCurrency)
+			if err == nil {
+				v4 = cand6
+				break
+			}
+		}
+		w.state.Balance = v4
+		var v7 ActiveStatus
+		for attempt := 0; ; attempt++ {
+			if attempt > 1000 {
+				t.Fatalf("gerador de property (§22.5): não consegui produzir um ActiveStatus válido em 1000 tentativas")
+			}
+			v8 := r.Intn(2) == 0
+			cand9, err := NewActiveStatus(v8)
+			if err == nil {
+				v7 = cand9
+				break
+			}
+		}
+		w.state.Active = v7
+		var v10 HolderName
+		for attempt := 0; ; attempt++ {
+			if attempt > 1000 {
+				t.Fatalf("gerador de property (§22.5): não consegui produzir um HolderName válido em 1000 tentativas")
+			}
+			v11 := dsPropRandString(r)
+			cand12, err := NewHolderName(v11)
+			if err == nil {
+				v10 = cand12
+				break
+			}
+		}
+		w.state.Holder = v10
+		caller := runtime.NewTestCaller(string(w.state.Id))
+		var trail []dsPropStep
+		n := 1 + r.Intn(20)
+		for step := 0; step < n; step++ {
+			var err error
+			var events []runtime.Event
+			switch r.Intn(2) {
+			case 0:
+				var v13 Money
+				for attempt := 0; ; attempt++ {
+					if attempt > 1000 {
+						t.Fatalf("gerador de property (§22.5): não consegui produzir um Money válido em 1000 tentativas")
+					}
+					v14 := runtime.NewDecimalFromInt(r.Int63n(1_000_000))
+					cand15, err := NewMoney(v14, sharedMoneyCurrency)
+					if err == nil {
+						v13 = cand15
+						break
+					}
+				}
+				var v16 TransactionDescription
+				for attempt := 0; ; attempt++ {
+					if attempt > 1000 {
+						t.Fatalf("gerador de property (§22.5): não consegui produzir um TransactionDescription válido em 1000 tentativas")
+					}
+					v17 := dsPropRandString(r)
+					cand18, err := NewTransactionDescription(v17)
+					if err == nil {
+						v16 = cand18
+						break
+					}
+				}
+				events, err = w.Deposit(caller, v13, v16)
+				trail = append(trail, dsPropStep{Handle: "Deposit", Args: []any{v13, v16}, Err: err})
+			case 1:
+				var v19 Money
+				for attempt := 0; ; attempt++ {
+					if attempt > 1000 {
+						t.Fatalf("gerador de property (§22.5): não consegui produzir um Money válido em 1000 tentativas")
+					}
+					v20 := runtime.NewDecimalFromInt(r.Int63n(1_000_000))
+					cand21, err := NewMoney(v20, sharedMoneyCurrency)
+					if err == nil {
+						v19 = cand21
+						break
+					}
+				}
+				var v22 TransactionDescription
+				for attempt := 0; ; attempt++ {
+					if attempt > 1000 {
+						t.Fatalf("gerador de property (§22.5): não consegui produzir um TransactionDescription válido em 1000 tentativas")
+					}
+					v23 := dsPropRandString(r)
+					cand24, err := NewTransactionDescription(v23)
+					if err == nil {
+						v22 = cand24
+						break
+					}
+				}
+				events, err = w.Withdraw(caller, v19, v22)
+				trail = append(trail, dsPropStep{Handle: "Withdraw", Args: []any{v19, v22}, Err: err})
+			}
+			if err != nil {
+				continue
+			}
+			for _, ev := range events {
+				switch ev := ev.(type) {
+				case *WalletCreated:
+					w.applyWalletCreated(*ev)
+				case *DepositPerformed:
+					w.applyDepositPerformed(*ev)
+				case *WithdrawalPerformed:
+					w.applyWithdrawalPerformed(*ev)
+				default:
+					t.Fatalf("gerador de property (§22.5): evento inesperado retornado por um Handle: %T", ev)
+				}
+			}
+			tmp1, err := NewMoney(runtime.NewDecimalFromInt(0), "BRL")
+			if err != nil {
+				panic(err)
+			}
+			tmp2, err := w.state.Balance.Gte(tmp1)
+			if err != nil {
+				panic(err)
+			}
+			if !(tmp2) {
+				t.Fatalf("propriedade %q violada (iteração %d): sequência de passos %+v", "saldo nunca fica negativo", iter, trail)
+			}
+		}
 	}
 }
 

@@ -668,9 +668,82 @@
   (análogo ao `ucSubjects` de §22.2, mas para dentro de um passo de Saga),
   maior que o resto desta fatia; nenhuma fixture real (wallet/shop) tem uma
   Saga que emite eventos hoje.
-  **Deliberadamente adiado** (decisão explícita, não esquecimento — cada um é
-  uma fatia comparável em tamanho às anteriores, nenhuma exercitada por
-  wallet/shop hoje): `property` (§22.5).
+  **Progresso parcial (5ª fatia, `gentest_property.go`):** `property`
+  (§22.5, REQ-31.3) — um `Test` cujo `Name` resolve a um `*ast.AggregateDecl`
+  e declara `t.Properties` (checado depois dos `t.Scenarios` do mesmo Test,
+  mesmo mapa `used` de `scenarioFuncName` para nunca colidir num nome de
+  função Go) vira `func TestX(t *testing.T)`: `forall sequence of [Handle,
+  ...]` (`ast.PropertyDecl.Forall`, um `ast.ListExpr` de `ast.Ident`,
+  `resolveForallHandles`) nomeia HANDLES, não chamadas concretas — os
+  argumentos de CADA passo, em CADA sequência, são sintetizados por um
+  gerador ALEATÓRIO type-driven escrito à mão sobre `math/rand`
+  (`propGen.genValue`, NFR-12: zero dependência externa no Go gerado, nunca
+  um framework de QuickCheck): um primitivo vira uma expressão direta; um
+  ValueObject (wrapper ou composto) usa um laço `for attempt` que resorteia
+  os campos e chama `New<VO>` até `err == nil`, com um teto
+  `propGenMaxAttempts` como defesa contra um `Valid` tão restritivo que o
+  gerador nunca o satisfaça. `ast.PropertyDecl` NÃO tem `GivenClause`
+  nenhuma (confirmado em `ast/test.go`/`parser/parse_testfile.go`) — começar
+  de um Aggregate zero-value tornaria a property vazia na prática (ex.
+  `state.active` ficaria `false`, e todo Handle que depende de
+  `state.active == ActiveStatus(true)` falharia em TODA chamada, a
+  invariante nunca seria exercitada por uma transição bem-sucedida); por
+  isso cada campo de `agg.State` que o gerador suporta recebe um seed
+  aleatório válido ANTES de cada sequência (mesma filosofia "seed direto" de
+  `emitFieldSeed`), e um campo de tipo não suportado (ex.
+  `AppendList<StatementEntry>`) fica no seu Go zero-value. Um problema de
+  consistência entre instâncias apareceu com `Money`: seus `Operator`s
+  exigem `currency == other.currency`, e como `Apply` é infalível-por-
+  construção (`StmtContext{Panics: true}`), um `Money` aleatório cujo
+  `currency` divergisse do já seedado em `state.balance` PANICARIA o teste
+  gerado a cada iteração — a saída (`literalPool`, sem hardcoded nenhum nome
+  de campo) colhe, do próprio `*.test.ds` (`pr.Forall`/`pr.Invariant`), todo
+  literal STRING passado a um campo string de um ValueObject composto (ex.
+  `"BRL"` do invariant do wallet real) e usa um "shared var" sorteado UMA
+  VEZ por iteração (nunca por construção) para aquele (VOType, campo),
+  reusado tanto no seed do state quanto em toda chamada de Handle da mesma
+  iteração — um (VOType, campo) sem exemplo colhido cai de volta a texto
+  aleatório puro (lacuna documentada: um domínio com mais de uma currency
+  legítima arriscaria `CurrencyMismatch`, não exercitado pelo wallet real).
+  A invariante é lowerizada UMA VEZ (`sl.ExprHoisted`, `state` vinculado a
+  `<receiver>.state`, mesma convenção de `emitHandle`) e checada DEPOIS de
+  aplicar os eventos de cada chamada bem-sucedida (`emitApplyDispatch`,
+  reusa a MESMA correspondência Event→apply<Event> que `LoadX` EventSourced
+  já usa — fidelidade semântica, NFR-15); uma chamada que devolve erro de
+  negócio só faz `continue` (REQ-31.3: a invariante é sobre o state
+  alcançado por transições BEM-SUCEDIDAS, não sobre quais chamadas
+  sucedem). O contra-exemplo (REQ-31.3) é a sequência COMPLETA de passos
+  executados até e incluindo o que violou a invariante (`[]dsPropStep`
+  acumulado, `t.Fatalf` com `%+v` sobre o slice inteiro) — shrinking (o
+  PREFIXO mínimo que ainda viola) não é implementado, documentado como
+  evolução futura sem nenhum exemplo real do spec que precise dele.
+  Determinismo (NFR-13): cada property roda com
+  `rand.New(rand.NewSource(<literal>))`, onde `<literal>` é um `int64`
+  calculado em TEMPO DE GERAÇÃO via FNV-1a sobre `Test.Name`/`Property.Name`
+  (`propertySeed`) — o mesmo Test+property produz sempre o mesmo literal no
+  Go gerado (regenerar não muda um byte) e o teste gerado reproduz sempre a
+  mesma sequência de valores aleatórios a cada execução (a exploração é
+  aleatória entre properties/execuções diferentes do GERADOR, nunca dentro
+  da mesma property já gerada — uma falha é sempre reproduzível relendo o
+  próprio `_test.go`). `propGenIterations`/`propGenMaxSteps` (100 × até 20
+  passos) são fixos e conservadores (a gramática de §22.5 não declara
+  nenhum parâmetro para isso). `wallet.test.ds` ganhou `property "saldo
+  nunca fica negativo" { forall sequence of [Deposit, Withdraw] invariant
+  state.balance >= Money(0, "BRL") }` (o exemplo do próprio spec, adaptado —
+  o wallet real só tem `Deposit`/`Withdraw`, não há `Transfer`) — provado
+  via golden + determinismo + smoke-compile + `TestEmitTestsWalletRunsGreen`
+  (o `go test` real sobre o projeto gerado INTEIRO agora também roda
+  `TestWallet_SaldoNuncaFicaNegativo`, a prova de que a invariante genuinamente
+  se sustenta sobre o domínio real ao longo de milhares de transições
+  exploradas). Explicitamente NÃO coberto: qualquer `Test` de property que
+  resolva a um UseCase/Saga (erro de geração claro — REQ-31.3 exemplifica
+  property só sobre Aggregate); tipos de parâmetro fora de
+  integer/decimal/string/boolean e ValueObject wrapper/composto sobre esses
+  (Enum, Generic/coleção, Shape — não exercitados por nenhum Handle do
+  wallet real).
+  **Deliberadamente adiado:** nada mais fica pendente das quatro formas de
+  §22 cobertas por H4 (Aggregate/UseCase/Saga/property/Fixture) além de
+  Policy/Query, abaixo.
 
   **Policy/Query (§22.4) investigado e adiado — cadeia de achados (não
   esquecimento, uma investigação real que aprofundou 3 vezes antes de
@@ -704,7 +777,8 @@
   **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`,
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`,
   `feat(codegen): geração de testes a partir de *.test.ds (Fixture reusável)`,
-  `feat(codegen): geração de testes a partir de *.test.ds (cenário de Saga)`
+  `feat(codegen): geração de testes a partir de *.test.ds (cenário de Saga)`,
+  `feat(codegen): geração de testes a partir de *.test.ds (property-based)`
 
 - [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,

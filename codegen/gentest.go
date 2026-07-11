@@ -27,16 +27,18 @@ import (
 // §22 declara sete formas de cenário cruzando 4 famílias de alvo (Aggregate,
 // UseCase, Policy/Query, Saga) mais mock/fail-step/property/Fixture (REQ-
 // 31.1-4). Esta fase cobre §22.1 (Aggregate), §22.2 (UseCase), §22.3 (Saga,
-// mock/fail-step) e §22.6 (Fixture): um Test cujo Name resolve a um
+// mock/fail-step), §22.5 (property, só sobre Aggregate — ver "--- property"
+// abaixo) e §22.6 (Fixture): um Test cujo Name resolve a um
 // *ast.AggregateDecl, *ast.UseCaseDecl OU *ast.SagaDecl DESTE módulo —
 // achado por casamento de nome exato contra o mapa recebido (mesmo padrão de
 // sema/rules_test_files.go:sagaSteps, que já faz esse casamento por nome
-// para Saga) — e cada *ast.FixtureDecl "Subject from [eventos]" (helper
-// reusável, ver a doc de emitFixtureDecl). Policy/Query (§22.4, emitted
-// count sem Subject)/property (§22.5) ficam para fases seguintes — um Test
-// cujo nome não resolve a um Aggregate, UseCase NEM Saga deste módulo, ou
-// cujo cenário usa uma forma ainda não coberta, é um erro de geração claro
-// agora, nunca gerado silenciosamente errado.
+// para Saga) — cada ast.PropertyDecl de um Test que resolveu a um Aggregate
+// (ver a doc de emitAggregatePropertyDecls), e cada *ast.FixtureDecl
+// "Subject from [eventos]" (helper reusável, ver a doc de emitFixtureDecl).
+// Policy/Query (§22.4, emitted count sem Subject) fica para uma fase
+// seguinte — um Test cujo nome não resolve a um Aggregate, UseCase NEM Saga
+// deste módulo, ou cujo cenário/property usa uma forma ainda não coberta, é
+// um erro de geração claro agora, nunca gerado silenciosamente errado.
 //
 // --- given: seed direto, não replay de EventStore (achado documentado) ---
 //
@@ -151,7 +153,7 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 	}
 	e := emit.New(pkg)
 	e.Import("testing")
-	needsErrors, needsReflect, needsContext := scanTestNeeds(decls, aggregates, usecases, sagas)
+	needsErrors, needsReflect, needsContext, needsRand := scanTestNeeds(decls, aggregates, usecases, sagas)
 	var errorsAlias, reflectAlias, contextAlias string
 	if needsErrors {
 		errorsAlias = e.Import("errors")
@@ -163,30 +165,49 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 		contextAlias = e.Import("context")
 	}
 	runtimeAlias := e.Import(RuntimeImportPath)
+	if needsRand {
+		// Os helpers de property (§22.5, ver gentest_property.go) são
+		// package-level, únicos por arquivo — emitidos aqui, uma vez, ANTES
+		// de qualquer func TestX que os use (Go não exige ordem de
+		// declaração, mas isso deixa o arquivo gerado mais legível: helpers
+		// primeiro, testes depois). emitPropertyHelpers registra o import de
+		// "math/rand" (Emitter.Import é idempotente por path — todo outro
+		// ponto que precisa do alias, ex. emitAggregatePropertyDecls, chama
+		// e.Import("math/rand") de novo e recebe o MESMO alias, sem precisar
+		// que este seja passado adiante como parâmetro).
+		emitPropertyHelpers(e)
+	}
 
 	for _, t := range decls {
-		if len(t.Properties) > 0 {
-			return nil, fmt.Errorf("Test %s: \"property\" (§22.5) ainda não é suportado nesta fase de H4", t.Name)
-		}
+		used := make(map[string]int)
 		if agg, ok := aggregates[t.Name]; ok {
-			if err := emitAggregateTestDecl(e, t, agg, model, tab, module, reg, runtimeAlias, errorsAlias, reflectAlias); err != nil {
+			if err := emitAggregateTestDecl(e, t, agg, model, tab, module, reg, runtimeAlias, errorsAlias, reflectAlias, used); err != nil {
+				return nil, fmt.Errorf("Test %s: %w", t.Name, err)
+			}
+			if err := emitAggregatePropertyDecls(e, t, agg, model, tab, module, reg, runtimeAlias, used); err != nil {
 				return nil, fmt.Errorf("Test %s: %w", t.Name, err)
 			}
 			continue
 		}
 		if uc, ok := usecases[t.Name]; ok {
+			if len(t.Properties) > 0 {
+				return nil, fmt.Errorf("Test %s: \"property\" (§22.5) só é suportado sobre um Aggregate nesta fase de H4 (Test %s resolve a um UseCase, ver a doc do arquivo)", t.Name, t.Name)
+			}
 			if err := emitUseCaseTestDecl(e, t, uc, model, tab, module, reg, runtimeAlias, errorsAlias, reflectAlias, contextAlias); err != nil {
 				return nil, fmt.Errorf("Test %s: %w", t.Name, err)
 			}
 			continue
 		}
 		if saga, ok := sagas[t.Name]; ok {
+			if len(t.Properties) > 0 {
+				return nil, fmt.Errorf("Test %s: \"property\" (§22.5) só é suportado sobre um Aggregate nesta fase de H4 (Test %s resolve a uma Saga, ver a doc do arquivo)", t.Name, t.Name)
+			}
 			if err := emitSagaTestDecl(e, t, saga, model, tab, module, reg, adapterByName, runtimeAlias, errorsAlias, reflectAlias, contextAlias); err != nil {
 				return nil, fmt.Errorf("Test %s: %w", t.Name, err)
 			}
 			continue
 		}
-		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate, UseCase nem Saga deste módulo — só §22.1/22.2/22.3 são suportados nesta fase de H4", t.Name)
+		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate, UseCase nem Saga deste módulo — só §22.1/22.2/22.3/22.5 são suportados nesta fase de H4", t.Name)
 	}
 
 	for _, f := range fixtures {
@@ -208,14 +229,19 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 // "fail step" (emite errors.New — ver emitSagaFailStep); needsReflect
 // também quando ao menos um ThenAssert usa "compensated [...]" (reflect.
 // DeepEqual sobre a ordem de compensação — ver emitSagaThenAssert).
-func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl) (needsErrors, needsReflect, needsContext bool) {
+// needsRand é true quando ao menos um Test resolve a um Aggregate E declara
+// ao menos uma property (§22.5, ver gentest_property.go) — "math/rand" e os
+// dois helpers package-level só são emitidos nesse caso.
+func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl) (needsErrors, needsReflect, needsContext, needsRand bool) {
 	for _, t := range decls {
-		if _, isAgg := aggregates[t.Name]; !isAgg {
-			if _, isUC := usecases[t.Name]; isUC {
-				needsContext = true
-			} else if _, isSaga := sagas[t.Name]; isSaga {
-				needsContext = true
+		if agg, isAgg := aggregates[t.Name]; isAgg {
+			if len(t.Properties) > 0 && agg != nil {
+				needsRand = true
 			}
+		} else if _, isUC := usecases[t.Name]; isUC {
+			needsContext = true
+		} else if _, isSaga := sagas[t.Name]; isSaga {
+			needsContext = true
 		}
 		for _, sc := range t.Scenarios {
 			if len(sc.Fails) > 0 {
@@ -243,11 +269,16 @@ func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDe
 			}
 		}
 	}
-	return needsErrors, needsReflect, needsContext
+	return needsErrors, needsReflect, needsContext, needsRand
 }
 
-// emitAggregateTestDecl emite um func TestX por scenario de t (§22.1).
-func emitAggregateTestDecl(e *emit.Emitter, t *ast.TestDecl, agg *ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias, errorsAlias, reflectAlias string) error {
+// emitAggregateTestDecl emite um func TestX por scenario de t (§22.1). used
+// acumula os nomes de função já atribuídos (scenarioFuncName) — o CHAMADOR
+// (EmitTests) cria um único mapa por Test e o compartilha com
+// emitAggregatePropertyDecls (mesmo Test, mesmo prefixo "Test<Nome>_..."),
+// para que um scenario e uma property de nomes iguais não colidam no mesmo
+// nome de função Go.
+func emitAggregateTestDecl(e *emit.Emitter, t *ast.TestDecl, agg *ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias, errorsAlias, reflectAlias string, used map[string]int) error {
 	applyByEvent := make(map[string]bool, len(agg.Appliers))
 	for _, a := range agg.Appliers {
 		applyByEvent[a.Event] = true
@@ -263,7 +294,6 @@ func emitAggregateTestDecl(e *emit.Emitter, t *ast.TestDecl, agg *ast.AggregateD
 		}
 	}
 
-	used := make(map[string]int)
 	for i, sc := range t.Scenarios {
 		fn := scenarioFuncName(t.Name, i, sc.Name, used)
 

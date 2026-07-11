@@ -40,6 +40,19 @@ Test Wallet {
         when Withdraw(amount: Money(50, "BRL"), description: "Mercado")
         then error InsufficientBalance
     }
+
+    // property (§22.5, H4): o wallet real só tem Deposit/Withdraw (não há
+    // Transfer, ao contrário do exemplo ilustrativo do spec) — a sequência
+    // aleatória alterna entre os dois, e a invariante ("saldo nunca fica
+    // negativo") precisa se manter após CADA transição bem-sucedida,
+    // independente de quantos depósitos/saques a sequência encadear. O
+    // literal "BRL" aqui é também a ÚNICA moeda que o gerador de teste
+    // (codegen/gentest_property.go) usa para toda Money sorteada nesta
+    // property — ver a doc daquele arquivo sobre "shared vars".
+    property "saldo nunca fica negativo" {
+        forall sequence of [Deposit, Withdraw]
+        invariant state.balance >= Money(0, "BRL")
+    }
 }
 
 // Test PerformDeposit — asserção transacional sobre o UseCase PerformDeposit
