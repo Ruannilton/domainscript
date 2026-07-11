@@ -116,26 +116,6 @@ func NewQuery[T any]() Query[T] {
 	return Query[T]{Skip: -1, Take: -1}
 }
 
-// Infallible adapts a predicate with no error path (func(T) bool — the exact
-// shape lower/stmt.go's hoistQueryPredicate still produces, H4 §22.4) to the
-// signature Query[T].Where requires (func(T) (bool, error), REQ-36.2). It is
-// the bridge this cycle's task I0.1 uses to migrate ListCall/CountCall
-// (lower/builtins.go) onto Select/Count without touching hoistQueryPredicate
-// itself — real fallible predicates (a condition that needs hoisting, e.g. a
-// composite VO construction inside "where") are task I1's job (REQ-36.1),
-// which is expected to make hoistQueryPredicate emit the fallible body
-// directly and stop needing this adapter for those cases; a predicate that
-// never fails (every case in this task's scope) still goes through it,
-// always returning a nil error. A nil pred maps to a nil result (Query[T].
-// Where == nil already means "match everything" — see SelectSlice), so
-// Infallible(nil) does not panic when later called.
-func Infallible[T any](pred func(T) bool) func(T) (bool, error) {
-	if pred == nil {
-		return nil
-	}
-	return func(item T) (bool, error) { return pred(item), nil }
-}
-
 // memoryCollection is a thread-safe, in-process Collection[T] backed by a
 // slice kept in insertion order.
 type memoryCollection[T any] struct {

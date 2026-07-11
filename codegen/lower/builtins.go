@@ -16,15 +16,16 @@ import (
 //     (convenção de nome Load<T>, cuja implementação real é E6.2).
 //   - list T [where ...] [as V] / count [where ...] → desde H4 (§22.4),
 //     backed de verdade por runtime.Collection[T] (rtsrc/collection.go.txt):
-//     "where" vira um PREDICADO POR ITEM ("func(item T) bool { ... }" — ver
-//     stmt.go, hoistQueryPredicate), não mais um bool solto avaliado uma
-//     única vez (a forma anterior a esta task, insuficiente para filtrar de
-//     verdade — documentada como achado em hoistQueryPredicate). Desde o
-//     ciclo Read Side (REQ-33/REQ-36/REQ-38, §design read-side 2), o
-//     predicado entra num runtime.Query[T]{Where: ...} consumido por
-//     Collection[T].Select/Count — ver a doc de ListCall/CountCall/
-//     queryLiteral, abaixo, sobre a ponte de assinatura (Infallible) e o
-//     que ainda falta (orderBy/skip/take/joins, tasks I2+).
+//     "where" vira um PREDICADO POR ITEM ("func(item T) (bool, error) { ...
+//     }" — ver stmt.go, hoistQueryPredicate), não mais um bool solto
+//     avaliado uma única vez (a forma anterior a H4, insuficiente para
+//     filtrar de verdade). Desde o ciclo Read Side (REQ-33/REQ-36/REQ-38,
+//     §design read-side 2), o predicado entra num runtime.Query[T]{Where:
+//     ...} consumido por Collection[T].Select/Count, JÁ na forma fallível
+//     exigida por Query[T].Where — ver a doc de ListCall/CountCall/
+//     queryLiteral, abaixo, e a doc de hoistQueryPredicate (stmt.go) sobre
+//     como o corpo do predicado acomoda hoisting (I1.1, fecha G-8). O que
+//     ainda falta é orderBy/skip/take/joins (tasks I2+).
 //   - exists (QueryExpr pós-fixo de "ensure X exists") → checagem estrutural
 //     "X != nil" sobre um Aggregate já carregado; a semântica completa
 //     (infra vs. não-encontrado vs. idempotência) é G2.
@@ -385,32 +386,29 @@ func (b *BuiltinLowerer) LoadCall(typeName, idGo string) string {
 // (REQ-33/REQ-36/REQ-38, §design read-side 2), <query> é um
 // "<runtimeAlias>.Query[<itemGoType>]{...}" — a evolução do antigo
 // "<store>.List(<ctx>, <predicado>)" (H4, §22.4), que somou junto com
-// runtime.Collection[T].List/Count nesta task (I0.1). predGo continua vindo
-// de hoistQueryPredicate (stmt.go) EXATAMENTE na forma de hoje — "nil" (texto
-// Go literal) quando a QueryExpr não tem cláusula "where", ou um
-// "func(item T) bool { ... }" quando tem — porque a assinatura fallível do
-// predicado (func(T) (bool, error), REQ-36.2) é hoisting de VERDADE (I1), não
-// desta task: aqui só a PONTE muda. itemGoType é o tipo Go do item (T de
-// Query[T] — obrigatório porque um composite literal genérico não infere T
-// do contexto como uma chamada genérica infere; ver
-// StmtLowerer.hoistList/hoistCount, que o calculam via TypeEnv.ItemTypeOf, o
-// MESMO mecanismo que hoistQueryPredicate já usa para vincular o binding).
+// runtime.Collection[T].List/Count em I0.1. predGo vem de
+// hoistQueryPredicate (stmt.go): "nil" (texto Go literal) quando a QueryExpr
+// não tem cláusula "where", ou um "func(item T) (bool, error) { ... }"
+// quando tem — desde I1.1, JÁ na assinatura que Query[T].Where exige
+// (REQ-36.2) diretamente, sem nenhuma ponte de adaptação (ver a doc de
+// hoistQueryPredicate sobre como o corpo do predicado acomoda hoisting —
+// I1.1, fecha G-8). itemGoType é o tipo Go do item (T de Query[T] —
+// obrigatório porque um composite literal genérico não infere T do contexto
+// como uma chamada genérica infere; ver StmtLowerer.hoistList/hoistCount,
+// que o calculam via TypeEnv.ItemTypeOf, o MESMO mecanismo que
+// hoistQueryPredicate já usa para vincular o binding).
 //
-// A ponte "func(T) bool" -> "func(T) (bool, error)" (Query[T].Where) é
-// queryLiteral (abaixo): quando predGo é "nil", o campo Where fica de fora do
-// literal (Query[T]{} vazio == nenhum filtro, mesmo contrato do antigo "List
-// (ctx, nil)"); quando predGo é uma lambda de verdade, ela entra envolta em
-// "<runtimeAlias>.Infallible(...)" — um adaptador genérico do runtime
-// (rtsrc/collection.go.txt) que só troca a assinatura (a condição continua,
-// nesta task, incapaz de falhar — REQ-36.3, "sem hoisting" é sempre o caso
-// aqui: hoistQueryPredicate JÁ rejeita qualquer condição que precisasse de
-// hoisting, ver sua doc). Decisão de design (I0.1): preferida a costurar o
-// texto de predGo (frágil — dependeria do formato exato que
-// hoistQueryPredicate produz) ou a duplicar a lógica de hoistQueryPredicate
-// só para trocar a última linha (redesenho de verdade, que é I1). Infallible
-// é removido/superado quando I1 fizer hoistQueryPredicate emitir a forma
-// fallível diretamente (REQ-36.3: condição sem hoisting continua "return
-// cond, nil", sem embrulho).
+// queryLiteral (abaixo) monta o literal Query[T]{...}: quando predGo é
+// "nil", o campo Where fica de fora do literal (Query[T]{} vazio == nenhum
+// filtro, mesmo contrato do antigo "List(ctx, nil)"); quando predGo é uma
+// lambda de verdade, ela entra DIRETO no campo Where, sem embrulho — até
+// I1.1, essa ponte era "<runtimeAlias>.Infallible(predGo)" (I0.1: predGo
+// ainda era "func(T) bool", sem error, e Infallible adaptava a assinatura
+// sem tocar hoistQueryPredicate; ver o histórico em git log se precisar da
+// forma exata). Com hoistQueryPredicate emitindo (bool, error) diretamente,
+// Infallible ficou sem nenhum chamador — removido do runtime
+// (rtsrc/collection.go.txt) junto com esta mudança (I1.1), não deixado como
+// hook especulativo sem uso.
 //
 // typeName é o nome nu do tipo listado (Target de qe, ex. "Ticket") —
 // roteado por b.store(typeName), o MESMO mecanismo que LoadCall já usa
@@ -420,8 +418,8 @@ func (b *BuiltinLowerer) LoadCall(typeName, idGo string) string {
 //
 // Query[T] em si (Where/WhereEq/Less/OrderField/Skip/Take) já não é mais
 // deliberadamente NARROW — orderBy/skip/take/joins entram nas próximas tasks
-// do ciclo Read Side (I2+); esta task só migra os chamadores existentes para
-// o seam novo com o que já tinham (Where).
+// do ciclo Read Side (I2+); WhereEq/Less/OrderField/Skip/Take continuam de
+// fora do literal aqui (só Where).
 func (b *BuiltinLowerer) ListCall(typeName, itemGoType, predGo string) string {
 	return fmt.Sprintf("%s.Select(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, predGo))
 }
@@ -436,9 +434,10 @@ func (b *BuiltinLowerer) CountCall(typeName, itemGoType, predGo string) string {
 }
 
 // queryLiteral monta o texto Go de "<runtimeAlias>.Query[<itemGoType>]{...}"
-// a partir de predGo (a saída de hoistQueryPredicate — ver a doc de ListCall
-// sobre a ponte de assinatura via Infallible). Compartilhado por ListCall/
-// CountCall: os dois só usam o campo Where de Query[T] nesta task (I0.1) —
+// a partir de predGo (a saída de hoistQueryPredicate — já na forma
+// "func(T) (bool, error)" exigida por Query[T].Where, ver a doc de ListCall
+// sobre a remoção da ponte Infallible em I1.1). Compartilhado por ListCall/
+// CountCall: os dois só usam o campo Where de Query[T] até agora —
 // WhereEq/Less/OrderField/Skip/Take ficam de fora do literal (Go zero value:
 // nil/""/false/0), o que SelectSlice (rtsrc/collection.go.txt) trata como
 // "sem esse critério", exatamente o comportamento de hoje.
@@ -446,7 +445,7 @@ func (b *BuiltinLowerer) queryLiteral(itemGoType, predGo string) string {
 	if predGo == "nil" {
 		return fmt.Sprintf("%s.Query[%s]{}", b.runtimeAlias, itemGoType)
 	}
-	return fmt.Sprintf("%s.Query[%s]{Where: %s.Infallible(%s)}", b.runtimeAlias, itemGoType, b.runtimeAlias, predGo)
+	return fmt.Sprintf("%s.Query[%s]{Where: %s}", b.runtimeAlias, itemGoType, predGo)
 }
 
 // --- helpers de QueryClause compartilhados por builtins.go/stmt.go. ---

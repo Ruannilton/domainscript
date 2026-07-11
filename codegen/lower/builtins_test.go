@@ -190,13 +190,15 @@ func TestStmt_Load_AsClause_FailsExplicitly(t *testing.T) {
 // runtime.Collection[T] (rtsrc/collection.go.txt, ver builtins.go/
 // stmt.go:hoistQueryPredicate): "where" vira um PREDICADO POR ITEM, não mais
 // um bool solto avaliado uma única vez. Desde o ciclo Read Side (REQ-33/
-// REQ-36/REQ-38, §design read-side 2, task I0.1), o predicado entra num
+// REQ-36/REQ-38, §design read-side 2), o predicado entra num
 // "runtime.Query[T]{Where: ...}" consumido por Collection[T].Select/Count —
-// "runtime.Infallible(...)" é a ponte que adapta "func(T) bool" (a forma que
-// hoistQueryPredicate ainda produz nesta task) para "func(T) (bool, error)"
-// (o tipo do campo Where); ver a doc de BuiltinLowerer.ListCall/queryLiteral
-// (builtins.go) sobre por que essa ponte existe em vez de I1's fallible
-// hoisting de verdade.
+// desde I1.1, hoistQueryPredicate já emite "func(item T) (bool, error) {
+// ... }" DIRETAMENTE (a forma que o campo Where exige, REQ-36.2), sem
+// nenhuma ponte de adaptação: a ponte "runtime.Infallible(...)" que I0.1
+// introduziu (quando hoistQueryPredicate ainda produzia "func(T) bool", sem
+// error) foi removida do runtime junto com esta mudança — ver a doc de
+// BuiltinLowerer.ListCall/queryLiteral (builtins.go) e de hoistQueryPredicate
+// (stmt.go) sobre o hoisting de verdade que fecha G-8.
 
 // TestStmt_List_Synthetic_NoWhere usa "list StatementEntry" (a MESMA forma
 // do "ListEntries" real do wallet, read.ds: "return list StatementEntry")
@@ -221,12 +223,14 @@ func TestStmt_List_Synthetic_NoWhere(t *testing.T) {
 
 // TestStmt_List_Synthetic_WithWhere_NoBinding prova a forma SEM binding
 // explícito (ex. "list StatementEntry where true"): o predicado ainda vira
-// uma lambda de verdade (nunca mais um bool solto — a forma ANTERIOR a esta
-// task, documentada como achado incorreto na doc de hoistQueryPredicate),
-// usando o nome sintético "item" (default quando QueryExpr.Binding == "").
-// O wallet não usa "where" em nenhum list/count, por isso sintética; a
-// condição é um literal trivial só para não entrar em dispatch de operador
-// de VO (fora do escopo deste teste).
+// uma lambda de verdade (nunca mais um bool solto — a forma ANTERIOR a H4,
+// documentada como achado incorreto na doc de hoistQueryPredicate), usando o
+// nome sintético "item" (default quando QueryExpr.Binding == ""), e desde
+// I1.1 já na assinatura "(bool, error)" diretamente (sem "runtime.
+// Infallible(...)" — removido, ver a doc do arquivo). O wallet não usa
+// "where" em nenhum list/count, por isso sintética; a condição é um literal
+// trivial só para não entrar em dispatch de operador de VO (fora do escopo
+// deste teste).
 func TestStmt_List_Synthetic_WithWhere_NoBinding(t *testing.T) {
 	_, l := newWalletLowererWithBuiltins(t)
 	clauses := []ast.QueryClause{{Kw: "where", Expr: lit(token.TRUE, "")}}
@@ -235,7 +239,7 @@ func TestStmt_List_Synthetic_WithWhere_NoBinding(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	want := "tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: runtime.Infallible(func(item StatementEntry) bool { return true })})"
+	want := "tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: func(item StatementEntry) (bool, error) { return true, nil }})"
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
@@ -261,7 +265,7 @@ func TestStmt_List_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: runtime.Infallible(func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })})`
+	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
@@ -278,20 +282,25 @@ func TestStmt_Count_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testCount()", assign)
 
-	want := `tmp1, err := tx.Count(ctx, runtime.Query[StatementEntry]{Where: runtime.Infallible(func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })})`
+	want := `tmp1, err := tx.Count(ctx, runtime.Query[StatementEntry]{Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
 }
 
-// TestStmt_List_Where_NeedsHoistingFailsExplicitly prova a limitação
-// documentada em hoistQueryPredicate: uma condição que precise de HOISTING
-// (aqui, "e.amount == Money(amount: 10, currency: \"BRL\")" — Money é VO
-// COMPOSTO, construído com args nomeados, o caso que needsHoistVOConstruct
-// sempre marca como falível) falha com um erro claro, nunca Go quebrado —
-// o corpo de um predicado "func(T) bool" não tem onde acomodar um "if err
-// != nil { ... }" antes do "return" sem mudar a assinatura que Collection[T]
-// fixa.
+// TestStmt_List_Where_NeedsHoistingFailsExplicitly INVERTE (I1.1, fecha
+// G-8): a mesma condição que ANTES desta task falhava com um erro explícito
+// — "e.amount == Money(amount: 10, currency: \"BRL\")", onde Money é VO
+// COMPOSTO construído com args nomeados, o caso que needsHoistVOConstruct
+// sempre marca como falível — agora GERA um predicado válido, provando a
+// forma em BLOCO documentada em hoistQueryPredicate: a construção de Money
+// hoisteia para uma temporária DENTRO do corpo do predicado, com seu próprio
+// "if err != nil { return false, err }" (a assinatura "(bool, error)"
+// acomoda isso desde I0.1; só a GERAÇÃO do bloco era a lacuna, fechada
+// agora), e só então o "return" final compara a temporária: "e.Amount ==
+// tmp1" — a igualdade em si não é um Operator declarado de Money (só
+// +/-/>=), então o BinaryExpr de "==" continua nativo, não mais um segundo
+// hoisting.
 func TestStmt_List_Where_NeedsHoistingFailsExplicitly(t *testing.T) {
 	_, l := newWalletLowererWithBuiltins(t)
 	moneyCall := callExpr(ident("Money"),
@@ -303,10 +312,24 @@ func TestStmt_List_Where_NeedsHoistingFailsExplicitly(t *testing.T) {
 	qe := ast.NewQueryExpr("list", ident("StatementEntry"), "e", clauses, ast.Span{})
 	assign := ast.NewAssignStmt(ident("entries"), qe, ast.Span{})
 
-	e := emit.New("testpkg")
-	sl := NewStmtLowerer(l, e, StmtContext{})
-	if err := sl.Stmt(assign); err == nil {
-		t.Fatal("esperava erro explícito: condição que precisa de hoisting não cabe no predicado de item (func(T) bool, sem error)")
+	// lowerInFunc só devolve com sucesso quando e.Bytes() (go/format.Source)
+	// aceita o texto como Go sintaticamente válido — a mesma prova de
+	// "compila" (sintaxe) que todo outro teste deste arquivo já usa; o
+	// smoke-compile de VERDADE (go build sobre um projeto gerado real) é
+	// TestEmitPolicyPredicateSmokeCompile/TestPolicyPredicateHandwrittenRunGreen,
+	// em codegen/gentest_policy_predicate_test.go.
+	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
+
+	for _, want := range []string{
+		"func(e StatementEntry) (bool, error) {",
+		"tmp1, err := NewMoney(runtime.NewDecimalFromInt(10), \"BRL\")",
+		"if err != nil {",
+		"return false, err",
+		"return e.Amount == tmp1, nil",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("esperava %q no predicado gerado (forma em bloco, I1.1), got:\n%s", want, out)
+		}
 	}
 }
 

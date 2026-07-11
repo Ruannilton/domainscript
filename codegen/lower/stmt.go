@@ -601,23 +601,23 @@ func (sl *StmtLowerer) hoistStore(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 // <ctx.ExitOnError> }" — desde H4 (§22.4), backed de verdade por
 // runtime.Collection[T] (rtsrc/collection.go.txt), e desde o ciclo Read Side
 // (REQ-33/REQ-36/REQ-38, §design read-side 2) sobre o seam Select/
-// runtime.Query[T] (era List/predicado nu antes desta task, I0.1 — ver a doc
-// de ListCall/queryLiteral em builtins.go sobre a ponte). "<store>" é
-// resolvido por BuiltinLowerer.store(typeName), roteado por TIPO (T, o nome
-// nu de qe.Target) — o mesmo mecanismo que já roteava "load" por Aggregate em
-// G1 (WithPerAggregateStore), agora reusado para Policy rotear cada
-// Collection[T] para o var de pacote certo (ver decl_policy.go). O
-// predicado (hoistQueryPredicate, abaixo) é sempre um "func(item T) bool {
-// ... }" — nunca mais um bool solto, ver a doc de hoistQueryPredicate sobre
-// o redesenho de H4; ListCall embrulha essa forma para caber em Query[T].
-// Where (que exige "func(T) (bool, error)", REQ-36.2) — a fallibilidade de
-// VERDADE do predicado é I1, fora desta task. itemGoType (o T de Query[T])
-// é resolvido aqui — não dentro de hoistQueryPredicate, que só o calcula
-// quando HÁ "where" — porque Query[T]{...} precisa de T mesmo sem predicado
-// (o literal Go de um tipo genérico não infere argumento de tipo a partir de
-// contexto como uma chamada genérica infere). tmpN é vinculado ao tipo
-// List<V> (ou List<T> sem "as"), via TypeEnv.InferAssignRHS (E5.0), que já
-// resolve essa forma.
+// runtime.Query[T] (era List/predicado nu antes de I0.1 — ver a doc de
+// ListCall/queryLiteral em builtins.go sobre a ponte). "<store>" é resolvido
+// por BuiltinLowerer.store(typeName), roteado por TIPO (T, o nome nu de
+// qe.Target) — o mesmo mecanismo que já roteava "load" por Aggregate em G1
+// (WithPerAggregateStore), agora reusado para Policy rotear cada
+// Collection[T] para o var de pacote certo (ver decl_policy.go). Desde I1.1,
+// o predicado (hoistQueryPredicate, abaixo) já é sempre um "func(item T)
+// (bool, error) { ... }" diretamente — a forma que Query[T].Where exige
+// (REQ-36.2), sem embrulho nenhum (o embrulho runtime.Infallible de I0.1 foi
+// removido junto com esta mudança, ver a doc de hoistQueryPredicate e de
+// queryLiteral em builtins.go). itemGoType (o T de Query[T]) é resolvido
+// aqui — não dentro de hoistQueryPredicate, que só o calcula quando HÁ
+// "where" — porque Query[T]{...} precisa de T mesmo sem predicado (o literal
+// Go de um tipo genérico não infere argumento de tipo a partir de contexto
+// como uma chamada genérica infere). tmpN é vinculado ao tipo List<V> (ou
+// List<T> sem "as"), via TypeEnv.InferAssignRHS (E5.0), que já resolve essa
+// forma.
 func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: list ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
@@ -701,43 +701,67 @@ func (sl *StmtLowerer) itemGoTypeOf(n *ast.QueryExpr) (string, error) {
 
 // hoistQueryPredicate extrai a cláusula "where" de uma list/count e a
 // traduz para um PREDICADO POR ITEM — "nil" (texto Go literal) quando
-// ausente (runtime.Collection[T].List/Count, rtsrc/collection.go.txt,
-// tratam nil como "todo item passa"); com "where", "func(<item>
-// <TipoDoItem>) bool { return <cond> }", onde <item> é o nome do BINDING
-// declarado (ex. "list Ticket t where t.eventId == event.id",
-// QueryExpr.Binding == "t") ou o nome sintético "item" quando a query não
-// declara um (ex. "list StatementEntry where true", sem binding) — em
-// QUALQUER caso, um TypeEnv/StmtLowerer-FILHO vincula esse nome ao tipo do
-// item (TypeEnv.ItemTypeOf, env.go) para a DURAÇÃO da lowering de "where",
-// exatamente como ForStmt já abre um escopo-filho para a variável de
-// iteração (childForLoop) — member access dentro da condição (ex.
-// "t.eventId") resolve contra esse tipo normalmente, via o mesmo
-// Lowerer.member já existente, sem nenhum código novo de resolução de
-// membro.
+// ausente (Query[T].Where == nil, rtsrc/collection.go.txt, trata nil como
+// "todo item passa"); com "where", "func(<item> <TipoDoItem>) (bool, error)
+// { ... }", onde <item> é o nome do BINDING declarado (ex. "list Ticket t
+// where t.eventId == event.id", QueryExpr.Binding == "t") ou o nome
+// sintético "item" quando a query não declara um (ex. "list StatementEntry
+// where true", sem binding) — em QUALQUER caso, um TypeEnv/StmtLowerer-FILHO
+// vincula esse nome ao tipo do item (TypeEnv.ItemTypeOf, env.go) para a
+// DURAÇÃO da lowering de "where", exatamente como ForStmt já abre um
+// escopo-filho para a variável de iteração (childForLoop) — member access
+// dentro da condição (ex. "t.eventId") resolve contra esse tipo normalmente,
+// via o mesmo Lowerer.member já existente, sem nenhum código novo de
+// resolução de membro.
 //
-// --- Achado documentado (H4, §22.4): o redesenho desta task ---
+// --- Achado documentado (H4, §22.4): o redesenho que criou este mecanismo ---
 //
-// Antes desta task, "where" era avaliado UMA VEZ como bool solto no escopo
-// ATUAL (nenhum item vinculado): correto só para uma condição que não
-// referencia nenhum campo do item (ex. "where true", o único teste
-// sintético que existia antes desta task — TestStmt_List_Synthetic_With
-// Where, builtins_test.go). Uma condição de filtragem de verdade (ex.
+// Antes de H4, "where" era avaliado UMA VEZ como bool solto no escopo ATUAL
+// (nenhum item vinculado): correto só para uma condição que não referencia
+// nenhum campo do item. Uma condição de filtragem de verdade (ex.
 // "eventId == 'E1'" varrendo vários Tickets) exige que cada item seja
 // vinculado ANTES de resolver a condição — esta função é o ponto único onde
-// isso passou a acontecer; ListCall/CountCall (builtins.go) continuam
-// recebendo só o TEXTO do predicado já pronto, sem saber se é "nil" ou uma
-// lambda de verdade.
+// isso acontece; ListCall/CountCall (builtins.go) continuam recebendo só o
+// TEXTO do predicado já pronto, sem saber se é "nil" ou uma lambda de
+// verdade.
 //
-// Limitação documentada: uma condição que precise de HOISTING (uma
-// construção de VO composto ou um operador de VO falível dentro do
-// "where") falha com um erro de geração claro — o corpo de um predicado Go
-// "func(T) bool" não tem onde acomodar um "if err != nil { ... }" antes do
-// "return" sem mudar a assinatura (que Collection[T] fixa em "bool", sem
-// error, ver rtsrc/collection.go.txt); os casos reais de §22.4 (comparação
-// de igualdade sobre campos wrapper/primitivos, ex. "t.eventId ==
-// event.id") não precisam de hoisting — um wrapper de 1 argumento
-// posicional já é tratado como conversão nativa por constructVO (expr.go),
-// sem hoisting.
+// --- Predicado falível (REQ-36, fecha G-8): corpo em BLOCO ---
+//
+// Até o ciclo Read Side (I0.1/I1.1), a assinatura do predicado era
+// "func(T) bool" (sem error) — uma condição que precisasse de HOISTING (uma
+// construção de VO composto ou um operador de VO falível dentro do "where",
+// ex. "e.amount == Money(amount: 10, currency: \"BRL\")") não tinha onde
+// acomodar um "if err != nil { ... }" antes do "return", e a função
+// RECUSAVA a condição com um erro de geração — essa era a limitação G-8.
+//
+// I0.1 trocou Collection[T].List/Count por Select/Count sobre Query[T],
+// cujo campo Where já É "func(T) (bool, error)" (REQ-36.2) — mas só mudou a
+// PONTE (builtins.go/queryLiteral embrulhava a saída "func(T) bool" desta
+// função em runtime.Infallible), sem tocar hoistQueryPredicate em si; a
+// recusa acima de hoisting continuava de pé. Esta task (I1.1) fecha G-8 de
+// verdade: o corpo do predicado agora é sempre um BLOCO — quando "where" não
+// precisa de hoisting, continua uma linha só ("return <cond>, nil", o caso
+// comum, sem nenhum custo extra de legibilidade); quando precisa, as linhas
+// hoisted (child.exprHoisted, EXATAMENTE o mesmo mecanismo que qualquer outro
+// hoisting deste arquivo usa) entram ANTES do "return", cada uma com seu
+// "if err != nil { return false, err }" já embutido pelo hoisting em si —
+// não há tratamento especial aqui além de escolher a forma de retorno certa
+// para o predCtx abaixo. O contrato de Query[T].Where (REQ-36.1) é "erro
+// aborta a chamada inteira" — SelectSlice (rtsrc/collection.go.txt) já
+// implementa esse lado; este comentário documenta só o lado da GERAÇÃO.
+//
+// predCtx (não ctx, o StmtContext recebido de fora) é o StmtContext usado
+// para hoistear O CORPO do predicado: a assinatura "(bool, error)" é FIXA
+// pelo contrato de Query[T].Where, então "return false, <err>" é SEMPRE a
+// saída de erro certa aqui, INDEPENDENTE de qual construto envolve o
+// list/count — ctx (o parâmetro recebido) descreve ESSE construto (ex.
+// ZeroValues=["nil"] para Handle, que devolve ([]runtime.Event, error);
+// Panics=true para Apply) e usá-lo aqui produziria a forma ERRADA (ex. "if
+// err != nil { return nil, err }" dentro de uma closure que devolve
+// (bool, error), quebrando a compilação). Um predicado hoisted dentro de
+// Apply (Panics) continua devolvendo (bool, error) normalmente — Query[T].
+// Where nunca panica, mesmo quando o CONSTRUTO ao redor do list/count o
+// faria para outro tipo de falha.
 func (sl *StmtLowerer) hoistQueryPredicate(n *ast.QueryExpr, ctx StmtContext) (string, []string, error) {
 	where, ok := queryClauseByKw(n.Clauses, "where")
 	if !ok {
@@ -776,15 +800,23 @@ func (sl *StmtLowerer) hoistQueryPredicate(n *ast.QueryExpr, ctx StmtContext) (s
 		emitDispatch:   sl.emitDispatch,
 	}
 
-	condGo, hoisted, err := child.exprHoisted(where, ctx)
+	predCtx := StmtContext{ZeroValues: []string{"false"}}
+	condGo, hoisted, err := child.exprHoisted(where, predCtx)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(hoisted) > 0 {
-		return "", nil, fmt.Errorf("codegen: %s ... where ...: condição que precisa de hoisting (construção de VO composto ou operador de VO falível) não é suportada dentro do predicado por item — o corpo \"func(%s %s) bool\" não tem onde acomodar tratamento de erro antes do return (Collection[T].List/Count fixam a assinatura do predicado em \"bool\", sem error)", n.Op, paramGo, itemGoType)
+
+	if len(hoisted) == 0 {
+		return fmt.Sprintf("func(%s %s) (bool, error) { return %s, nil }", paramGo, itemGoType, condGo), nil, nil
 	}
 
-	return fmt.Sprintf("func(%s %s) bool { return %s }", paramGo, itemGoType, condGo), nil, nil
+	var body strings.Builder
+	fmt.Fprintf(&body, "func(%s %s) (bool, error) {\n", paramGo, itemGoType)
+	for _, line := range hoisted {
+		fmt.Fprintf(&body, "%s\n", line)
+	}
+	fmt.Fprintf(&body, "return %s, nil\n}", condGo)
+	return body.String(), nil, nil
 }
 
 // fallibleVOOperator reporta se n (já com os filhos hoisted) é um BinaryExpr

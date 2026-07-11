@@ -1,0 +1,66 @@
+package pricecheck
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+)
+
+// itemCollection é o runtime.Collection[Item] que "list Item .../count Item ..." (§22.4,
+// H4) varrem dentro do execute de uma Policy deste pacote — semeado por um
+// "given <binding> [...]" de um Test (gentest.go) nos testes gerados; um
+// wiring de produção real (popular a partir de um EventStore/projeção) fica
+// para quando um exemplo real precisar dele (mesmo espírito da nota de escopo
+// de decl_query.go sobre where/orderBy/skip/take).
+var itemCollection = runtime.NewMemoryCollection[Item]()
+
+// policyDispatcher é o runtime.Dispatcher de verdade que Wire (abaixo)
+// recebe — o seam que "emit" usa dentro do execute de uma Policy deste
+// pacote (H4, §22.4): StmtLowerer.WithEmitDispatch publica DIRETO aqui, já
+// que uma Policy não tem "events []runtime.Event" local para acumular
+// (assinatura fixa "(ctx, ev) error") — ver a doc do arquivo/lower/stmt.go.
+var policyDispatcher runtime.Dispatcher
+
+// FlagExpensiveItems é a Policy FlagExpensiveItems (§7): reage ao Event StockChecked, entrega BestEffort (in-process, runtime.Dispatcher).
+// Assinatura igual a runtime.Dispatcher/Outbox.Subscribe — registrada DIRETO
+// como handler pelo wiring do módulo (Wire, abaixo).
+func FlagExpensiveItems(ctx context.Context, ev runtime.Event) error {
+	event, ok := ev.(*StockChecked)
+	if !ok {
+		return fmt.Errorf("policy FlagExpensiveItems: evento inesperado %T (esperava *StockChecked)", ev)
+	}
+	caller, _ := runtime.CallerFrom(ctx)
+	_ = caller
+	_ = event
+	tmp3, err := itemCollection.Select(ctx, runtime.Query[Item]{Where: func(i Item) (bool, error) {
+		tmp1, err := NewMoney(runtime.NewDecimalFromInt(10), "BRL")
+		if err != nil {
+			return false, err
+		}
+		tmp2, err := i.Price.Gte(tmp1)
+		if err != nil {
+			return false, err
+		}
+		return tmp2, nil
+	}})
+	if err != nil {
+		return err
+	}
+	matches := tmp3
+	for _, m := range matches {
+		if err := policyDispatcher.Publish(ctx, &ExpensiveItemFound{Id: m.Id}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,
+// para uma Policy cross-service via canal "queue" da topologia, no seu
+// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —
+// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,
+// §design 3.11).
+func Wire(d runtime.Dispatcher) {
+	policyDispatcher = d
+	d.Subscribe("StockChecked", FlagExpensiveItems)
+}
