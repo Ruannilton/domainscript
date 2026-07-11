@@ -226,6 +226,34 @@ repositório demonstre o spec de verdade.
 3. `docs/examples/wallet` e `docs/examples/shop` SHALL continuar gerando,
    compilando e passando seus testes sem regressão (NFR-19).
 
+### REQ-40 — Seam de dialeto SQL (novo banco = uma implementação de interface)
+
+**User story:** Como mantenedor, quero que adicionar suporte a um banco novo
+seja implementar uma interface de dialeto e registrar o provider — o modelo
+dos ORMs — e não editar strings SQL espalhadas pelo adapter.
+
+**Critérios de aceitação:**
+
+1. O adapter `sqlrt` SHALL consumir uma interface `Dialect` que encapsula
+   TUDO que varia por banco na superfície SQL do gerador: estilo de
+   placeholder (`?` vs `$1`), DDL das tabelas (`events`, e a tabela de
+   `Collection[T]` de REQ-38), e a forma de paginação — **nenhuma string SQL
+   específica de banco fora das implementações de `Dialect`**.
+2. O reconhecimento de provider SHALL viver num **registro único** (provider
+   string → módulo do driver p/ `go.mod` + import + construtor do `Dialect`):
+   adicionar um banco = implementar `Dialect` + uma entrada no registro —
+   zero mudanças em lowering, `decl_*.go` ou no runtime núcleo. (Hoje o
+   "sqlite" está hardcoded em `sql_wiring.go` E `project.go` — dois pontos.)
+3. A prova de plugabilidade SHALL ser dupla, sem dep externa nova: (a) o
+   sqlite reescrito sobre `Dialect` sem regressão; (b) um **segundo dialeto
+   de teste** com estilo de placeholder posicional (`$1`) exercitado contra o
+   MESMO driver sqlite (que aceita ambas as sintaxes) — provando que nada
+   fora do `Dialect` depende do estilo de placeholder.
+4. Features específicas de banco (tipos nativos, upsert, índices avançados)
+   ficam explicitamente FORA — o seam cobre só a superfície SQL que o gerador
+   de fato emite, mantendo a paridade de comportamento entre bancos por
+   construção (NFR-18).
+
 ---
 
 ## 3. Requisitos Não-Funcionais (incrementais)
@@ -265,6 +293,7 @@ anterior).
 | REQ-37 | distinct/sum/focus + paginação AppendList | G-2 |
 | REQ-38 | Descida SQL pelo seam | G-1 (§4.4 do design de codegen) |
 | REQ-39 | Fixtures canônicas | G-1/G-2 (consequência) |
+| REQ-40 | Dialeto SQL plugável | G-4 (reduz o custo de fechá-lo) |
 | NFR-18..20 | transversais | — |
 
 ---
@@ -280,6 +309,9 @@ O ciclo está completo quando:
 3. O caminho in-memory segue sem nenhuma dep externa; o adapter sqlite traduz
    as formas de REQ-38.1 para SQL parametrizado, com testes pareados
    (NFR-18).
+3a. O adapter roda inteiro sobre o seam `Dialect` (REQ-40): nenhuma string
+   SQL específica de banco fora dos dialetos, provider num registro único, e
+   o dialeto de teste `$1` passando a MESMA suíte do dialeto sqlite.
 4. `go build ./...` / `go test ./...` do compilador verdes; wallet e shop sem
    regressão (NFR-19).
 5. `gaps.md` do ciclo de codegen atualizado: G-1, G-2 e G-8 marcados como

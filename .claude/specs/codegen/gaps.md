@@ -97,7 +97,11 @@ implantável contra infraestrutura real** além de sqlite.
 **Fechar exige:** um provider real por vez, cada um opt-in e isolado (o
 padrão já existe: `codegen/sqlrt/`, `codegen/grpcrt/`, `codegen/otelrt/`).
 Postgres ou rabbitmq primeiro — são os que validam os seams mais centrais
-(persistência e canal cross-service).
+(persistência e canal cross-service). **Nota (ciclo read-side):** REQ-40 do
+ciclo `.claude/specs/read-side/` cria o seam `Dialect` + registro único de
+provider — depois dele, adicionar um banco vira "implementar uma interface +
+uma entrada de registro" (modelo de ORM), reduzindo o custo da parte SQL
+deste gap.
 
 ### G-5. Field-Level Security de View: bloco `visibility` (spec §6.2)
 

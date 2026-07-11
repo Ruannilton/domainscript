@@ -215,6 +215,52 @@ de ordenar estaria errado); o adapter puxa o conjunto filtrado e delega o
 resto. `Count` com só `WhereEq` desce como `SELECT COUNT(*)`; `sum` fica
 in-memory nesta fase com o seam pronto para descer depois (REQ-38.4 permite).
 
+### 3.9a. Dialeto SQL plugável (REQ-40) — novo banco = uma classe
+
+Hoje o SQL do sqlite está inline no adapter (placeholders `?` nas queries de
+`eventstore.go.txt`, DDL em `ensureSchema`) e o provider é reconhecido por
+string em DOIS pontos (`sql_wiring.go` + o módulo do driver em `project.go`).
+Antes de descer as cláusulas (§3.9), o adapter é reorganizado no modelo de
+dialeto dos ORMs:
+
+```go
+// sqlrt/dialect.go.txt
+type Dialect interface {
+    // Placeholder devolve o marcador do n-ésimo parâmetro (1-based):
+    // "?" (sqlite/mysql) ou "$1" (postgres).
+    Placeholder(n int) string
+    // CreateEventsTable / CreateCollectionTable: DDL idempotente das duas
+    // únicas tabelas que o gerador emite (a superfície SQL é minúscula de
+    // propósito — paridade entre bancos por construção, NFR-18).
+    CreateEventsTable() string
+    CreateCollectionTable(name string) string
+    // LimitOffset devolve a cláusula de paginação (LIMIT/OFFSET ANSI serve
+    // para sqlite e postgres; o método existe para o banco que divergir).
+    LimitOffset(limit, offset int) string
+}
+```
+
+Todo SQL do adapter é montado chamando o `Dialect` — **nenhuma string
+específica de banco fora das implementações**. No gerador, o reconhecimento
+de provider colapsa num **registro único**:
+
+```go
+// codegen/sql_wiring.go
+var sqlProviders = map[string]sqlProvider{
+    "sqlite": {driverModule: "modernc.org/sqlite", driverImport: "modernc.org/sqlite",
+               driverName: "sqlite", dialectCtor: "SQLiteDialect"},
+}
+```
+
+`EmitGoMod` (require do driver) e o wiring de `cmd/<service>/main.go` leem
+DAQUI — adicionar postgres vira: implementar `PostgresDialect` + uma entrada
+no mapa. A prova de plugabilidade não precisa de dep nova: o driver sqlite
+aceita tanto `?` quanto `$N`, então um **dialeto de teste posicional** roda a
+mesma suíte do adapter inteira com `Placeholder(n) = "$n"` — qualquer
+dependência escondida do estilo `?` fora do dialeto quebra esse teste.
+Features específicas de banco (tipos nativos, upsert, índices) ficam fora do
+seam de propósito (REQ-40.4).
+
 ### 3.10. Inferência de tipos (`lower/env.go`)
 
 `TypeEnv` aprende: (a) `load X(id).<campo-coleção>` → tipo da coleção do
@@ -233,6 +279,7 @@ continua falha explícita (contrato de E5.0).
 | Erro propagado aborta a query (REQ-36.1) | Pular item com erro | Item pulado em silêncio é resultado incorreto indetectável — viola a filosofia fail-fast do spec §1.1 |
 | `sum` vazio → zero value, documentado | Erro em runtime para coleção vazia | O uso canônico (§20) é comparação em `ensure`; falhar em runtime criaria um erro de infra onde o domínio esperava um booleano |
 | Join in-memory O(n·m), erro para `on` não-igualdade | Hash-join genérico / condições arbitrárias | Escopo mínimo que cobre o spec; otimização sem exemplo real é especulação (mesma disciplina de todo o ciclo E–H) |
+| `Dialect` minimalista (placeholder/DDL/paginação) + registro único de provider | Abstração de ORM completa (type mapping, migrations, query builder) | A superfície SQL do gerador é 2 tabelas + 4 formas de cláusula; abstrair além do que se emite é código morto — o seam cresce quando um banco real divergir (REQ-40.4) |
 | `focus` pela convenção do campo `id` | Parâmetro de configuração de chave | §20 não tem sintaxe para declarar a chave; inventá-la seria mudar a linguagem — quando o spec evoluir, o erro de geração aponta o caminho |
 
 ## 5. Fora de Escopo Registrado (para o próximo gaps)

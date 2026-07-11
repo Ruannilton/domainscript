@@ -159,15 +159,32 @@
   gerado inteiro; goldens/smoke/determinismo; wallet e shop sem regressão.
   **Commit:** `feat(codegen): Policy §7 canônica e fixtures de §22.4 des-adaptadas`
 
-### Fase I7 — Descida SQL (sqlite)
+### Fase I7 — Descida SQL (sqlite) sobre dialeto plugável
+
+- [ ] **I7.0** Seam `Dialect` + registro único de provider (REQ-40): extrair
+  de `sqlrt` tudo que varia por banco (placeholders, DDL de `events`,
+  paginação) para uma interface `Dialect` consumida por todo o adapter —
+  nenhuma string SQL específica de banco fora dos dialetos; colapsar o
+  reconhecimento de provider (hoje duplicado em `sql_wiring.go` e
+  `project.go`) num registro único provider → {módulo do driver, import,
+  dialeto}. Prova de plugabilidade sem dep nova: um dialeto de TESTE com
+  placeholder posicional `$n` roda a suíte inteira do adapter contra o mesmo
+  driver sqlite (que aceita as duas sintaxes). _(REQ-40, §design 3.9a)_
+  **Toca:** `codegen/sqlrt/` (novo `dialect.go.txt`), `codegen/sql_wiring.go`,
+  `codegen/project.go`, testes do adapter.
+  **Conclusão:** suíte de G1 verde sobre o sqlite reescrito em `Dialect`;
+  a MESMA suíte verde com o dialeto `$n`; go.mod/wiring gerados idênticos
+  aos de antes (golden sem mudança para o usuário final).
+  **Commit:** `refactor(codegen): seam Dialect e registro único de provider SQL`
 
 - [ ] **I7.1** Contraparte de `Collection[T]` sobre tabela no adapter sqlite:
   `Select`/`Count` montam SQL parametrizado SÓ com os descritores presentes
   (`WhereEq` → AND de `col = ?`; `OrderField`/`OrderDesc` → ORDER BY;
   `Skip`/`Take` → LIMIT/OFFSET; `Count` só-WhereEq → `SELECT COUNT(*)`);
   o resto pós-processa via o MESMO `SelectSlice`. Regra de correção: `Less`
-  sem descritor ⇒ `Skip`/`Take` também não descem. O caminho in-memory segue
-  sem dep externa (NFR-12). _(REQ-38, §design 3.9)_
+  sem descritor ⇒ `Skip`/`Take` também não descem. Todo SQL montado via o
+  `Dialect` de I7.0 — nunca string direta. O caminho in-memory segue sem dep
+  externa (NFR-12). _(REQ-38, §design 3.9/3.9a)_ **Depende:** I7.0.
   **Toca:** `codegen/sqlrt/`, wiring de G1.
   **Conclusão:** testes **pareados** (NFR-18): a mesma query, mesmo seed de
   dados, nos dois backends, resultados idênticos — incluindo um caso que
@@ -216,6 +233,7 @@ I0 runtime Query[T] ─▶ I1 predicado falível ─▶ I2 orderBy/skip/take ─
 | REQ-37 | I3.1 (paginação AppendList), I6.1, I6.2 |
 | REQ-38 | I7.1 |
 | REQ-39 | I6.2, I8.1 |
+| REQ-40 | I7.0 |
 | NFR-18 | I7.1 (testes pareados) |
 | NFR-19 | transversal (regra de verde dupla + revisão de goldens) |
 | NFR-20 | I2.1, I3.2, I4.1, I5.1, I6.1 (um teste por erro) |
