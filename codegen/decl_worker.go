@@ -51,12 +51,13 @@ import (
 // Só a forma do exemplo canônico do spec (§8) é suportada: exatamente 1
 // statement, "list T [binding] [where cond]" — nenhuma outra cláusula SQL-like
 // (join/orderBy/skip/take/as). Isso NÃO usa o hoisting genérico de "list" de
-// lower/stmt.go (hoistList -> BuiltinLowerer.ListCall -> "<store>.List(ctx,
-// pred)"): aquele caminho monta uma chamada a um método que NENHUMA
-// implementação de runtime.EventStore declara hoje (documentado como
-// "provisório" desde E5.3/builtins.go, nunca de fato conectado por E8.1 — ver
-// decl_query.go, que resolve "list <VO>" com sua PRÓPRIA correlação em vez de
-// hoistList) — usá-lo aqui geraria Go que não compila. Em vez disso, o
+// lower/stmt.go (hoistList -> BuiltinLowerer.ListCall -> "<store>.Select(ctx,
+// runtime.Query[T]{...})", desde o ciclo Read Side — REQ-33/REQ-36/REQ-38):
+// aquele caminho monta uma chamada a um método que NENHUMA implementação de
+// runtime.EventStore declara hoje (documentado como "provisório" desde
+// E5.3/builtins.go, nunca de fato conectado por E8.1 — ver decl_query.go, que
+// resolve "list <VO>" com sua PRÓPRIA correlação em vez de hoistList) — usá-lo
+// aqui geraria Go que não compila. Em vez disso, o
 // binding e o where (se houver) só decidem o TIPO do item (via TypeEnv,
 // astutil.HeadName + TypeOfName) e um PREDICADO Go puro (workerSourcePredicate,
 // lowerizado com um TypeEnv filho que vincula o binding ao tipo do item) —

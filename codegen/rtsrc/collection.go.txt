@@ -2,35 +2,138 @@ package runtime
 
 import (
 	"context"
+	"sort"
 	"sync"
 )
 
-// Collection is the minimal read/write seam behind the `list`/`count`
-// built-ins (REQ-22.7(a), §design codegen 3.6): a homogeneous, in-process set
-// of domain values T that a Policy/Query body can seed and then scan with a
-// per-item predicate. It is deliberately narrow — no ordering, pagination, or
-// persistence — just enough to filter by equality-style predicates, which is
-// the exact shape the generated calls expect:
+// Collection is the read/write seam behind the `list`/`count` built-ins
+// (REQ-22.7(a), §design codegen 3.6) and, since the Read Side cycle (REQ-33,
+// REQ-36, REQ-38, §design read-side 2), behind the full SQL-like clause set
+// (`where`/`orderBy`/`skip`/`take`) too: a homogeneous, in-process set of
+// domain values T that a Policy/Query body can seed and then scan.
 //
-//	items, err := <coll>.List(ctx, func(item T) bool { return item.Field == x })
-//	n, err := <coll>.Count(ctx, func(item T) bool { return ... })
+// H4 (§22.4) shipped a narrower shape — List(ctx, pred func(T) bool)/
+// Count(ctx, pred func(T) bool) — documented then as "deliberately narrow: no
+// ordering, pagination". This cycle replaces it with Select/Count driven by
+// Query[T] (below): a single declarative-plus-closure value that both this
+// in-memory interpreter (SelectSlice) and, in a later task (I7), a SQL
+// adapter can consume without redesigning the seam:
+//
+//	items, err := <coll>.Select(ctx, Query[T]{Where: func(item T) (bool, error) { return item.Field == x, nil }})
+//	n, err := <coll>.Count(ctx, Query[T]{Where: func(item T) (bool, error) { return ..., nil }})
 //
 // (see lower/builtins.go's ListCall/CountCall and lower/stmt.go's
-// hoistQueryPredicate). A fuller Read Side — orderBy/skip/take, joins, durable
-// storage — is Marco E8, out of scope here; this seam only unblocks per-item
-// predicate lowering. T is a per-domain value struct (e.g. a composite
-// ValueObject) unknown to this package, hence the generic — mirroring
-// Repository[T] (repository.go.txt).
+// hoistQueryPredicate/hoistList/hoistCount). T is a per-domain value struct
+// (e.g. a composite ValueObject) unknown to this package, hence the generic —
+// mirroring Repository[T] (repository.go.txt).
 type Collection[T any] interface {
 	// Add appends item to the collection. Items keep insertion order, which
-	// is the order List/Count scan them in (and List returns them in).
+	// is the order Select/Count scan them in absent an explicit Less.
 	Add(ctx context.Context, item T) error
-	// List returns every item for which pred reports true, in insertion
-	// order. A nil pred matches every item (a `list` with no `where`).
-	List(ctx context.Context, pred func(T) bool) ([]T, error)
-	// Count returns how many items pred reports true for. A nil pred counts
-	// every item (a `count` with no `where`).
-	Count(ctx context.Context, pred func(T) bool) (int64, error)
+	// Select applies q to the collection and returns the resulting items —
+	// see SelectSlice for the exact semantics (where → orderBy → skip →
+	// take, fixed order, regardless of which Query fields are set).
+	Select(ctx context.Context, q Query[T]) ([]T, error)
+	// Count returns how many items q.Where reports true for (q.Where == nil
+	// counts every item). orderBy/skip/take have no effect on Count — the
+	// generator (lower/stmt.go:hoistCount) never sets them, since they would
+	// have no observable effect on a count (REQ-33.5).
+	Count(ctx context.Context, q Query[T]) (int64, error)
+}
+
+// FieldEq is one "<Field> == <Value>" conjunct of the declarative subset of a
+// Query's filter (Query.WhereEq, below). It exists only for a future SQL
+// adapter (task I7) to translate into a parameterized "WHERE <Field> = ?" —
+// no code in this cycle constructs one yet (nothing generates WhereEq before
+// task I2), and SelectSlice (the in-memory interpreter) never reads it: see
+// the "Alternativas Rejeitadas" note on Query for why the two forms
+// (closure/descriptor) are kept independent instead of the descriptor being
+// derived from the closure at query time.
+type FieldEq struct {
+	Field string
+	Value any
+}
+
+// Query[T] is the declarative-plus-closure query value that drives Select/
+// Count (§design read-side 2.1/2.2, REQ-33/REQ-36/REQ-38): "one query spec,
+// two interpreters". Every clause that has both forms carries them
+// independently — the compiled Go closure (always, when the clause is
+// present) and a declarative descriptor (only when the clause is simple
+// enough to translate to SQL). SelectSlice (this file) is the in-memory
+// interpreter and IGNORES the descriptors entirely, running only the
+// closures — a future SQL adapter (out of scope here, task I7) is the one
+// meant to consume WhereEq/OrderField and fall back to the closures for
+// whatever it can't translate (§design read-side 3.9). An empty/zero-value
+// descriptor does NOT mean "no filter"/"no order": the closure is always the
+// ground truth in this phase, since nothing populates the descriptors yet
+// (they stay nil/zero until task I2's lowering starts filling them in for
+// simple clauses).
+type Query[T any] struct {
+	// Where filters by item; nil matches every item. The error propagates
+	// and aborts the whole Select/Count call (REQ-36.1) — an item whose
+	// predicate fails is never silently skipped, because a skipped invalid
+	// item would be an undetectable wrong result (see the design's
+	// "Alternativas Rejeitadas" table).
+	Where func(T) (bool, error)
+	// WhereEq is the declarative subset of Where: an AND of field equalities
+	// over named columns. Filled in by the generator ONLY when Where is
+	// exactly that conjunction (task I2+); SelectSlice never reads it — see
+	// the type doc.
+	WhereEq []FieldEq
+	// Less orders the result (stable sort, see SelectSlice); nil preserves
+	// insertion order. Same error-propagation discipline as Where.
+	Less func(a, b T) (bool, error)
+	// OrderField/OrderDesc: declarative descriptor of Less, filled in only
+	// when the sort key is a bare member access (task I2+). Same rule as
+	// WhereEq: SelectSlice never reads these.
+	OrderField string
+	OrderDesc  bool
+	// Skip/Take paginate AFTER ordering (see SelectSlice's fixed semantic
+	// order). -1 means "absent" — NewQuery starts both at -1, and the zero
+	// value of Query[T] (Skip/Take == 0) is NOT "absent": a caller building
+	// a Query[T]{} literal by hand (as ListCall/CountCall do for a query
+	// with no orderBy/skip/take, REQ-33.1) must go through NewQuery or leave
+	// Skip/Take genuinely at their Go zero value 0 only when that 0 is the
+	// intended value; the generator's own callers never set them at all in
+	// this task (I0.1), so they stay at the Go zero value 0 — SelectSlice
+	// treats 0 as "absent" too (see below) exactly so that a bare
+	// Query[T]{} composite literal, without NewQuery, still means "no
+	// pagination" for the common case this task's callers produce.
+	Skip, Take int
+}
+
+// NewQuery builds a Query[T] with Skip/Take already at the "absent" sentinel
+// -1 (§design read-side 2.1) — the constructor a caller reaches for when it
+// intends to set Skip/Take explicitly to 0 (e.g. "take 0", a degenerate but
+// legal query) and needs that to be distinguishable from "not set". Callers
+// that never touch Skip/Take (every caller in this task, I0.1 — orderBy/
+// skip/take lowering is task I2) can keep using a bare Query[T]{} literal:
+// SelectSlice treats Skip/Take <= 0 as "absent" uniformly, so the Go zero
+// value 0 and the sentinel -1 both mean "no pagination" for Skip, and Take
+// gets the analogous "<= 0 = unlimited" treatment. See SelectSlice's doc for
+// the precise rule.
+func NewQuery[T any]() Query[T] {
+	return Query[T]{Skip: -1, Take: -1}
+}
+
+// Infallible adapts a predicate with no error path (func(T) bool — the exact
+// shape lower/stmt.go's hoistQueryPredicate still produces, H4 §22.4) to the
+// signature Query[T].Where requires (func(T) (bool, error), REQ-36.2). It is
+// the bridge this cycle's task I0.1 uses to migrate ListCall/CountCall
+// (lower/builtins.go) onto Select/Count without touching hoistQueryPredicate
+// itself — real fallible predicates (a condition that needs hoisting, e.g. a
+// composite VO construction inside "where") are task I1's job (REQ-36.1),
+// which is expected to make hoistQueryPredicate emit the fallible body
+// directly and stop needing this adapter for those cases; a predicate that
+// never fails (every case in this task's scope) still goes through it,
+// always returning a nil error. A nil pred maps to a nil result (Query[T].
+// Where == nil already means "match everything" — see SelectSlice), so
+// Infallible(nil) does not panic when later called.
+func Infallible[T any](pred func(T) bool) func(T) (bool, error) {
+	if pred == nil {
+		return nil
+	}
+	return func(item T) (bool, error) { return pred(item), nil }
 }
 
 // memoryCollection is a thread-safe, in-process Collection[T] backed by a
@@ -53,28 +156,129 @@ func (c *memoryCollection[T]) Add(ctx context.Context, item T) error {
 	return nil
 }
 
-// List implements Collection. A nil pred matches everything.
-func (c *memoryCollection[T]) List(ctx context.Context, pred func(T) bool) ([]T, error) {
+// Select implements Collection by delegating to SelectSlice over a snapshot
+// of the current items — the single interpreter of query semantics (NFR-18),
+// shared with the "load X(id).entries orderBy ..." path (task I3) that calls
+// SelectSlice directly over an aggregate's already-materialized collection
+// field, with no Collection[T] involved at all.
+func (c *memoryCollection[T]) Select(ctx context.Context, q Query[T]) ([]T, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]T, 0, len(c.items))
-	for _, item := range c.items {
-		if pred == nil || pred(item) {
-			out = append(out, item)
-		}
-	}
-	return out, nil
+	snapshot := make([]T, len(c.items))
+	copy(snapshot, c.items)
+	c.mu.RUnlock()
+
+	return SelectSlice(snapshot, q)
 }
 
-// Count implements Collection. A nil pred counts everything.
-func (c *memoryCollection[T]) Count(ctx context.Context, pred func(T) bool) (int64, error) {
+// Count implements Collection. Only q.Where matters for a count (REQ-33.5 —
+// orderBy/skip/take on a "count" have no observable effect, so the generator
+// never sets them here); reusing SelectSlice would pay for a sort/paginate
+// that Count never needs, so Count applies q.Where directly instead.
+func (c *memoryCollection[T]) Count(ctx context.Context, q Query[T]) (int64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	var n int64
 	for _, item := range c.items {
-		if pred == nil || pred(item) {
+		ok, err := applyWhere(q, item)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// applyWhere reports whether item passes q.Where — true (no filtering) when
+// q.Where is nil, exactly like the old nil-predicate convention (§22.4).
+func applyWhere[T any](q Query[T], item T) (bool, error) {
+	if q.Where == nil {
+		return true, nil
+	}
+	return q.Where(item)
+}
+
+// SelectSlice applies q over an already-materialized slice — the single
+// interpreter of Query[T]'s semantics (NFR-18, §design read-side 1.2/3.1):
+// both memoryCollection.Select (above) and the "load X(id).entries orderBy
+// ..." lowering path (task I3, over an aggregate's state collection, no
+// Collection[T] involved) call this exact function, so the observable
+// behavior of a query is identical regardless of which one produced the
+// slice. It is also the shape a future SQL adapter (task I7) applies as
+// POST-FILTER for whatever part of q it could not translate to SQL — by
+// construction, the same semantics apply there too (§design read-side 3.9).
+//
+// Fixed semantic order (§design read-side 3.1, REQ-33.1), independent of the
+// order the Query[T] struct's fields were set in Go source: where → orderBy
+// → skip → take.
+//
+//  1. where: q.Where filters the slice, in original order. A predicate error
+//     aborts the WHOLE call (REQ-36.1) — the partial result computed so far
+//     is discarded (return nil, err), never a silently-truncated slice.
+//  2. orderBy: q.Less, if non-nil, stably sorts the filtered slice (sort.
+//     SliceStable semantics — items that compare equal keep their relative
+//     order, which for ties after a "where" means original insertion order).
+//     A Less error aborts the whole call, same discipline as Where.
+//  3. skip: q.Skip items are dropped from the front. Skip <= 0 means
+//     "absent" (covers both NewQuery's -1 sentinel and a bare Query[T]{}
+//     literal's Go zero value 0 — see Query's doc). Skip beyond the length
+//     of the (filtered+ordered) slice yields an empty result, never an
+//     error or a panic.
+//  4. take: at most q.Take items are kept, counted AFTER skip. Take <= 0
+//     means "absent" (unlimited) — same reasoning as Skip: covers -1 and the
+//     Go zero value 0 uniformly, since no caller in this task ever
+//     legitimately wants "take exactly 0 items" (that would just be "count
+//     == 0", not a `list`). Take beyond what remains after skip yields
+//     everything that remains, never an error.
+//
+// SelectSlice IGNORES q.WhereEq/q.OrderField/q.OrderDesc entirely — they are
+// the declarative descriptors meant for the future SQL adapter (task I7,
+// §design read-side 3.9); this in-memory interpreter is correct even when
+// only the descriptors are set and Where/Less are nil (a WhereEq/OrderField
+// that no closure backs is, for this function, indistinguishable from "no
+// filter"/"no order" — proven by TestSelectSlice_IgnoresDeclarativeDescriptors
+// in collection_test.go.txt).
+func SelectSlice[T any](items []T, q Query[T]) ([]T, error) {
+	filtered := make([]T, 0, len(items))
+	for _, item := range items {
+		ok, err := applyWhere(q, item)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			filtered = append(filtered, item)
+		}
+	}
+
+	if q.Less != nil {
+		var sortErr error
+		sort.SliceStable(filtered, func(i, j int) bool {
+			if sortErr != nil {
+				return false
+			}
+			less, err := q.Less(filtered[i], filtered[j])
+			if err != nil {
+				sortErr = err
+				return false
+			}
+			return less
+		})
+		if sortErr != nil {
+			return nil, sortErr
+		}
+	}
+
+	if q.Skip > 0 {
+		if q.Skip >= len(filtered) {
+			filtered = filtered[:0]
+		} else {
+			filtered = filtered[q.Skip:]
+		}
+	}
+	if q.Take > 0 && q.Take < len(filtered) {
+		filtered = filtered[:q.Take]
+	}
+
+	return filtered, nil
 }

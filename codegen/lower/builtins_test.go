@@ -189,12 +189,20 @@ func TestStmt_Load_AsClause_FailsExplicitly(t *testing.T) {
 // a forma é gerada — desde H4 (§22.4), backed de verdade por
 // runtime.Collection[T] (rtsrc/collection.go.txt, ver builtins.go/
 // stmt.go:hoistQueryPredicate): "where" vira um PREDICADO POR ITEM, não mais
-// um bool solto avaliado uma única vez.
+// um bool solto avaliado uma única vez. Desde o ciclo Read Side (REQ-33/
+// REQ-36/REQ-38, §design read-side 2, task I0.1), o predicado entra num
+// "runtime.Query[T]{Where: ...}" consumido por Collection[T].Select/Count —
+// "runtime.Infallible(...)" é a ponte que adapta "func(T) bool" (a forma que
+// hoistQueryPredicate ainda produz nesta task) para "func(T) (bool, error)"
+// (o tipo do campo Where); ver a doc de BuiltinLowerer.ListCall/queryLiteral
+// (builtins.go) sobre por que essa ponte existe em vez de I1's fallible
+// hoisting de verdade.
 
 // TestStmt_List_Synthetic_NoWhere usa "list StatementEntry" (a MESMA forma
 // do "ListEntries" real do wallet, read.ds: "return list StatementEntry")
-// — sem cláusula "where", predGo é o literal Go "nil" (runtime.Collection[T]
-// trata nil como "todo item passa" — rtsrc/collection.go.txt).
+// — sem cláusula "where", predGo é o literal Go "nil" e o campo Where fica
+// de fora do literal Query[T] (Go zero value == "todo item passa", mesmo
+// contrato do antigo "List(ctx, nil)" — rtsrc/collection.go.txt).
 func TestStmt_List_Synthetic_NoWhere(t *testing.T) {
 	_, l := newWalletLowererWithBuiltins(t)
 	qe := ast.NewQueryExpr("list", ident("StatementEntry"), "", nil, ast.Span{})
@@ -202,8 +210,9 @@ func TestStmt_List_Synthetic_NoWhere(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	if !strings.Contains(out, "tmp1, err := tx.List(ctx, nil)") {
-		t.Fatalf("esperava \"tmp1, err := tx.List(ctx, nil)\", got:\n%s", out)
+	want := "tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{})"
+	if !strings.Contains(out, want) {
+		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
 	if !strings.Contains(out, "entries := tmp1") {
 		t.Fatalf("esperava \"entries := tmp1\", got:\n%s", out)
@@ -226,8 +235,9 @@ func TestStmt_List_Synthetic_WithWhere_NoBinding(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	if !strings.Contains(out, "tmp1, err := tx.List(ctx, func(item StatementEntry) bool { return true })") {
-		t.Fatalf("esperava \"tmp1, err := tx.List(ctx, func(item StatementEntry) bool { return true })\", got:\n%s", out)
+	want := "tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: runtime.Infallible(func(item StatementEntry) bool { return true })})"
+	if !strings.Contains(out, want) {
+		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
 }
 
@@ -251,7 +261,7 @@ func TestStmt_List_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	want := `tmp1, err := tx.List(ctx, func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })`
+	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: runtime.Infallible(func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
@@ -268,7 +278,7 @@ func TestStmt_Count_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testCount()", assign)
 
-	want := `tmp1, err := tx.Count(ctx, func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })`
+	want := `tmp1, err := tx.Count(ctx, runtime.Query[StatementEntry]{Where: runtime.Infallible(func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
@@ -309,8 +319,9 @@ func TestStmt_Count_Synthetic(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testCount()", assign)
 
-	if !strings.Contains(out, "tmp1, err := tx.Count(ctx, nil)") {
-		t.Fatalf("esperava \"tmp1, err := tx.Count(ctx, nil)\" (API provisória, E8 decide a forma final), got:\n%s", out)
+	want := "tmp1, err := tx.Count(ctx, runtime.Query[StatementEntry]{})"
+	if !strings.Contains(out, want) {
+		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
 	if !strings.Contains(out, "total := tmp1") {
 		t.Fatalf("esperava \"total := tmp1\", got:\n%s", out)

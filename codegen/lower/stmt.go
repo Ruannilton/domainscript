@@ -597,17 +597,27 @@ func (sl *StmtLowerer) hoistStore(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 }
 
 // hoistList traduz "list T [where Cond] [as V]" para
-// "tmpN, err := <store>.List(<ctx>, <predicado>); if err != nil {
+// "tmpN, err := <store>.Select(<ctx>, <query>); if err != nil {
 // <ctx.ExitOnError> }" — desde H4 (§22.4), backed de verdade por
-// runtime.Collection[T] (rtsrc/collection.go.txt): "<store>" é resolvido por
-// BuiltinLowerer.store(typeName), roteado por TIPO (T, o nome nu de
-// qe.Target) — o mesmo mecanismo que já roteava "load" por Aggregate em G1
-// (WithPerAggregateStore), agora reusado para Policy rotear cada
+// runtime.Collection[T] (rtsrc/collection.go.txt), e desde o ciclo Read Side
+// (REQ-33/REQ-36/REQ-38, §design read-side 2) sobre o seam Select/
+// runtime.Query[T] (era List/predicado nu antes desta task, I0.1 — ver a doc
+// de ListCall/queryLiteral em builtins.go sobre a ponte). "<store>" é
+// resolvido por BuiltinLowerer.store(typeName), roteado por TIPO (T, o nome
+// nu de qe.Target) — o mesmo mecanismo que já roteava "load" por Aggregate em
+// G1 (WithPerAggregateStore), agora reusado para Policy rotear cada
 // Collection[T] para o var de pacote certo (ver decl_policy.go). O
 // predicado (hoistQueryPredicate, abaixo) é sempre um "func(item T) bool {
 // ... }" — nunca mais um bool solto, ver a doc de hoistQueryPredicate sobre
-// o redesenho desta task. tmpN é vinculado ao tipo List<V> (ou List<T> sem
-// "as"), via TypeEnv.InferAssignRHS (E5.0), que já resolve essa forma.
+// o redesenho de H4; ListCall embrulha essa forma para caber em Query[T].
+// Where (que exige "func(T) (bool, error)", REQ-36.2) — a fallibilidade de
+// VERDADE do predicado é I1, fora desta task. itemGoType (o T de Query[T])
+// é resolvido aqui — não dentro de hoistQueryPredicate, que só o calcula
+// quando HÁ "where" — porque Query[T]{...} precisa de T mesmo sem predicado
+// (o literal Go de um tipo genérico não infere argumento de tipo a partir de
+// contexto como uma chamada genérica infere). tmpN é vinculado ao tipo
+// List<V> (ou List<T> sem "as"), via TypeEnv.InferAssignRHS (E5.0), que já
+// resolve essa forma.
 func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: list ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
@@ -618,6 +628,11 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 		return nil, nil, fmt.Errorf("codegen: list ...: %w", err)
 	}
 
+	itemGoType, err := sl.itemGoTypeOf(n)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	predGo, hoisted, err := sl.hoistQueryPredicate(n, ctx)
 	if err != nil {
 		return nil, nil, err
@@ -626,17 +641,18 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 	tmp := sl.newTmp()
 	sl.bindTmp(tmp, t)
 	lines := append(hoisted,
-		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(astutil.HeadName(n.Target), predGo)),
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(astutil.HeadName(n.Target), itemGoType, predGo)),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
 }
 
 // hoistCount traduz "count [where Cond]" para "tmpN, err := <store>.Count(
-// <ctx>, <predicado>); if err != nil { <ctx.ExitOnError> }" — mesmo
-// roteamento por tipo e mesmo predicado por item de hoistList (ver sua
-// doc). tmpN é vinculado a integer (TypeEnv.InferAssignRHS já resolve
-// "count" assim, independente do Target — env.go, inferQueryExpr).
+// <ctx>, <query>); if err != nil { <ctx.ExitOnError> }" — mesmo roteamento
+// por tipo, mesmo predicado por item e mesma ponte para Query[T] de
+// hoistList (ver sua doc). tmpN é vinculado a integer (TypeEnv.
+// InferAssignRHS já resolve "count" assim, independente do Target — env.go,
+// inferQueryExpr).
 func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: count ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
@@ -647,6 +663,11 @@ func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 		return nil, nil, fmt.Errorf("codegen: count ...: %w", err)
 	}
 
+	itemGoType, err := sl.itemGoTypeOf(n)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	predGo, hoisted, err := sl.hoistQueryPredicate(n, ctx)
 	if err != nil {
 		return nil, nil, err
@@ -655,10 +676,27 @@ func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 	tmp := sl.newTmp()
 	sl.bindTmp(tmp, t)
 	lines := append(hoisted,
-		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(astutil.HeadName(n.Target), predGo)),
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(astutil.HeadName(n.Target), itemGoType, predGo)),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// itemGoTypeOf resolve o tipo Go do item de n (TypeEnv.ItemTypeOf — o MESMO
+// mecanismo que hoistQueryPredicate usa para vincular o binding de "where")
+// e o converte para texto Go (goTypeString, expr.go) — usado por hoistList/
+// hoistCount para montar o argumento de tipo de "runtime.Query[<T>]{...}"
+// (BuiltinLowerer.ListCall/CountCall, builtins.go), independentemente de
+// haver "where" ou não (diferente de hoistQueryPredicate, que só resolve o
+// tipo do item quando HÁ cláusula "where" — aqui é sempre necessário, porque
+// um composite literal genérico exige o argumento de tipo explícito mesmo
+// vazio).
+func (sl *StmtLowerer) itemGoTypeOf(n *ast.QueryExpr) (string, error) {
+	itemType, err := sl.env.ItemTypeOf(n)
+	if err != nil {
+		return "", fmt.Errorf("codegen: %s ...: %w", n.Op, err)
+	}
+	return goTypeString(itemType)
 }
 
 // hoistQueryPredicate extrai a cláusula "where" de uma list/count e a

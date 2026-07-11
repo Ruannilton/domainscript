@@ -2,19 +2,29 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
-// collection_test.go.txt prova o comportamento do seam Collection[T] (H4,
-// §22.4): Add preserva a ordem de inserção, List/Count filtram por predicado
-// (nil casa com tudo), e cada Collection[T] é independente por tipo T.
+// collection_test.go.txt prova o comportamento do seam Collection[T]/Query[T]
+// (H4 §22.4 evoluído pelo ciclo Read Side, REQ-33/REQ-36/REQ-38, §design
+// read-side 2): Add preserva a ordem de inserção; Select/Count aplicam
+// Query[T] via SelectSlice (o intérprete único, NFR-18) na ordem semântica
+// fixa where → orderBy → skip → take, independente da ordem em que os campos
+// da struct foram atribuídos em Go; o sort é estável; skip/take tratam as
+// bordas (além do comprimento, take=0, sentinela -1 "ausente"); erro de
+// predicado/Less aborta a operação inteira (REQ-36.1); e o caminho in-memory
+// IGNORA WhereEq/OrderField (closures são a única verdade nesta fase).
 
 type collectionTestItem struct {
 	ID    string
 	Group string
+	Order int
 }
 
-func TestMemoryCollection_AddThenListPreservesInsertionOrder(t *testing.T) {
+// --- 1. Add preserva ordem de inserção (comportamento herdado de H4). ---
+
+func TestMemoryCollection_AddThenSelectPreservesInsertionOrder(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemoryCollection[collectionTestItem]()
 
@@ -25,21 +35,24 @@ func TestMemoryCollection_AddThenListPreservesInsertionOrder(t *testing.T) {
 		}
 	}
 
-	got, err := c.List(ctx, nil)
+	got, err := c.Select(ctx, Query[collectionTestItem]{})
 	if err != nil {
-		t.Fatalf("List(nil): erro inesperado: %v", err)
+		t.Fatalf("Select(Query{}): erro inesperado: %v", err)
 	}
 	if len(got) != len(items) {
-		t.Fatalf("List(nil) devolveu %d item(ns), want %d", len(got), len(items))
+		t.Fatalf("Select(Query{}) devolveu %d item(ns), want %d", len(got), len(items))
 	}
 	for i, want := range items {
 		if got[i] != want {
-			t.Fatalf("List(nil)[%d] = %+v, want %+v (ordem de inserção não preservada)", i, got[i], want)
+			t.Fatalf("Select(Query{})[%d] = %+v, want %+v (ordem de inserção não preservada)", i, got[i], want)
 		}
 	}
 }
 
-func TestMemoryCollection_ListWithPredicateFiltersPerItem(t *testing.T) {
+// --- 2. Where filtra por item (nil == todo item passa, mesmo contrato do
+// antigo predGo nulo de List/Count). ---
+
+func TestMemoryCollection_SelectWithWhereFiltersPerItem(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemoryCollection[collectionTestItem]()
 	for _, item := range []collectionTestItem{
@@ -52,21 +65,23 @@ func TestMemoryCollection_ListWithPredicateFiltersPerItem(t *testing.T) {
 		}
 	}
 
-	got, err := c.List(ctx, func(item collectionTestItem) bool { return item.Group == "A" })
+	got, err := c.Select(ctx, Query[collectionTestItem]{
+		Where: func(item collectionTestItem) (bool, error) { return item.Group == "A", nil },
+	})
 	if err != nil {
-		t.Fatalf("List(pred): erro inesperado: %v", err)
+		t.Fatalf("Select(Where): erro inesperado: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("List(pred) devolveu %d item(ns), want 2 (Group == \"A\"): %+v", len(got), got)
+		t.Fatalf("Select(Where) devolveu %d item(ns), want 2 (Group == \"A\"): %+v", len(got), got)
 	}
 	for _, item := range got {
 		if item.Group != "A" {
-			t.Fatalf("List(pred) devolveu um item fora do predicado: %+v", item)
+			t.Fatalf("Select(Where) devolveu um item fora do predicado: %+v", item)
 		}
 	}
 }
 
-func TestMemoryCollection_CountWithNilPredicateCountsEverything(t *testing.T) {
+func TestMemoryCollection_CountWithNilWhereCountsEverything(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemoryCollection[collectionTestItem]()
 	for i := 0; i < 5; i++ {
@@ -75,16 +90,16 @@ func TestMemoryCollection_CountWithNilPredicateCountsEverything(t *testing.T) {
 		}
 	}
 
-	n, err := c.Count(ctx, nil)
+	n, err := c.Count(ctx, Query[collectionTestItem]{})
 	if err != nil {
-		t.Fatalf("Count(nil): erro inesperado: %v", err)
+		t.Fatalf("Count(Query{}): erro inesperado: %v", err)
 	}
 	if n != 5 {
-		t.Fatalf("Count(nil) = %d, want 5", n)
+		t.Fatalf("Count(Query{}) = %d, want 5", n)
 	}
 }
 
-func TestMemoryCollection_CountWithPredicateCountsMatchingOnly(t *testing.T) {
+func TestMemoryCollection_CountWithWhereCountsMatchingOnly(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemoryCollection[collectionTestItem]()
 	for _, item := range []collectionTestItem{
@@ -98,32 +113,355 @@ func TestMemoryCollection_CountWithPredicateCountsMatchingOnly(t *testing.T) {
 		}
 	}
 
-	n, err := c.Count(ctx, func(item collectionTestItem) bool { return item.Group == "A" })
+	n, err := c.Count(ctx, Query[collectionTestItem]{
+		Where: func(item collectionTestItem) (bool, error) { return item.Group == "A", nil },
+	})
 	if err != nil {
-		t.Fatalf("Count(pred): erro inesperado: %v", err)
+		t.Fatalf("Count(Where): erro inesperado: %v", err)
 	}
 	if n != 3 {
-		t.Fatalf("Count(pred) = %d, want 3", n)
+		t.Fatalf("Count(Where) = %d, want 3", n)
 	}
 }
 
-func TestMemoryCollection_EmptyCollectionListsAndCountsEmpty(t *testing.T) {
+func TestMemoryCollection_EmptyCollectionSelectsAndCountsEmpty(t *testing.T) {
 	ctx := context.Background()
 	c := NewMemoryCollection[collectionTestItem]()
 
-	got, err := c.List(ctx, nil)
+	got, err := c.Select(ctx, Query[collectionTestItem]{})
 	if err != nil {
-		t.Fatalf("List(nil) sobre coleção vazia: erro inesperado: %v", err)
+		t.Fatalf("Select(Query{}) sobre coleção vazia: erro inesperado: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("List(nil) sobre coleção vazia: esperava slice vazio, got %+v", got)
+		t.Fatalf("Select(Query{}) sobre coleção vazia: esperava slice vazio, got %+v", got)
 	}
 
-	n, err := c.Count(ctx, nil)
+	n, err := c.Count(ctx, Query[collectionTestItem]{})
 	if err != nil {
-		t.Fatalf("Count(nil) sobre coleção vazia: erro inesperado: %v", err)
+		t.Fatalf("Count(Query{}) sobre coleção vazia: erro inesperado: %v", err)
 	}
 	if n != 0 {
-		t.Fatalf("Count(nil) sobre coleção vazia = %d, want 0", n)
+		t.Fatalf("Count(Query{}) sobre coleção vazia = %d, want 0", n)
+	}
+}
+
+// --- 3. SelectSlice: ordem semântica fixa where -> orderBy -> skip -> take,
+// independente da ordem em que os campos da struct Query[T] são atribuídos no
+// literal Go (REQ-33.1, §design read-side 3.1). ---
+
+func TestSelectSlice_SemanticOrderIsWhereThenOrderByThenSkipThenTake(t *testing.T) {
+	items := []collectionTestItem{
+		{ID: "a", Group: "keep", Order: 5},
+		{ID: "b", Group: "drop", Order: 1},
+		{ID: "c", Group: "keep", Order: 3},
+		{ID: "d", Group: "keep", Order: 4},
+		{ID: "e", Group: "drop", Order: 2},
+		{ID: "f", Group: "keep", Order: 1},
+	}
+
+	// where: só Group == "keep" (4 itens: a,c,d,f, valores de Order 5,3,4,1);
+	// orderBy Order ascending -> f(1),c(3),d(4),a(5); skip 1 -> c,d,a; take 2
+	// -> c,d. Se a ordem semântica fosse textual/de atribuição (skip/take
+	// antes de where/orderBy), o resultado seria diferente — este teste
+	// falharia sob qualquer implementação que não fixe where->orderBy->
+	// skip->take.
+	q := Query[collectionTestItem]{
+		Skip: 1,
+		Take: 2,
+		Less: func(a, b collectionTestItem) (bool, error) { return a.Order < b.Order, nil },
+		Where: func(item collectionTestItem) (bool, error) {
+			return item.Group == "keep", nil
+		},
+	}
+
+	got, err := SelectSlice(items, q)
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	wantIDs := []string{"c", "d"}
+	gotIDs := make([]string, len(got))
+	for i, item := range got {
+		gotIDs[i] = item.ID
+	}
+	if len(gotIDs) != len(wantIDs) {
+		t.Fatalf("SelectSlice devolveu %v, want IDs %v", gotIDs, wantIDs)
+	}
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Fatalf("SelectSlice devolveu IDs %v, want %v (ordem semântica where->orderBy->skip->take violada)", gotIDs, wantIDs)
+		}
+	}
+}
+
+func TestSelectSlice_NoWhereOrdersEntireSlice(t *testing.T) {
+	items := []collectionTestItem{
+		{ID: "a", Order: 3},
+		{ID: "b", Order: 1},
+		{ID: "c", Order: 2},
+	}
+	got, err := SelectSlice(items, Query[collectionTestItem]{
+		Less: func(a, b collectionTestItem) (bool, error) { return a.Order < b.Order, nil },
+	})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	wantIDs := []string{"b", "c", "a"}
+	for i, want := range wantIDs {
+		if got[i].ID != want {
+			t.Fatalf("SelectSlice[%d].ID = %q, want %q (got IDs completos: %v)", i, got[i].ID, want, got)
+		}
+	}
+}
+
+// --- 4. Estabilidade do sort: itens que empatam em Less mantêm a ordem
+// relativa original (pós-where). ---
+
+func TestSelectSlice_SortIsStableForEqualKeys(t *testing.T) {
+	// Todos com o mesmo Order (empate total) -> Less nunca reporta "menor",
+	// então um sort não-estável poderia embaralhar; a ordem esperada é a de
+	// inserção original.
+	items := []collectionTestItem{
+		{ID: "1", Order: 0},
+		{ID: "2", Order: 0},
+		{ID: "3", Order: 0},
+		{ID: "4", Order: 0},
+	}
+	got, err := SelectSlice(items, Query[collectionTestItem]{
+		Less: func(a, b collectionTestItem) (bool, error) { return a.Order < b.Order, nil },
+	})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	for i, item := range items {
+		if got[i].ID != item.ID {
+			t.Fatalf("SelectSlice[%d].ID = %q, want %q (sort não estável: ordem original não preservada em empate)", i, got[i].ID, item.ID)
+		}
+	}
+}
+
+// --- 5. skip/take: bordas. ---
+
+func TestSelectSlice_SkipBeyondLengthYieldsEmpty(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{Skip: 10})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("SelectSlice(Skip: 10) sobre 3 itens = %+v, want slice vazio", got)
+	}
+}
+
+func TestSelectSlice_SkipExactlyLengthYieldsEmpty(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{Skip: 3})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("SelectSlice(Skip: 3) sobre 3 itens = %+v, want slice vazio", got)
+	}
+}
+
+func TestSelectSlice_TakeZeroMeansAbsentNotEmpty(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	got, err := SelectSlice(items, NewQuery[collectionTestItem]())
+	if err != nil {
+		t.Fatalf("SelectSlice(NewQuery): erro inesperado: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("SelectSlice(NewQuery — Skip/Take ausentes) = %+v, want os 3 itens originais", got)
+	}
+
+	q := NewQuery[collectionTestItem]()
+	q.Take = 0
+	got, err = SelectSlice(items, q)
+	if err != nil {
+		t.Fatalf("SelectSlice(Take: 0): erro inesperado: %v", err)
+	}
+	// Take <= 0 é tratado como "ausente" (ver doc de Query.Skip/Take) — a
+	// mesma convenção que faz um Query[T]{} nu (Go zero value Take==0, sem
+	// passar por NewQuery) significar "sem paginação" para os chamadores que
+	// esta task migra (nenhum ainda seta Skip/Take — orderBy/skip/take na
+	// lowering é I2). Um "take 0" de verdade da linguagem (grammar aceita)
+	// portanto não tem, nesta fase, como ser distinguido de "take ausente"
+	// por este seam — registrado aqui como comportamento atual, não uma
+	// omissão desta task (o DomainScript não tem, em nenhum exemplo do spec,
+	// "take 0"; se aparecer, a distinção fica para quem popular Take de
+	// verdade, I2, decidir usando o sentinela -1 vs. 0 de propósito).
+	if len(got) != 3 {
+		t.Fatalf("SelectSlice(Take: 0, sem NewQuery) = %+v, want os 3 itens originais (Take<=0 == ausente)", got)
+	}
+}
+
+func TestSelectSlice_TakeBeyondRemainingYieldsWhatRemains(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{Skip: 1, Take: 100})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "2" || got[1].ID != "3" {
+		t.Fatalf("SelectSlice(Skip: 1, Take: 100) = %+v, want [2, 3]", got)
+	}
+}
+
+func TestSelectSlice_NegativeSkipAndTakeMeanAbsent(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{Skip: -1, Take: -1})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("SelectSlice(Skip: -1, Take: -1) = %+v, want os 3 itens originais (sentinela \"ausente\")", got)
+	}
+}
+
+func TestNewQuery_StartsSkipAndTakeAtNegativeOneSentinel(t *testing.T) {
+	q := NewQuery[collectionTestItem]()
+	if q.Skip != -1 || q.Take != -1 {
+		t.Fatalf("NewQuery() = %+v, want Skip == -1 e Take == -1 (sentinela \"ausente\", §design read-side 2.1)", q)
+	}
+}
+
+// --- 6. Erro de predicado/Less aborta a operação INTEIRA (REQ-36.1) — nunca
+// pula o item silenciosamente. ---
+
+var errCollectionTestBoom = errors.New("boom")
+
+func TestSelectSlice_WherePropagatesErrorAndAbortsWholeCall(t *testing.T) {
+	items := []collectionTestItem{
+		{ID: "1", Group: "A"},
+		{ID: "2", Group: "BOOM"},
+		{ID: "3", Group: "A"},
+	}
+	got, err := SelectSlice(items, Query[collectionTestItem]{
+		Where: func(item collectionTestItem) (bool, error) {
+			if item.Group == "BOOM" {
+				return false, errCollectionTestBoom
+			}
+			return true, nil
+		},
+	})
+	if !errors.Is(err, errCollectionTestBoom) {
+		t.Fatalf("SelectSlice: err = %v, want errCollectionTestBoom", err)
+	}
+	if got != nil {
+		t.Fatalf("SelectSlice com erro de Where: got = %+v, want nil (nenhum resultado parcial)", got)
+	}
+}
+
+func TestSelectSlice_LessPropagatesErrorAndAbortsWholeCall(t *testing.T) {
+	items := []collectionTestItem{
+		{ID: "1", Order: 1},
+		{ID: "2", Order: 2},
+		{ID: "3", Order: 3},
+	}
+	got, err := SelectSlice(items, Query[collectionTestItem]{
+		Less: func(a, b collectionTestItem) (bool, error) {
+			if a.Order == 2 || b.Order == 2 {
+				return false, errCollectionTestBoom
+			}
+			return a.Order < b.Order, nil
+		},
+	})
+	if !errors.Is(err, errCollectionTestBoom) {
+		t.Fatalf("SelectSlice: err = %v, want errCollectionTestBoom", err)
+	}
+	if got != nil {
+		t.Fatalf("SelectSlice com erro de Less: got = %+v, want nil (nenhum resultado parcial)", got)
+	}
+}
+
+func TestMemoryCollection_CountPropagatesWhereErrorAndAbortsWholeCall(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemoryCollection[collectionTestItem]()
+	for _, item := range []collectionTestItem{{ID: "1", Group: "A"}, {ID: "2", Group: "BOOM"}} {
+		if err := c.Add(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := c.Count(ctx, Query[collectionTestItem]{
+		Where: func(item collectionTestItem) (bool, error) {
+			if item.Group == "BOOM" {
+				return false, errCollectionTestBoom
+			}
+			return true, nil
+		},
+	})
+	if !errors.Is(err, errCollectionTestBoom) {
+		t.Fatalf("Count: err = %v, want errCollectionTestBoom", err)
+	}
+	if n != 0 {
+		t.Fatalf("Count com erro de Where: n = %d, want 0 (Go zero value no caminho de erro)", n)
+	}
+}
+
+// --- 7. O caminho in-memory IGNORA WhereEq/OrderField: closures são a única
+// verdade nesta fase (nada gera os descritores ainda — task I2+). Os
+// descritores abaixo, se fossem honrados, dariam uma resposta ERRADA — a
+// prova é que SelectSlice devolve a resposta CORRETA (a do Where/Less real)
+// mesmo assim. ---
+
+func TestSelectSlice_IgnoresDeclarativeDescriptors(t *testing.T) {
+	items := []collectionTestItem{
+		{ID: "1", Group: "A", Order: 3},
+		{ID: "2", Group: "B", Order: 1},
+		{ID: "3", Group: "A", Order: 2},
+	}
+
+	q := Query[collectionTestItem]{
+		// Where de verdade: só Group == "A" (2 itens: "1","3").
+		Where: func(item collectionTestItem) (bool, error) { return item.Group == "A", nil },
+		// WhereEq descritivo MENTIROSO: se fosse honrado, filtraria por
+		// Group == "B" (1 item) — resposta diferente da correta.
+		WhereEq: []FieldEq{{Field: "Group", Value: "B"}},
+		// Less de verdade: ordena por Order ascendente -> "3"(2),"1"(3).
+		Less: func(a, b collectionTestItem) (bool, error) { return a.Order < b.Order, nil },
+		// OrderField/OrderDesc descritivos MENTIROSOS: se fossem honrados,
+		// ordenariam por ID descendente — ordem diferente da correta.
+		OrderField: "ID",
+		OrderDesc:  true,
+	}
+
+	got, err := SelectSlice(items, q)
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	wantIDs := []string{"3", "1"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("SelectSlice devolveu %d item(ns), want %d: %+v", len(got), len(wantIDs), got)
+	}
+	for i, want := range wantIDs {
+		if got[i].ID != want {
+			t.Fatalf("SelectSlice[%d].ID = %q, want %q — WhereEq/OrderField parecem ter sido honrados (deveriam ser ignorados pelo caminho in-memory, NFR-18)", i, got[i].ID, want)
+		}
+	}
+}
+
+// --- 8. Independência por T: Collection[T] de tipos diferentes não
+// compartilham estado (comportamento herdado de H4, reconfirmado sob a nova
+// API). ---
+
+type otherCollectionTestItem struct{ Name string }
+
+func TestMemoryCollection_IndependentPerType(t *testing.T) {
+	ctx := context.Background()
+	a := NewMemoryCollection[collectionTestItem]()
+	b := NewMemoryCollection[otherCollectionTestItem]()
+
+	if err := a.Add(ctx, collectionTestItem{ID: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Add(ctx, otherCollectionTestItem{Name: "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	gotA, err := a.Select(ctx, Query[collectionTestItem]{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotA) != 1 {
+		t.Fatalf("Collection[collectionTestItem] afetada por Collection[otherCollectionTestItem]: %+v", gotA)
 	}
 }
