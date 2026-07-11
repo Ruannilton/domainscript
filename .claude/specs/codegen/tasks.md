@@ -868,9 +868,95 @@
   `feat(codegen): geração de testes a partir de *.test.ds (property-based)`,
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de Policy/Query)`
 
-- [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
+- [x] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,
   `CLAUDE.md` (back-end deixa de ser "fora de escopo") e os specs. _(NFR-13, DoD §5)_
+
+  **Auditoria de determinismo/idempotência — gap encontrado e fechado.** Antes
+  desta task, `driver/generate_test.go` (`TestGenerateProjectIdempotentSameBytes`,
+  `TestGenerateProjectRemovesOrphanFiles`, genéricos sobre projetos sintéticos) e
+  `driver/generate_e2e_wallet_test.go` (`TestGenerateWalletE2ERegenTwoDirsByteIdentical`,
+  `TestGenerateWalletE2ESmokeCompile`, `TestGenerateWalletE2EGoModHasNoExternalRequire`,
+  `TestGenerateWalletE2EBehavior`) cobriam o Wallet — mas **nenhum teste chamava
+  `GenerateProject` sobre `docs/examples/shop`**: `driver/shop_regression_test.go`
+  só exercita o front-end (`CheckProject`/diagnósticos), e `codegen/channel_test.go`
+  usa fixtures sintéticas só "inspiradas" na topologia do Shop. Isso era um gap
+  genuíno contra a DoD §5.2, que cita `docs/examples/shop` explicitamente. Fechado
+  com `driver/generate_e2e_shop_test.go`, espelhando a estrutura do arquivo do
+  Wallet: `TestGenerateShopE2ELayout` (estrutura multi-service — dois
+  `cmd/<service>/main.go`, um por Service da `topology.ds`, Sales e Delivery, não
+  um `cmd/shop`; `contracts/events.go` para o `PublicEvent` compartilhado
+  `OrderPlaced`), `TestGenerateShopE2ESmokeCompile` (`go build`/`go vet`/`go test`
+  reais sobre a saída escrita em disco), `TestGenerateShopE2EGoModHasNoExternalRequire`
+  e `TestGenerateShopE2ERegenTwoDirsByteIdentical`. Achado registrado no processo:
+  `docs/examples/shop/orders/mod.ds` declara `Database MainDb { provider: "postgres" }`,
+  mas `codegen/sql_wiring.go` (G1) só reconhece `"sqlite"` (case-insensitive) como
+  adapter SQL real — `"postgres"` é decorativo (mesmo achado já documentado em
+  `codegen/sql_adapter_test.go`) — e não há `Interface GRPC` nem `Telemetry` em
+  nenhum `.ds` do Shop; logo o `go.mod` gerado do Shop, como o do Wallet, não tem
+  nenhum `require` — provado empiricamente pelo teste, não só por leitura do
+  código, então uma regressão futura em `sql_wiring.go` quebraria o teste, não
+  passaria em silêncio. Julgamento sobre teste comportamental: o único Policy do
+  Shop é `execute { return }` (sem lógica observável) e o exemplo não tem
+  `*.test.ds`; sintetizar uma fixture de negócio à parte (mesmo esforço que a
+  fatia de Policy/Query de H4 fez com o módulo `Refunds`) provaria uma fixture
+  paralela, não o Shop real — decisão deliberada de **não** inflar essa superfície
+  aqui; `go test ./...` sobre a saída real (incl. o runtime vendorado) já fecha o
+  critério de fumaça honestamente. Os testes de auditoria pré-existentes do Wallet
+  (`TestGenerateWalletE2E*`, `TestGenerateProjectIdempotentSameBytes`,
+  `TestGenerateProjectRemovesOrphanFiles`) foram rodados de novo sobre o HEAD
+  atual e continuam verdes — não apenas confirmados por existirem.
+
+  **Revisão contra o Definition of Done (`requirements.md` §5):**
+
+  1. **Atendido.** Todo construto do spec v6 modelado pelo front-end tem tarefa
+     `[x]` em Marcos E–H (VO/Enum E3, Error/Event E4, Aggregate E6, Command/UseCase
+     E7, View/Query/Projection E8, Policy/Worker F1/F2, Saga F3,
+     Notification/Adapter/Foreign F4, gRPC H1, Telemetry/Metric H2/H3, testes H4).
+     As exceções de §1.3 (exposição TCP/UDP, receptor `tenant` em corpos,
+     `provision tenant(id)`, `events()` nativo) são exclusões documentadas porque
+     o **front-end** também não as modela — não são gaps do gerador.
+  2. **Atendido, e agora com paridade de evidência entre os dois exemplos.** Antes
+     desta task o Wallet tinha cobertura E2E completa e o Shop só tinha cobertura
+     de front-end; o gap foi fechado por `generate_e2e_shop_test.go` (acima).
+  3. **Atendido.** `TestGenerateProjectIdempotentSameBytes` (mesmo `out`, duas
+     rodadas, sem reescrita de arquivo inalterado — inclusive prova por `mtime`),
+     `TestGenerateWalletE2ERegenTwoDirsByteIdentical` e
+     `TestGenerateShopE2ERegenTwoDirsByteIdentical` (dois `out` distintos, bytes
+     idênticos) — todos verdes.
+  5. **Atendido.** Todo pacote de emissores (`codegen/decl_*.go`, `http.go`,
+     `grpc.go`, `observ.go`, `gentest.go`, …) tem par de golden test (51 artefatos
+     `.golden` sob `codegen/`); dependências externas (`sqlrt`, `grpcrt`, `otelrt`)
+     isoladas em subpacotes próprios, referenciadas só quando o programa as exige
+     (ver invariante de back-end registrada em `CLAUDE.md`).
+  4. **Atendido.** `TestGenerateWalletE2EGoModHasNoExternalRequire` e
+     `TestGenerateShopE2EGoModHasNoExternalRequire` prova que o `go.mod` de ambos
+     os exemplos não tem `require`; o núcleo (`runtime/`) depende só da stdlib
+     (REQ-16.2).
+  6. **Atendido.** `cmd/dsc/main_test.go`: `TestRunGenRefusesInvalidProject` (exit
+     1, nada escrito) e `TestRunGenValidProjectWritesFiles` (gera de fato), mais
+     `TestRunGenMissingOutFlagExitsTwo` (uso incorreto → exit 2) — no nível de CLI,
+     não só de `driver.GenerateProject`.
+  7. **Atendido.** `go build ./...`, `go vet ./...`, `gofmt -l .` (vazio) e
+     `go test ./...` rodados de fato nesta task sobre o HEAD após o fechamento —
+     19 pacotes testáveis, todos `ok` (3 pacotes opt-in — `grpcrt`/`otelrt`/`sqlrt`
+     — sem arquivo de teste próprio, o que é esperado: são runtime vendorado puro,
+     exercitados pelos golden/smoke tests de `codegen` que os referenciam).
+
+  Nenhum critério ficou incompleto — o único gap real encontrado (item 2, Shop
+  sem cobertura E2E de geração) foi fechado nesta própria task, não adiado.
+
+  `README.md` e `CLAUDE.md` (raiz) atualizados para descrever os dois estágios:
+  pipeline com o estágio de geração, seção de back-end (`dsc gen`,
+  `driver.GenerateProject`, o que é gerado, núcleo sem deps vs. deps opt-in),
+  CLI com o subcomando `gen` (verificado contra `cmd/dsc/main.go` antes de
+  documentar), Estado cobrindo os dois ciclos com os dois Definition of Done.
+  `CLAUDE.md` ganhou uma seção "Back-end architecture invariants" (núcleo vs.
+  deps opt-in, golden+smoke pareados, determinismo) e as entradas de pacote de
+  `codegen/*` no layout — sem duplicar `design.md`/`tasks.md`.
+
+  **Este é o fechamento de todo o ciclo `.claude/specs/codegen/` (Marcos E, F, G,
+  H) — front-end e back-end do transpilador estão ambos completos.**
   **Commit:** `docs(repo): fecha o back-end e atualiza o estado`
 
 ---

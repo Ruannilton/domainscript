@@ -4,41 +4,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**The front-end is implemented and green** (`go build ./...` / `go test ./...`),
-committed in a Go module named `domainscript`. The original plan in
-`.claude/specs/{requirements,design,tasks}.md` (Fases 0–11, REQ-1..8) is done,
-and the follow-up plan in `.claude/specs/type-checking/` — full name & type
-resolution (REQ-9..13) — is also complete: bodies and config refs are resolved,
-a type model backs member-access and type-compatibility checks, and the new
-name/type diagnostics carry stable codes (`E100`..`E103`). Both spec sets are the
-source of truth and are written in Portuguese:
+**Both the front-end and the back-end are implemented and green**
+(`go build ./...` / `go test ./...`), committed in a Go module named
+`domainscript`. The original plan in `.claude/specs/{requirements,design,tasks}.md`
+(Fases 0–11, REQ-1..8) is done, the follow-up plan in
+`.claude/specs/type-checking/` — full name & type resolution (REQ-9..13) — is
+done, and the code-generation plan in `.claude/specs/codegen/` — the back-end,
+Marcos E/F/G/H (REQ-14..32) — is **also complete**: a validated program now
+generates an idiomatic, compilable Go project (`driver.GenerateProject` /
+`dsc gen`). Three spec sets are the source of truth and are written in
+Portuguese:
 
 - `.claude/specs/requirements.md` / `design.md` / `tasks.md` — the front-end
   (REQ-1..8, NFR-1..7).
 - `.claude/specs/type-checking/{requirements,design,tasks}.md` — name & type
   resolution (REQ-9..13, NFR-8..10).
+- `.claude/specs/codegen/{requirements,design,tasks}.md` — the back-end / Go
+  code generation (REQ-14..32, NFR-11..17).
 
 Work now is maintenance and extension, not greenfield. Still follow the spec
 flow: a task references the REQ it satisfies (`(REQ-n)`) and the design section
 (`(§design x)`). Do not invent architecture that contradicts `design.md`; if a
-change is needed, update the spec. Go code generation (the back-end) remains
-out of scope.
+change is needed, update the spec.
 
 ## What is being built
 
-The **front-end of a transpiler for DomainScript** (spec v6.0): the stage from
-source text to a validation verdict. It takes DomainScript files and produces
-(a) a validated AST and (b) a diagnostics report. Go code generation is a later,
-out-of-scope stage.
+A **two-stage transpiler for DomainScript** (spec v6.0). The **front-end**
+goes from source text to a validation verdict: it takes DomainScript files and
+produces (a) a validated AST and (b) a diagnostics report. The **back-end**
+consumes that validated program and produces (c) a complete, idiomatic,
+compilable Go project — the front-end answers "is this correct?"; the back-end
+answers "here is the Go code that does this."
 
-Pipeline (a shared, accumulating `DiagnosticBag` runs across all stages):
+Pipeline (a shared, accumulating `DiagnosticBag` runs across the front-end
+stages; the back-end only runs when the bag has no errors):
 
 ```
-source ─▶ LEXER ─▶ tokens ─▶ PARSER ─▶ AST ─▶ RESOLVER ─▶ CHECKER ─▶ validated AST
-          REQ-1              REQ-2/3           REQ-4/9/10   REQ-5/12/13
+                    ┌──────────────── FRONT-END ────────────────┐
+source ─▶ LEXER ─▶ tokens ─▶ PARSER ─▶ AST ─▶ RESOLVER ─▶ CHECKER ─▶ validated program
+          REQ-1              REQ-2/3           REQ-4/9/10   REQ-5/12/13      │
+                                                                              ▼ HasErrors()? no
+                                                                     ┌── BACK-END ──┐
+                                                                     │  codegen.Generate│──▶ Go project
+                                                                     └──────────────┘   (go build ✓)
+                                                                     REQ-14..32
 ```
 
-The RESOLVER now does three passes: type/ref resolution (REQ-4), then name
+The RESOLVER does three passes: type/ref resolution (REQ-4), then name
 resolution in executable bodies (REQ-9), then config-ref resolution (REQ-10). The
 CHECKER runs the §23 rules (REQ-5) plus, over a shared `types.Model`, member-access
 (REQ-12) and type-compatibility (REQ-13) checks. The ordering is deliberate: an
@@ -48,6 +60,17 @@ type diagnostic (anti-cascade, NFR-9).
 For multi-file projects, a **program aggregation** stage (REQ-7) runs between
 PARSER and RESOLVER: every file is parsed, then ASTs are merged into one program
 model before global resolution and cross-file rules.
+
+The **back-end** (`codegen` package, orchestrated by `driver.GenerateProject`)
+never re-lexes/re-parses/re-validates: its only inputs are `program.Program`,
+`symbols.SymbolTable` and a `types.Model` built over the table. Because the AST
+doesn't carry resolved symbols per node, the generator re-queries the symbol
+table and rebuilds a local type environment (`lower.TypeEnv`, §design codegen
+3.6a) to lower expressions/statements to Go. Output is organized as a real Go
+project: `go.mod`, a vendored `runtime/` package, one Go package per domain
+module, `contracts/` for shared `PublicEvent`s, and one `cmd/<service>/` per
+service in the topology (or a single default group when there's no topology,
+as in the single-module Wallet example).
 
 ## Architecture invariants
 
@@ -78,10 +101,34 @@ These are the load-bearing decisions — violating them breaks the design's core
 - **Cross-file rules need the whole program.** Rules REQ-5.9–12, 16–17, 23 cannot
   run file-by-file; they run after program aggregation (REQ-7).
 
+### Back-end architecture invariants
+
+- **Core vs. opt-in dependencies (NFR-12).** The transactional core (in-memory
+  event store, dispatcher, unit of work, `net/http` HTTP edge) depends on the
+  Go stdlib and the vendored `runtime/` only — `go build`/`go run` with no
+  external module. A real DB driver, gRPC, or OpenTelemetry are added to
+  `go.mod` **only** when the program actually declares them (a `Database` with
+  a provider `codegen/sql_wiring.go` recognizes as real — currently just
+  `"sqlite"`, so a decorative `provider: "postgres"` label pulls nothing; an
+  `Interface GRPC`; a `Telemetry` block) — always isolated behind an interface.
+- **Golden test + smoke compile, paired (NFR-17).** Every emitter has a golden
+  test (generated output vs. a versioned reference); on top of that, the two
+  bundled examples (`docs/examples/wallet`, `docs/examples/shop`) are generated
+  for real via `GenerateProject` and `go build`/`go vet`/`go test` run over the
+  actual bytes written to disk — a golden test alone doesn't prove the output
+  compiles.
+- **Determinism (NFR-13).** Regenerating the same program produces byte-identical
+  output: stable ordering of declarations, imports, map members, and files.
+  Regenerating into an already-populated output directory is idempotent (unchanged
+  files aren't rewritten; files orphaned by a removed declaration are deleted).
+- **The generator never re-lexes/re-parses/re-validates.** Its only inputs are
+  `program.Program`, `symbols.SymbolTable`, and a `types.Model`; it refuses to
+  run at all when the program's `DiagnosticBag` has errors (REQ-14.1).
+
 ## Package layout (per design.md §2 — all implemented)
 
 ```
-cmd/dsc/        CLI (REQ-8)
+cmd/dsc/        CLI (REQ-8, REQ-32: "check" and "gen" subcommands)
 token/          TokenKind, Token, Pos (1-based), keywords
 diag/           Diagnostic, Severity, DiagnosticBag (dedup, cap=100, render); codes E1xx
 lexer/          single-pass over []rune (REQ-1)
@@ -94,11 +141,19 @@ types/          Type model, TypeOf/Members catalog, expr inference, Assignable (
 sema/           checker + rules_{types,flow,domain,program,warnings} (REQ-5);
                 rules_typecheck (member, REQ-12) + rules_compat (compat, REQ-13)
 program/        aggregates files into a unified model (REQ-7)
-driver/         pipeline orchestration + public API (REQ-8)
+driver/         pipeline orchestration + public API (REQ-8); GenerateProject (REQ-32)
+codegen/        back-end orchestrator: Generate(prog, model, opts) → []File (REQ-14)
+codegen/emit/   Go emitter: buffer, managed imports, gofmt via go/format (REQ-15)
+codegen/lower/  lowering of Expr/Stmt/Block → Go, incl. TypeEnv (REQ-22, §design 3.6a)
+codegen/rtsrc/  vendored runtime source (event store, dispatcher, UoW, …), embedded (REQ-16)
+codegen/grpcrt/ gRPC edge helpers, opt-in — only referenced when `Interface GRPC` (REQ-29)
+codegen/otelrt/ OpenTelemetry adapter, opt-in — only referenced when `Telemetry` (REQ-30)
+codegen/sqlrt/  `database/sql` adapter, opt-in — only referenced for a real DB provider (REQ-26.2)
 ```
 
-Public API surface: `driver.CheckSource(src) (*ast.File, *diag.DiagnosticBag)`
-and `driver.CheckProject(dir) (*program.Program, *diag.DiagnosticBag)`.
+Public API surface: `driver.CheckSource(src) (*ast.File, *diag.DiagnosticBag)`,
+`driver.CheckProject(dir) (*program.Program, *diag.DiagnosticBag)`, and
+`driver.GenerateProject(dir, out, codegen.Options) (*diag.DiagnosticBag, error)`.
 
 ## Commands
 
@@ -110,6 +165,7 @@ go test ./...                          # run the whole suite
 go test ./parser/ -run TestRecovery    # run one package / one test by regex
 go vet ./...                           # static checks
 gofmt -l .                             # list unformatted files
+dsc gen <dir> -o <out>                  # validate <dir> and generate a Go project into <out>
 ```
 
 A `Makefile` wraps these with `build`/`test`/`lint`/`fmt` targets — prefer
@@ -136,4 +192,13 @@ A: validates ValueObject & Enum (Fases 0–3, 4A, 4B.1–2, partial 6, single-fi
 API). B: validates a full domain module incl. per-file ❌ rules (Fases 4–6, 8).
 C: validates a multi-module project — the cross-file architectural rules that are
 DomainScript's differentiator (Fases 7, 9, 10). D: production-ready — robustness,
-determinism, full §23 coverage (Fase 11).
+determinism, full §23 coverage (Fase 11) — front-end closes here.
+
+Back-end (`.claude/specs/codegen/tasks.md`): E "gera e roda o núcleo transacional"
+(VO/Enum/Error/Event/Aggregate/Command/UseCase/Query + lowering + in-memory
+runtime + basic HTTP + CLI `gen`). F "reações e coordenação" (Policy/Worker/Saga/
+dispatcher/outbox/Notifications/Adapters/Foreign). G "infraestrutura real"
+(`database/sql`, FileStorage, idempotency, cache, rate limit, multi-tenancy,
+advanced HTTP). H "exposição e observabilidade avançadas + testes" (gRPC, OTel,
+`Metric`, `*.test.ds` → Go tests, and closure — determinism/idempotency audit,
+docs) — back-end closes here.
