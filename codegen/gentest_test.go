@@ -77,7 +77,7 @@ func emitWalletTests(t *testing.T) []byte {
 	reg := walletVOOperatorRegistryFromProgram(prog)
 	model := types.NewModel(prog.Symbols)
 
-	got, err := codegen.EmitTests("wallet", []*ast.TestDecl{tdWallet, tdDeposit}, []*ast.FixtureDecl{fxActive}, model, prog.Symbols, "Wallet", reg, map[string]*ast.AggregateDecl{"Wallet": agg}, map[string]*ast.UseCaseDecl{"PerformDeposit": uc}, nil, nil)
+	got, err := codegen.EmitTests("wallet", []*ast.TestDecl{tdWallet, tdDeposit}, []*ast.FixtureDecl{fxActive}, model, prog.Symbols, "Wallet", reg, map[string]*ast.AggregateDecl{"Wallet": agg}, map[string]*ast.UseCaseDecl{"PerformDeposit": uc}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("EmitTests: erro inesperado: %v", err)
 	}

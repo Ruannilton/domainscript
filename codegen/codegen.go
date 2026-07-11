@@ -505,6 +505,12 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	for _, s := range b.sagas {
 		sagasByName[s.Name] = s
 	}
+	// policiesByName (H4, gentest.go, §22.4) resolve o alvo de um Test por
+	// nome — mesmo padrão de aggregates/usecasesByName/sagasByName acima.
+	policiesByName := make(map[string]*ast.PolicyDecl, len(b.policies))
+	for _, p := range b.policies {
+		policiesByName[p.Name] = p
+	}
 	// adapterByName indexa os Adapter do módulo por nome (F4, REQ-25.3) — o
 	// registry que StmtLowerer.WithNotifyAdapters consulta para reconhecer
 	// "Xxx(...)" como notify/call de uma Notification (ver decl_io.go/
@@ -748,7 +754,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	// b.fixtures (§22.6) viram helpers "func fixture<Nome>(...)" no MESMO
 	// arquivo, ao lado dos Test (ver a doc de emitFixtureDecl).
 	if len(b.tests) > 0 || len(b.fixtures) > 0 {
-		content, err := EmitTests(pkg, b.tests, b.fixtures, model, tab, moduleName, reg, aggregates, usecasesByName, sagasByName, adapterByName)
+		content, err := EmitTests(pkg, b.tests, b.fixtures, model, tab, moduleName, reg, aggregates, usecasesByName, sagasByName, policiesByName, adapterByName)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("%s_test.go: %w", pkg, err)
 		}

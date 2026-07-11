@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -27,18 +28,49 @@ import (
 // §22 declara sete formas de cenário cruzando 4 famílias de alvo (Aggregate,
 // UseCase, Policy/Query, Saga) mais mock/fail-step/property/Fixture (REQ-
 // 31.1-4). Esta fase cobre §22.1 (Aggregate), §22.2 (UseCase), §22.3 (Saga,
-// mock/fail-step), §22.5 (property, só sobre Aggregate — ver "--- property"
-// abaixo) e §22.6 (Fixture): um Test cujo Name resolve a um
-// *ast.AggregateDecl, *ast.UseCaseDecl OU *ast.SagaDecl DESTE módulo —
-// achado por casamento de nome exato contra o mapa recebido (mesmo padrão de
+// mock/fail-step), §22.4 (Policy/Query, ver "--- Policy/Query" abaixo), §22.5
+// (property, só sobre Aggregate — ver "--- property" abaixo) e §22.6
+// (Fixture): um Test cujo Name resolve a um *ast.AggregateDecl,
+// *ast.UseCaseDecl, *ast.SagaDecl OU *ast.PolicyDecl DESTE módulo — achado
+// por casamento de nome exato contra o mapa recebido (mesmo padrão de
 // sema/rules_test_files.go:sagaSteps, que já faz esse casamento por nome
 // para Saga) — cada ast.PropertyDecl de um Test que resolveu a um Aggregate
 // (ver a doc de emitAggregatePropertyDecls), e cada *ast.FixtureDecl
 // "Subject from [eventos]" (helper reusável, ver a doc de emitFixtureDecl).
-// Policy/Query (§22.4, emitted count sem Subject) fica para uma fase
-// seguinte — um Test cujo nome não resolve a um Aggregate, UseCase NEM Saga
+// Um Test cujo nome não resolve a um Aggregate, UseCase, Saga NEM Policy
 // deste módulo, ou cujo cenário/property usa uma forma ainda não coberta, é
 // um erro de geração claro agora, nunca gerado silenciosamente errado.
+//
+// --- Policy/Query (§22.4) ---
+//
+// "given <binding> [...]" semeia o runtime.Collection[T] de pacote que o
+// "list T .../count T ..." da Policy sob teste lê (T = a cabeça de cada
+// entidade, ex. "Ticket" — mesmo var que decl_policy.go declara e roteia via
+// WithPerAggregateStore, ver a doc de lá; o nome do var é recalculado aqui
+// pela MESMA função, policyCollectionVarName, nunca reimplementado). "when
+// event Evento(...)" invoca a função gerada da Policy DIRETO (ex.
+// "RefundAllOnEventCancelled(ctx, &ev)"), como uma CAIXA-PRETA — o mesmo
+// espírito de §22.1/22.2 ("quando a função gerada É o alvo, chame-a
+// direto"), nunca via Dispatcher.Publish (o Dispatcher, aqui, é o SEAM DE
+// SAÍDA de uma Policy — o que "emit" escreve — não sua entrada). "then {
+// emitted Evento(...), emitted count N }" reatribui "policyDispatcher" (var
+// de pacote que decl_policy.go declara e Wire normalmente escreve, ver a doc
+// de lá) para um runtime.NewDispatcher() PRÓPRIO deste cenário, com um
+// Subscribe por tipo de Event que a Policy EMITE ESTATICAMENTE (varredura do
+// PRÓPRIO corpo da Policy via policyEmittedEventNames — não do "then" do
+// cenário, que sozinho não bastaria para um "then" só com "emitted count
+// N"), coletando os eventos publicados numa slice local; "emitted
+// Evento(...)" então busca, na slice, ALGUM evento estruturalmente igual
+// (reflect.DeepEqual) — ORDEM-INDEPENDENTE, não por índice estático como
+// "Subject emitted" de §22.2: uma Policy varre um Collection[T] cuja ordem é
+// só a de inserção do given, sem garantia de negócio alguma sobre a ORDEM de
+// emissão entre itens distintos, então comparar por conjunto é a leitura
+// mais fiel do "then" declarativo do spec. Limitação documentada, deliberada
+// e narrow (mesmo espírito de "Subject emitted"/"compensated" em UseCase/
+// Saga): a checagem é de MEMBRO (não multiset) — duas asserções "emitted X"
+// idênticas no mesmo cenário poderiam ambas casar contra o MESMO evento
+// publicado sem detectar duplicata ausente; não exercitado pela fixture
+// desta fase (cada "emitted" pede um evento distinto).
 //
 // --- given: seed direto, não replay de EventStore (achado documentado) ---
 //
@@ -134,26 +166,26 @@ import (
 
 // EmitTests emite o Go de todas as ast.TestDecl E ast.FixtureDecl de um módulo
 // (H4, REQ-31) num único arquivo "<pkg>_test.go" — package pkg (interno, ver a
-// doc do arquivo). aggregates/usecases/sagas são os mapas nome->Decl deste
-// módulo (mesma forma que EmitUseCases já recebe) usados para resolver o alvo
-// de cada Test (§22.1/22.2/22.3, ver a doc do arquivo) — aggregates checado
-// primeiro, depois usecases, depois sagas (as três categorias não colidem: um
-// nome de módulo não nomeia duas ao mesmo tempo). adapterByName (H4, REQ-31.3)
-// é o registry de Adapter deste módulo (mesmo mapa que EmitPolicies/
-// EmitUseCases/EmitSagas já recebem) — usado só pelo caminho de Saga, para
-// resolver o alvo de "mock Target returns ..." (ver emitSagaMock). fixtures
-// (§22.6, ver a doc de emitFixtureDecl) viram helpers "func
-// fixture<Nome>(t *testing.T) *<AggType>" ao lado dos Test — reusam o MESMO
-// mapa aggregates para resolver o Aggregate do Subject. decls E fixtures
+// doc do arquivo). aggregates/usecases/sagas/policies são os mapas nome->Decl
+// deste módulo (mesma forma que EmitUseCases já recebe) usados para resolver o
+// alvo de cada Test (§22.1/22.2/22.3/22.4, ver a doc do arquivo) — aggregates
+// checado primeiro, depois usecases, depois sagas, depois policies (as quatro
+// categorias não colidem: um nome de módulo não nomeia duas ao mesmo tempo).
+// adapterByName (H4, REQ-31.3) é o registry de Adapter deste módulo (mesmo mapa
+// que EmitPolicies/EmitUseCases/EmitSagas já recebem) — usado só pelo caminho
+// de Saga, para resolver o alvo de "mock Target returns ..." (ver
+// emitSagaMock). fixtures (§22.6, ver a doc de emitFixtureDecl) viram helpers
+// "func fixture<Nome>(t *testing.T) *<AggType>" ao lado dos Test — reusam o
+// MESMO mapa aggregates para resolver o Aggregate do Subject. decls E fixtures
 // vazios devolvem (nil, nil): o CHAMADOR (generateModuleFiles) decide, a partir
 // disso, se escreve o arquivo.
-func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl, adapterByName map[string]*ast.AdapterDecl) ([]byte, error) {
+func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl, policies map[string]*ast.PolicyDecl, adapterByName map[string]*ast.AdapterDecl) ([]byte, error) {
 	if len(decls) == 0 && len(fixtures) == 0 {
 		return nil, nil
 	}
 	e := emit.New(pkg)
 	e.Import("testing")
-	needsErrors, needsReflect, needsContext, needsRand := scanTestNeeds(decls, aggregates, usecases, sagas)
+	needsErrors, needsReflect, needsContext, needsRand := scanTestNeeds(decls, aggregates, usecases, sagas, policies)
 	var errorsAlias, reflectAlias, contextAlias string
 	if needsErrors {
 		errorsAlias = e.Import("errors")
@@ -207,7 +239,16 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 			}
 			continue
 		}
-		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate, UseCase nem Saga deste módulo — só §22.1/22.2/22.3/22.5 são suportados nesta fase de H4", t.Name)
+		if policy, ok := policies[t.Name]; ok {
+			if len(t.Properties) > 0 {
+				return nil, fmt.Errorf("Test %s: \"property\" (§22.5) só é suportado sobre um Aggregate nesta fase de H4 (Test %s resolve a uma Policy, ver a doc do arquivo)", t.Name, t.Name)
+			}
+			if err := emitPolicyTestDecl(e, t, policy, model, tab, module, reg, runtimeAlias, errorsAlias, reflectAlias, contextAlias); err != nil {
+				return nil, fmt.Errorf("Test %s: %w", t.Name, err)
+			}
+			continue
+		}
+		return nil, fmt.Errorf("Test %s: alvo não resolve a um Aggregate, UseCase, Saga nem Policy deste módulo — só §22.1/22.2/22.3/22.4/22.5 são suportados nesta fase de H4", t.Name)
 	}
 
 	for _, f := range fixtures {
@@ -222,17 +263,21 @@ func EmitTests(pkg string, decls []*ast.TestDecl, fixtures []*ast.FixtureDecl, m
 // import condicional (evita "importado e não usado" quando nenhum cenário de
 // nenhum Test do módulo usa aquela forma — mesmo padrão de EmitMetrics,
 // decl_metric.go, runtimeAlias lazy). needsContext é true quando ao menos um
-// Test resolve a um UseCase OU Saga (§22.2 sempre usa context.Background();
-// §22.3 sempre chama <base>RunSteps(context.Background(), state) — ver a
-// doc do arquivo) — independente da forma dos cenários dentro dele.
-// needsErrors também é true quando ao menos um scenario de Saga declara
-// "fail step" (emite errors.New — ver emitSagaFailStep); needsReflect
-// também quando ao menos um ThenAssert usa "compensated [...]" (reflect.
-// DeepEqual sobre a ordem de compensação — ver emitSagaThenAssert).
-// needsRand é true quando ao menos um Test resolve a um Aggregate E declara
-// ao menos uma property (§22.5, ver gentest_property.go) — "math/rand" e os
-// dois helpers package-level só são emitidos nesse caso.
-func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl) (needsErrors, needsReflect, needsContext, needsRand bool) {
+// Test resolve a um UseCase, Saga OU Policy (§22.2 sempre usa context.
+// Background(); §22.3 sempre chama <base>RunSteps(context.Background(),
+// state); §22.4 sempre usa "ctx := context.Background()" — ver a doc do
+// arquivo) — independente da forma dos cenários dentro dele. needsErrors
+// também é true quando ao menos um scenario de Saga declara "fail step"
+// (emite errors.New — ver emitSagaFailStep); needsReflect também quando ao
+// menos um ThenAssert usa "compensated [...]" (reflect.DeepEqual sobre a
+// ordem de compensação — ver emitSagaThenAssert) OU "emitted Evento(...)"
+// com Object != nil (§22.2 "Subject emitted"/§22.4 "emitted", ver
+// emitPolicyThenAssert — as duas formas compartilham o mesmo sinal, já que
+// ambas comparam via reflect.DeepEqual). needsRand é true quando ao menos um
+// Test resolve a um Aggregate E declara ao menos uma property (§22.5, ver
+// gentest_property.go) — "math/rand" e os dois helpers package-level só são
+// emitidos nesse caso.
+func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDecl, usecases map[string]*ast.UseCaseDecl, sagas map[string]*ast.SagaDecl, policies map[string]*ast.PolicyDecl) (needsErrors, needsReflect, needsContext, needsRand bool) {
 	for _, t := range decls {
 		if agg, isAgg := aggregates[t.Name]; isAgg {
 			if len(t.Properties) > 0 && agg != nil {
@@ -241,6 +286,8 @@ func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDe
 		} else if _, isUC := usecases[t.Name]; isUC {
 			needsContext = true
 		} else if _, isSaga := sagas[t.Name]; isSaga {
+			needsContext = true
+		} else if _, isPolicy := policies[t.Name]; isPolicy {
 			needsContext = true
 		}
 		for _, sc := range t.Scenarios {
@@ -260,7 +307,7 @@ func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDe
 				if a.Error != "" {
 					needsErrors = true
 				}
-				if a.Verb == "emitted" && a.Subject != nil {
+				if a.Verb == "emitted" && a.Object != nil {
 					needsReflect = true
 				}
 				if a.Verb == "compensated" {
@@ -1344,6 +1391,348 @@ func emitSagaThenAssert(e *emit.Emitter, a *ast.ThenAssert, saga *ast.SagaDecl, 
 
 	default:
 		return fmt.Errorf("forma de then não suportada para Saga nesta fase de H4 (verbo %q)", a.Verb)
+	}
+}
+
+// --- Policy/Query (§22.4, REQ-31.3) ---
+
+// emitPolicyTestDecl emite um func TestX por scenario de t (§22.4). Mesma
+// forma de emitUseCaseTestDecl/emitSagaTestDecl: um StmtLowerer NOVO por
+// scenario (cada cenário é isolado — nenhum estado de lowering vaza entre
+// eles). policyEmittedEventNames(policy) é calculado UMA VEZ aqui (o corpo da
+// Policy não muda entre cenários do mesmo Test) e repassado a cada scenario —
+// ver a doc do arquivo sobre por que a lista vem do CORPO da Policy, não do
+// "then" de cada cenário individualmente.
+func emitPolicyTestDecl(e *emit.Emitter, t *ast.TestDecl, policy *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias, errorsAlias, reflectAlias, contextAlias string) error {
+	eventNames := policyEmittedEventNames(policy)
+
+	used := make(map[string]int)
+	for i, sc := range t.Scenarios {
+		fn := scenarioFuncName(t.Name, i, sc.Name, used)
+
+		env := lower.New(model, tab, module)
+		l := lower.NewLowerer(env, reg, runtimeAlias)
+		sl := lower.NewStmtLowerer(l, e, lower.StmtContext{Panics: true})
+
+		e.Line("")
+		e.Line("// %s prova o cenário %q de Test %s (§22.4, REQ-31).", fn, sc.Name, t.Name)
+		var bodyErr error
+		e.Block(fmt.Sprintf("func %s(t *testing.T)", fn), func() {
+			bodyErr = emitPolicyScenarioBody(e, sl, sc, policy, eventNames, runtimeAlias, errorsAlias, reflectAlias, contextAlias)
+		})
+		if bodyErr != nil {
+			return fmt.Errorf("scenario %q: %w", sc.Name, bodyErr)
+		}
+	}
+	return nil
+}
+
+// policyEmittedEventNames devolve, na ordem de aparição no código-fonte
+// (astutil.ForEachStmt visita em profundidade, incl. dentro de um "for" —
+// determinístico por construção, sem precisar de sort), os nomes DISTINTOS
+// de Event que policy.Execute emite ESTATICAMENTE ("emit Evento(...)", em
+// qualquer profundidade — H4, §22.4). emitPolicyScenarioBody usa isto para
+// saber a quais tipos assinar "policyDispatcher" antes de invocar a Policy
+// sob teste (ver a doc do arquivo): calculado do CORPO REAL da Policy, não
+// do "then" do scenario, porque um scenario cujo "then" só tem "emitted
+// count N" (sem nenhuma "emitted Evento(...)" explícita) não revelaria tipo
+// nenhum sozinho.
+func policyEmittedEventNames(policy *ast.PolicyDecl) []string {
+	seen := make(map[string]bool)
+	var names []string
+	astutil.ForEachStmt(policy.Execute, func(s ast.Stmt) {
+		em, ok := s.(*ast.EmitStmt)
+		if !ok {
+			return
+		}
+		name := astutil.HeadName(em.Call)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	})
+	return names
+}
+
+// emitPolicyScenarioBody emite o corpo de um func TestX de Policy: "given
+// <binding> [...]" (semeia o Collection[T] de pacote que a Policy sob teste
+// lê) + "when event Evento(...)" (chama a função gerada da Policy DIRETO,
+// como caixa-preta) + "then { ... }" (ver a doc do arquivo).
+func emitPolicyScenarioBody(e *emit.Emitter, sl *lower.StmtLowerer, sc *ast.ScenarioDecl, policy *ast.PolicyDecl, eventNames []string, runtimeAlias, errorsAlias, reflectAlias, contextAlias string) error {
+	if len(sc.Mocks) > 0 || len(sc.Fails) > 0 {
+		return fmt.Errorf("\"mock\"/\"fail step\" (§22.3) só cabem em cenário de Saga — Test %s é de Policy, use \"given\"/\"when event\"/\"then { ... }\" (§22.4)", policy.Name)
+	}
+	if sc.When == nil {
+		return fmt.Errorf("cenário sem \"when\"")
+	}
+	if !sc.When.IsEvent {
+		return fmt.Errorf("\"when Action(...)\" (sem \"event\") é de Aggregate/UseCase/Saga — Test %s é de Policy, use \"when event Evento(...)\" (§22.4)", policy.Name)
+	}
+	if sc.Then == nil {
+		return fmt.Errorf("cenário sem \"then\"")
+	}
+	if sc.Then.Error != "" || len(sc.Then.Events) > 0 {
+		return fmt.Errorf("\"then [eventos]\"/\"then error\" (fora de um bloco {...}) são de Aggregate — Test %s é de Policy, use \"then { ... }\" (§22.4)", policy.Name)
+	}
+
+	e.Line("ctx := %s.Background()", contextAlias)
+
+	// Reset: cada Collection[T] referenciada por ESTE cenário é um var de
+	// PACOTE (decl_policy.go) — compartilhado por TODOS os func TestX deste
+	// arquivo, na MESMA execução de "go test" (Go roda os testes de um
+	// pacote sequencialmente, no mesmo processo, por padrão). Sem isto, um
+	// item semeado pelo cenário anterior sobreviveria e contaminaria a
+	// contagem/filtragem deste — mesmo raciocínio de "%sStepsOriginal" em
+	// emitSagaScenarioBody, adaptado: aqui reatribuímos o var de pacote a um
+	// runtime.NewMemoryCollection[T]() NOVO, em vez de restaurar a partir de
+	// uma cópia (Collection[T] não tem um "estado original" para restaurar —
+	// cada scenario semeia do zero).
+	emitPolicyGivenReset(e, sc, runtimeAlias)
+
+	itemCounter := 0
+	for _, g := range sc.Givens {
+		if err := emitPolicyGiven(e, sl, g, &itemCounter); err != nil {
+			return fmt.Errorf("given: %w", err)
+		}
+	}
+
+	// scenarioNeedsDispatcher: só monta policyDispatcher/o coletor "published"
+	// quando ESTE cenário de fato lê eventos publicados ("emitted ...",
+	// qualquer forma) — um cenário cujo "then" só verifica "error Name" não
+	// paga o custo de nenhuma dessas linhas (mesmo espírito das guardas
+	// needsErrors/needsRand no topo do arquivo, agora por SCENARIO).
+	scenarioNeedsDispatcher := false
+	for _, a := range sc.Then.Asserts {
+		if a.Verb == "emitted" {
+			scenarioNeedsDispatcher = true
+			break
+		}
+	}
+	if scenarioNeedsDispatcher {
+		if len(eventNames) == 0 {
+			return fmt.Errorf("\"then { emitted ... }\": a Policy %s não tem nenhum \"emit\" estático no execute — nada para assinar/comparar", policy.Name)
+		}
+		emitPolicyDispatcherSetup(e, eventNames, runtimeAlias, contextAlias)
+	}
+
+	call, ok := sc.When.Action.(*ast.CallExpr)
+	if !ok {
+		return fmt.Errorf("when event: esperava uma construção de Event (\"Nome(...)\"), got %T", sc.When.Action)
+	}
+	evGo, hoisted, err := sl.ExprHoisted(call)
+	if err != nil {
+		return fmt.Errorf("when event: %w", err)
+	}
+	emitLines(e, hoisted)
+	e.Line("ev := %s", evGo)
+
+	// hasErrorAssert: se algum ThenAssert deste bloco verifica "error Name",
+	// o err da chamada é consumido LÁ (errors.Is) — o auto-Fatalf-em-erro
+	// abaixo fica de fora para não competir com essa checagem explícita
+	// (mesmo raciocínio de emitAggregateThen: só uma das duas formas cabe por
+	// cenário). Sem nenhum "error Name", err SEMPRE precisa ser consumido
+	// (senão "declared and not used") — o auto-Fatalf cobre isso E expressa
+	// a expectativa padrão de sucesso (nenhuma forma de §22.4 documentada no
+	// spec testa falha de Policy).
+	hasErrorAssert := false
+	for _, a := range sc.Then.Asserts {
+		if a.Error != "" {
+			hasErrorAssert = true
+			break
+		}
+	}
+	e.Line("err := %s(ctx, &ev)", policy.Name)
+	if !hasErrorAssert {
+		e.Block("if err != nil", func() {
+			e.Line("t.Fatalf(%q, err)", "esperava sucesso ao invocar "+policy.Name+", erro inesperado: %v")
+		})
+	}
+
+	for idx, a := range sc.Then.Asserts {
+		if err := emitPolicyThenAssert(e, sl, a, idx, scenarioNeedsDispatcher, errorsAlias, reflectAlias); err != nil {
+			return fmt.Errorf("then: %w", err)
+		}
+	}
+	return nil
+}
+
+// emitPolicyDispatcherSetup instala, ANTES de invocar a Policy sob teste, um
+// runtime.Dispatcher PRÓPRIO deste cenário em "policyDispatcher" (o var de
+// pacote que decl_policy.go declara e que Wire normalmente escreve — ver a
+// doc de lá) com um Subscribe por nome de eventNames, todos apontando para o
+// MESMO coletor: cada evento publicado (via "emit" dentro da Policy sob
+// teste, StmtLowerer.WithEmitDispatch) é acumulado em "published" na ordem
+// de chegada. emitPolicyThenAssert (abaixo) lê "published" para as duas
+// formas de "then { emitted ... }".
+func emitPolicyDispatcherSetup(e *emit.Emitter, eventNames []string, runtimeAlias, contextAlias string) {
+	e.Line("var published []%s.Event", runtimeAlias)
+	e.Line("policyDispatcher = %s.NewDispatcher()", runtimeAlias)
+	e.Block(fmt.Sprintf("collect := func(ctx %s.Context, ev %s.Event) error", contextAlias, runtimeAlias), func() {
+		e.Line("published = append(published, ev)")
+		e.Line("return nil")
+	})
+	for _, name := range eventNames {
+		e.Line("policyDispatcher.Subscribe(%q, collect)", name)
+	}
+}
+
+// emitPolicyGivenReset reatribui, para cada tipo DISTINTO referenciado pelas
+// GivenEntity de sc (ex. "Ticket"), o var de pacote Collection[T]
+// correspondente (policyCollectionVarName) a um runtime.NewMemoryCollection[T]()
+// NOVO — ver a doc de emitPolicyScenarioBody sobre por que isto é necessário
+// (isolamento entre cenários que compartilham o MESMO var de pacote). Nomes
+// ordenados alfabeticamente para determinismo (NFR-13) — não há relação de
+// dependência entre resets de tipos diferentes, então a ordem de emissão não
+// muda o comportamento, só a legibilidade do Go gerado.
+func emitPolicyGivenReset(e *emit.Emitter, sc *ast.ScenarioDecl, runtimeAlias string) {
+	seen := make(map[string]bool)
+	var names []string
+	for _, g := range sc.Givens {
+		if g.Binding == "" {
+			continue
+		}
+		for _, entity := range g.Entities {
+			name := astutil.HeadName(entity.Entity)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		e.Line("%s = %s.NewMemoryCollection[%s]()", policyCollectionVarName(name), runtimeAlias, name)
+	}
+}
+
+// emitPolicyGiven emite UMA GivenClause "given <binding> [...]" (§22.4) — a
+// ÚNICA forma suportada nesta fase para Policy: cada entidade vira um
+// runtime.Collection[T].Add sobre o var de pacote que a Policy sob teste lê
+// (T = a cabeça de GivenEntity.Entity, ex. "Ticket" — ver
+// emitPolicyGivenEntity). "given [eventos]"/"given Subject from [...]"/
+// "given state{...}" (Aggregate/UseCase/Saga) não se aplicam a Policy (sem
+// Aggregate único, sem EventStore) — erro de geração claro.
+func emitPolicyGiven(e *emit.Emitter, sl *lower.StmtLowerer, g *ast.GivenClause, itemCounter *int) error {
+	if g.Binding == "" {
+		return fmt.Errorf("\"given [eventos]\"/\"given Subject from [...]\"/\"given state{...}\" não se aplicam a uma Policy — use \"given <binding> [...]\" (§22.4)")
+	}
+	for _, entity := range g.Entities {
+		if err := emitPolicyGivenEntity(e, sl, entity, itemCounter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitPolicyGivenEntity constrói UMA entidade de "given <binding> [...]"
+// (§22.4): "itemN := <Tipo>{}" + um "itemN.Campo = valor" por entrada do
+// overlay "{...}" (GivenEntity.State — idêntico, em espírito, a
+// emitStateOverlay, mas sem o prefixo ".state." de Aggregate: aqui o item É
+// o receptor) + "<tipo>Collection.Add(ctx, itemN)" no var de pacote
+// resolvido por policyCollectionVarName (decl_policy.go — reusado, não
+// reimplementado: EmitTests precisa semear EXATAMENTE o mesmo var que o
+// corpo da Policy sob teste lê via list/count).
+//
+// O(s) argumento(s) POSICIONAL(IS) da própria construção (ex. o "T1" de
+// "Ticket(\"T1\")") são ignorados aqui — deliberado, não esquecimento: o
+// exemplo canônico do spec (§22.4) usa esse argumento só como rótulo legível
+// no *.test.ds, sem equivalente em nenhum campo do item (ao contrário do
+// given de Aggregate, cujo Event tem um campo "id" de verdade a espelhar);
+// todo dado real do item vem do overlay "{...}". Uma fixture futura que
+// precise do argumento posicional como um campo de verdade pode reusar
+// emitFieldSeed (mesma máquina do given de Aggregate) — fora do escopo desta
+// fatia porque o exemplo real (RefundAllOnEventCancelled) não precisa.
+func emitPolicyGivenEntity(e *emit.Emitter, sl *lower.StmtLowerer, entity *ast.GivenEntity, itemCounter *int) error {
+	call, ok := entity.Entity.(*ast.CallExpr)
+	if !ok {
+		return fmt.Errorf("esperava uma construção de item (\"Tipo(...)\"), got %T", entity.Entity)
+	}
+	id, ok := call.Fn.(*ast.Ident)
+	if !ok {
+		return fmt.Errorf("esperava um tipo nomeado, got %T", call.Fn)
+	}
+	typeName := id.Name
+
+	*itemCounter++
+	itemVar := fmt.Sprintf("item%d", *itemCounter)
+	e.Line("%s := %s{}", itemVar, typeName)
+
+	if entity.State != nil {
+		for _, entry := range entity.State.Entries {
+			goExpr, hoisted, err := sl.ExprHoisted(entry.Value)
+			if err != nil {
+				return fmt.Errorf("%s.%s: %w", typeName, entry.Key, err)
+			}
+			emitLines(e, hoisted)
+			e.Line("%s.%s = %s", itemVar, goname.ExportField(entry.Key), goExpr)
+		}
+	}
+
+	collVar := policyCollectionVarName(typeName)
+	e.Block(fmt.Sprintf("if err := %s.Add(ctx, %s); err != nil", collVar, itemVar), func() {
+		e.Line("t.Fatalf(%q, err)", fmt.Sprintf("given %s: %%v", typeName))
+	})
+	return nil
+}
+
+// emitPolicyThenAssert emite UMA linha de "then { ... }" (§22.4): "error
+// Name" (errors.Is, mesma forma de §22.1/22.2), "emitted count N" (compara
+// len(published)) e "emitted Evento(...)" (busca, em "published", ALGUM
+// evento reflect.DeepEqual — ver a doc do arquivo sobre a checagem ser de
+// MEMBRO, não por índice nem multiset). idx desambiguifica os nomes Go das
+// variáveis auxiliares entre as várias linhas do MESMO cenário (want1/
+// want2/..., mesmo espírito de emitAggregateThen's wantVar).
+func emitPolicyThenAssert(e *emit.Emitter, sl *lower.StmtLowerer, a *ast.ThenAssert, idx int, hasDispatcher bool, errorsAlias, reflectAlias string) error {
+	switch {
+	case a.Error != "":
+		e.Block(fmt.Sprintf("if !%s.Is(err, Err%s)", errorsAlias, a.Error), func() {
+			e.Line("t.Fatalf(%q, err)", "esperava errors.Is(err, Err"+a.Error+"), got: %v")
+		})
+		return nil
+
+	case a.Verb == "emitted" && a.Count != nil:
+		if !hasDispatcher {
+			return fmt.Errorf("\"emitted count ...\": scenarioNeedsDispatcher deveria ter sido true (bug de geração)")
+		}
+		countGo, hoisted, err := sl.ExprHoisted(a.Count)
+		if err != nil {
+			return fmt.Errorf("emitted count: %w", err)
+		}
+		emitLines(e, hoisted)
+		wantVar := fmt.Sprintf("wantCount%d", idx+1)
+		e.Line("%s := %s", wantVar, countGo)
+		e.Block(fmt.Sprintf("if len(published) != %s", wantVar), func() {
+			e.Line("t.Fatalf(%q, %s, len(published), published)", "esperava %d evento(s) publicado(s), got %d: %+v", wantVar)
+		})
+		return nil
+
+	case a.Verb == "emitted" && a.Object != nil:
+		if !hasDispatcher {
+			return fmt.Errorf("\"emitted ...\": scenarioNeedsDispatcher deveria ter sido true (bug de geração)")
+		}
+		wantGo, hoisted, err := sl.ExprHoisted(a.Object)
+		if err != nil {
+			return fmt.Errorf("emitted: %w", err)
+		}
+		emitLines(e, hoisted)
+		wantVar := fmt.Sprintf("want%d", idx+1)
+		foundVar := fmt.Sprintf("found%d", idx+1)
+		e.Line("%s := &%s", wantVar, wantGo)
+		e.Line("%s := false", foundVar)
+		e.Block("for _, got := range published", func() {
+			e.Block(fmt.Sprintf("if %s.DeepEqual(got, %s)", reflectAlias, wantVar), func() {
+				e.Line("%s = true", foundVar)
+			})
+		})
+		e.Block(fmt.Sprintf("if !%s", foundVar), func() {
+			e.Line("t.Fatalf(%q, %s, published)", "esperava emitted %+v entre os eventos publicados, got %+v", wantVar)
+		})
+		return nil
+
+	default:
+		return fmt.Errorf("forma de then não suportada para Policy nesta fase de H4 (verbo %q)", a.Verb)
 	}
 }
 

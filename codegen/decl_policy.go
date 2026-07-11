@@ -3,9 +3,11 @@ package codegen
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	"domainscript/ast"
+	"domainscript/astutil"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/codegen/lower"
@@ -51,13 +53,53 @@ import (
 // Handle de handleDispatchCall injeta "caller" como argumento sempre que
 // dispara, então a var lá sempre é usada; Policy não tem essa garantia.
 //
-// Builtins (load/list/count/exists, E5.3) NÃO são conectados aqui: nenhum
-// corpo real de Policy os exercita (o shop só tem "return"), e a forma certa
-// de um load dentro de uma Policy é uma decisão de design maior deixada para
-// quando um exemplo real precisar dela (mesmo espírito da nota de escopo de
-// decl_query.go sobre where/orderBy/skip/take). Sem WithBuiltins, um
-// load/list/count no corpo de uma Policy falha com o erro claro já existente
-// de E5.1/E5.2 ("não suportado"), nunca Go incorreto.
+// --- list/count (H4, §22.4): runtime.Collection[T], roteado por tipo ---
+//
+// "load" continua NÃO conectado aqui (nenhum corpo real de Policy os
+// exercita, e a forma certa de um load dentro de uma Policy é uma decisão de
+// design maior deixada para quando um exemplo real precisar dela — mesmo
+// espírito da nota de escopo de decl_query.go sobre where/orderBy/skip/take).
+// "list"/"count", porém, ganharam um exemplo real com esta task (§22.4,
+// RefundAllOnEventCancelled: "list Ticket t where t.eventId == event.id") —
+// policyCollectionTypeNames varre CADA PolicyDecl.Execute do arquivo (todas
+// as decls de EmitPolicies, não só a corrente: um var de pacote é
+// compartilhado entre Policy do MESMO pacote que referenciam o MESMO tipo)
+// por *ast.QueryExpr "list"/"count", coleta o nome NU do tipo (Target,
+// astutil.HeadName) e emite, uma vez por tipo distinto (emitPolicyCollectionVars),
+// "var <tipo>Collection = runtime.NewMemoryCollection[<Tipo>]()" — nomeado
+// via policyCollectionVarName (lowerFirst + "Collection", mesma convenção de
+// "sourceVar" em decl_worker.go:emitContinuous). Cada emitPolicyDecl anexa
+// WithBuiltins(NewBuiltinLowerer(...).WithPerAggregateStore(typeToVar)) — o
+// MESMO mecanismo de roteamento por tipo que WithPerAggregateStore já provê
+// para o caminho 2PC de decl_usecase.go (G1) — reusado aqui para rotear cada
+// "list T .../count T ..." para o Collection[T] certo. Uma Policy SEM
+// nenhum list/count (o caso comum, ex. o shop de hoje) não ganha var de
+// Collection nenhum e não anexa WithBuiltins — Go idêntico ao gerado antes
+// desta task (guarda simétrica à de needsErrors/needsRand em gentest.go).
+//
+// --- emit (H4, §22.4): seam de Dispatcher, não "events" local ---
+//
+// Um "emit Evento(...)" dentro do execute de uma Policy não tem onde
+// acumular (a assinatura fixa "(ctx, ev) error" não devolve um []runtime.
+// Event, ao contrário de Handle/Apply) — StmtLowerer.WithEmitDispatch (E5.2,
+// lower/stmt.go) publica DIRETO num runtime.Dispatcher em vez de fazer
+// "events = append(...)". policyBodyHasEmit varre CADA decl.Execute (mesma
+// varredura que policyCollectionTypeNames faz para list/count, agora por
+// *ast.EmitStmt) — se ALGUMA Policy do arquivo usa "emit", um único var de
+// pacote "var policyDispatcher runtime.Dispatcher" é declarado (guardado,
+// mesmo espírito de needsErrors/needsRand) e CADA emitPolicyDecl anexa
+// WithEmitDispatch("policyDispatcher", "ctx") ao seu StmtLowerer — mesmo
+// quando a Policy corrente especificamente não usa emit (mais simples e
+// inofensivo que rastrear "quais decls usam emit" individualmente: anexar
+// o dispatch não muda nada para um corpo sem "emit"). Wire (abaixo) atribui
+// "policyDispatcher = d" como a 1ª linha do corpo — incondicional (nunca
+// dependente de canal/Delivery por Policy, ao contrário do resto de Wire) —
+// "d" é sempre o runtime.Dispatcher que o chamador (cmd/<service>/main.go)
+// já constrói para o parâmetro de Wire, então sempre disponível ali. Um
+// teste do MESMO pacote gerado (gentest.go, EmitTests) reatribui
+// policyDispatcher para um runtime.NewDispatcher() PRÓPRIO antes de invocar
+// a Policy diretamente (sem passar por Wire/Subscribe) — ver a doc de
+// gentest.go sobre "then { emitted ... }".
 //
 // --- Wire (emitPolicyWireFunc) ---
 //
@@ -123,6 +165,93 @@ func resolvePolicyEvent(e *emit.Emitter, tab *symbols.SymbolTable, module, event
 	return policyEventInfo{decl: ed, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ed.Name), originModule: sym.Module}, nil
 }
 
+// policyCollectionVarName deriva o nome Go do var de pacote runtime.
+// Collection[T] que guarda instâncias de typeName (H4, §22.4):
+// lowerFirst(typeName) + "Collection" — mesma convenção de "sourceVar"
+// (decl_worker.go:emitContinuous) e do "varName" de canal em
+// resolvePolicyWireInfos, acima. Compartilhada (não reimplementada) entre
+// esta emissão (emitPolicyCollectionVars, abaixo) e codegen/gentest.go (H4):
+// um "given <binding> [...]" de Test precisa semear EXATAMENTE o mesmo var
+// que o corpo da Policy sob teste lê via list/count.
+func policyCollectionVarName(typeName string) string {
+	if typeName == "" {
+		return "collection"
+	}
+	return strings.ToLower(typeName[:1]) + typeName[1:] + "Collection"
+}
+
+// policyCollectionTypeNames varre CADA decl.Execute de decls (não só uma
+// Policy — várias Policy do MESMO pacote podem referenciar o MESMO tipo, e
+// só queremos UM var de Collection por tipo) por *ast.QueryExpr "list"/
+// "count" (H4, §22.4) e devolve o conjunto de nomes NUS de tipo referenciados
+// (astutil.HeadName do Target), ordenado alfabeticamente (determinismo,
+// NFR-13 — mais simples e igualmente determinístico que preservar a ordem de
+// 1ª aparição entre várias decls). Vazio quando nenhuma Policy do arquivo usa
+// list/count (o caso comum) — ver a doc do arquivo sobre a guarda simétrica.
+func policyCollectionTypeNames(decls []*ast.PolicyDecl) []string {
+	seen := make(map[string]bool)
+	for _, decl := range decls {
+		astutil.ForEachExprInBlock(decl.Execute, func(e ast.Expr) {
+			qe, ok := e.(*ast.QueryExpr)
+			if !ok || (qe.Op != "list" && qe.Op != "count") {
+				return
+			}
+			if name := astutil.HeadName(qe.Target); name != "" {
+				seen[name] = true
+			}
+		})
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// emitPolicyCollectionVars emite, uma vez por tipo distinto de names, "var
+// <tipo>Collection = runtime.NewMemoryCollection[<Tipo>]()" (H4, §22.4) — o
+// seam que list/count varrem dentro do execute de uma Policy deste pacote, e
+// que "given <binding> [...]" de um Test (gentest.go) semeia. Devolve o mapa
+// tipo->var, repassado a WithPerAggregateStore de cada emitPolicyDecl (ver a
+// doc do arquivo) e reexposto para o CHAMADOR de EmitPolicies (nenhum hoje —
+// gentest.go reconstrói a MESMA função via policyCollectionVarName em vez de
+// receber o mapa, já que EmitTests roda numa passagem SEPARADA de
+// EmitPolicies, sem acesso ao Emitter desta). No-op (mapa vazio, nenhuma
+// linha emitida) quando names está vazio.
+func emitPolicyCollectionVars(e *emit.Emitter, runtimeAlias string, names []string) map[string]string {
+	typeToVar := make(map[string]string, len(names))
+	for _, name := range names {
+		v := policyCollectionVarName(name)
+		typeToVar[name] = v
+		e.Line("// %s é o runtime.Collection[%s] que \"list %s .../count %s ...\" (§22.4,", v, name, name, name)
+		e.Line("// H4) varrem dentro do execute de uma Policy deste pacote — semeado por um")
+		e.Line("// \"given <binding> [...]\" de um Test (gentest.go) nos testes gerados; um")
+		e.Line("// wiring de produção real (popular a partir de um EventStore/projeção) fica")
+		e.Line("// para quando um exemplo real precisar dele (mesmo espírito da nota de escopo")
+		e.Line("// de decl_query.go sobre where/orderBy/skip/take).")
+		e.Line("var %s = %s.NewMemoryCollection[%s]()", v, runtimeAlias, name)
+		e.Line("")
+	}
+	return typeToVar
+}
+
+// policyBodyHasEmit reporta se b contém, em qualquer profundidade (inclusive
+// dentro de um for aninhado — astutil.ForEachStmt já desce nesses níveis),
+// um *ast.EmitStmt (H4, §22.4) — usado para guardar a declaração do var de
+// pacote "policyDispatcher" (ver a doc do arquivo): um arquivo cujas Policy
+// nunca usam "emit" não ganha esse var, gerando Go idêntico ao de antes desta
+// task.
+func policyBodyHasEmit(b *ast.Block) bool {
+	found := false
+	astutil.ForEachStmt(b, func(s ast.Stmt) {
+		if _, ok := s.(*ast.EmitStmt); ok {
+			found = true
+		}
+	})
+	return found
+}
+
 // policyIsAtLeastOnce reporta se decl declara a garantia de entrega
 // "AtLeastOnce" (REQ-23.1) — ver a doc do arquivo sobre o fallback para
 // qualquer outro valor de Delivery.
@@ -156,17 +285,39 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
 
+	// list/count -> runtime.Collection[T] (H4, §22.4) e emit -> runtime.
+	// Dispatcher (H4, §22.4): ver a doc do arquivo. Ambos guardados — um
+	// arquivo cujas Policy não usam nenhuma das duas formas gera Go idêntico
+	// ao de antes desta task.
+	typeToVar := emitPolicyCollectionVars(e, runtimeAlias, policyCollectionTypeNames(decls))
+	needsEmitDispatcher := false
+	for _, decl := range decls {
+		if policyBodyHasEmit(decl.Execute) {
+			needsEmitDispatcher = true
+			break
+		}
+	}
+	if needsEmitDispatcher {
+		e.Line("// policyDispatcher é o runtime.Dispatcher de verdade que Wire (abaixo)")
+		e.Line("// recebe — o seam que \"emit\" usa dentro do execute de uma Policy deste")
+		e.Line("// pacote (H4, §22.4): StmtLowerer.WithEmitDispatch publica DIRETO aqui, já")
+		e.Line("// que uma Policy não tem \"events []runtime.Event\" local para acumular")
+		e.Line("// (assinatura fixa \"(ctx, ev) error\") — ver a doc do arquivo/lower/stmt.go.")
+		e.Line("var policyDispatcher %s.Dispatcher", runtimeAlias)
+		e.Line("")
+	}
+
 	for i, decl := range decls {
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitPolicyDecl(e, decl, model, tab, module, reg, adapters, ctxAlias, runtimeAlias); err != nil {
+		if err := emitPolicyDecl(e, decl, model, tab, module, reg, adapters, ctxAlias, runtimeAlias, typeToVar, needsEmitDispatcher); err != nil {
 			return nil, fmt.Errorf("codegen: Policy %s: %w", decl.Name, err)
 		}
 	}
 
 	e.Line("")
-	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg); err != nil {
+	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg, needsEmitDispatcher); err != nil {
 		return nil, fmt.Errorf("codegen: Policy Wire: %w", err)
 	}
 
@@ -177,7 +328,7 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 // EXATA de runtime.Dispatcher/Outbox.Subscribe, type assertion pro tipo
 // concreto do evento, extração de caller, e o corpo via lowering (ver a doc
 // do arquivo).
-func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string) error {
+func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string, typeToVar map[string]string, needsEmitDispatcher bool) error {
 	evt, err := resolvePolicyEvent(e, tab, module, decl.On)
 	if err != nil {
 		return err
@@ -188,6 +339,17 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 	env.SeedPolicyExecute(decl.On)
 	l := lower.NewLowerer(env, reg, runtimeAlias)
 	l.BindGoName("caller", "caller")
+	if len(typeToVar) > 0 {
+		// WithPerAggregateStore roteia "list T .../count T ..." para o
+		// runtime.Collection[T] certo (H4, §22.4) — mesmo mecanismo que o
+		// caminho 2PC de decl_usecase.go já usa para rotear "load" por
+		// Aggregate; storeGoName fica "" (nunca usado: toda chamada real
+		// passa por typeToVar, que emitPolicyCollectionVars já populou com
+		// todo tipo referenciado por list/count neste arquivo).
+		l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "").WithPerAggregateStore(func(typeName string) string {
+			return typeToVar[typeName]
+		}))
+	}
 
 	deliveryNote := "BestEffort (in-process, runtime.Dispatcher)"
 	if policyIsAtLeastOnce(decl) {
@@ -228,6 +390,15 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 
 		stmtCtx := lower.StmtContext{ZeroValues: []string{}, SuccessReturn: "return nil", CtxVar: "ctx"}
 		sl := lower.NewStmtLowerer(l, e, stmtCtx).WithNotifyAdapters(adapters, "ctx")
+		if needsEmitDispatcher {
+			// Anexado mesmo quando ESTA Policy especificamente não usa
+			// "emit" (needsEmitDispatcher é por ARQUIVO, não por decl, ver a
+			// doc do arquivo) — inofensivo: um corpo sem "emit" nunca chama
+			// emitStmt, então o caminho de dispatch nunca é exercitado para
+			// ele; mais simples que rastrear "quais decls usam emit"
+			// individualmente.
+			sl = sl.WithEmitDispatch("policyDispatcher", "ctx")
+		}
 		if bodyErr = sl.Block(decl.Execute); bodyErr != nil {
 			return
 		}
@@ -318,7 +489,7 @@ func resolvePolicyWireInfos(e *emit.Emitter, tab *symbols.SymbolTable, prog *pro
 // diferentes); o var de canal é nomeado a partir do NOME da Policy
 // (garantidamente único dentro do módulo, mesma convenção de sourceVar em
 // decl_worker.go:emitContinuous).
-func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry) error {
+func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, needsEmitDispatcher bool) error {
 	infos, err := resolvePolicyWireInfos(e, tab, prog, module, decls)
 	if err != nil {
 		return err
@@ -343,6 +514,14 @@ func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.Polic
 	var outboxDeclared bool
 	var funcErr error
 	e.Block(fmt.Sprintf("func Wire(d %s.Dispatcher)", runtimeAlias), func() {
+		if needsEmitDispatcher {
+			// 1ª linha, SEMPRE (H4, §22.4, ver a doc do arquivo): nunca
+			// condicionada a canal/Delivery por Policy, ao contrário do
+			// resto deste corpo — "d" é sempre o runtime.Dispatcher que o
+			// chamador (cmd/<service>/main.go) já constrói para este
+			// parâmetro, então sempre disponível aqui.
+			e.Line("policyDispatcher = d")
+		}
 		for _, info := range infos {
 			decl := info.decl
 			target := "d"

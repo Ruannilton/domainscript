@@ -504,7 +504,7 @@
   continuam sem `<módulo>/metrics.go`/`WireMetrics`.
   **Commit:** `feat(codegen): métricas de negócio`
 
-- [ ] **H4** Testes gerados de `*.test.ds`: `given`/`when`/`then` (`ThenClause`/
+- [x] **H4** Testes gerados de `*.test.ds`: `given`/`when`/`then` (`ThenClause`/
   `ThenAssert`), `mock … returns`, `fail step X with InfraError`, `property`,
   `Fixture` → testes Go (`testing`). _(REQ-31, §design 3.14)_
   **Progresso parcial (1ª fatia, `gentest.go`):** cenário de Aggregate (§22.1) —
@@ -741,44 +741,132 @@
   integer/decimal/string/boolean e ValueObject wrapper/composto sobre esses
   (Enum, Generic/coleção, Shape — não exercitados por nenhum Handle do
   wallet real).
-  **Deliberadamente adiado:** nada mais fica pendente das quatro formas de
-  §22 cobertas por H4 (Aggregate/UseCase/Saga/property/Fixture) além de
-  Policy/Query, abaixo.
+  **Progresso parcial (6ª fatia, Policy/Query — §22.4): as 3 camadas de
+  infraestrutura faltante identificadas por uma investigação anterior desta
+  task (registrada numa sessão prévia como "Policy/Query investigado e
+  adiado" — resumo: nem wallet/shop tinham uma Policy com corpo de negócio
+  de verdade; `list`/`count` não tinham seam de runtime nenhum; `where` não
+  lowereizava por item) foram construídas e conectadas nesta sessão, em duas
+  etapas.**
 
-  **Policy/Query (§22.4) investigado e adiado — cadeia de achados (não
-  esquecimento, uma investigação real que aprofundou 3 vezes antes de
-  parar):** o exemplo do próprio spec (`given tickets [...]`, uma Policy que
-  varre Tickets por `eventId` e emite reembolsos) parecia, à primeira vista,
-  só precisar plugar `Lowerer.WithBuiltins` em `decl_policy.go` (ausente hoje
-  — `EmitPolicy` nunca chama, confirmado; o próprio arquivo já documenta essa
-  ausência como deliberada, "fica para quando um exemplo real precisar").
-  Investigação revelou 3 camadas, cada uma maior que a anterior:
-  (1) nem wallet nem shop têm uma Policy com corpo de negócio de verdade (o
-  único Policy do shop é `execute { return }`) — qualquer teste precisaria de
-  uma fixture sintética nova;
-  (2) `list`/`count` (E5.3, `lower/builtins.go`) já existe na lowering mas é
-  documentado como API PROVISÓRIA — nenhum seam do runtime (`EventStore`/
-  `Tx`/`Repository[T]`, os 3 únicos que existem) tem `.List`/`.Count`; é
-  Marco E8 ("Read Side"), adiado por TODA task anterior;
-  (3) mais fundo ainda: a cláusula `where` nem lowereiza por item — confirmado
-  em `codegen/lower/builtins_test.go:TestStmt_List_Synthetic_WithWhere`,
-  `list StatementEntry where true` vira `tx.List(ctx, true)` — o `where` é
-  avaliado UMA VEZ como booleano solto no escopo atual, não por item (não
-  existe conceito de parâmetro de item/lambda em lugar nenhum da lowering
-  hoje). Um `where eventId == "E1"` de verdade, varrendo vários Tickets,
-  precisaria desse conceito construído do zero.
-  Ou seja: "conectar builtins na Policy" na prática significa "redesenhar a
-  lowering de predicado por item" + "construir um Collection[T] real no
-  runtime" + "só então" plugar Policy + gerar o teste — 3 peças novas de
-  infraestrutura empilhadas antes de qualquer geração de teste, essencialmente
-  fatiar o Marco E8 inteiro. Fora do escopo de H4 (uma task de GERAÇÃO DE
-  TESTE sobre capacidade já existente, não de construção de Read Side) —
-  registrado aqui para a PRÓXIMA sessão não precisar redescobrir a cadeia.
+  *Camadas 1-2 (infraestrutura, sessão anterior, commit separado antes desta
+  fatia):* `hoistQueryPredicate` (`codegen/lower/stmt.go`) redesenhou `where`
+  de um bool solto avaliado uma única vez para um predicado POR ITEM de
+  verdade — `func(item T) bool { return cond }` — vinculando o `Binding` da
+  query (ou o nome sintético `"item"`) a um `TypeEnv`-filho só para a duração
+  do `where`, reusando o `Lowerer.member` já existente (nenhuma resolução de
+  membro nova). `runtime.Collection[T]` (`codegen/rtsrc/collection.go.txt`,
+  novo) deu ao runtime vendorado um seam `Add`/`List`/`Count` mínimo,
+  espelhando `Repository[T]`; `ListCall`/`CountCall` (`lower/builtins.go`)
+  passaram a rotear por TIPO via `BuiltinLowerer.store(typeName)` — o MESMO
+  mecanismo `WithPerAggregateStore` que o caminho 2PC de `decl_usecase.go`
+  (G1) já provê, reusado sem nenhuma mudança de forma.
+
+  *Camada 3 + geração de teste (esta fatia):* **Parte A**
+  (`codegen/decl_policy.go`) conectou as duas pontas que faltavam para um
+  corpo de Policy usar `list`/`count`/`emit` de verdade — (1)
+  `policyCollectionTypeNames` varre CADA `PolicyDecl.Execute` do arquivo
+  (`astutil.ForEachExprInBlock` + `*ast.QueryExpr` "list"/"count", mesmo
+  padrão de `sema/rules_test_files.go:checkForeignSignatures`) e
+  `emitPolicyCollectionVars` declara, uma vez por tipo distinto,
+  `var <tipo>Collection = runtime.NewMemoryCollection[<Tipo>]()`
+  (`policyCollectionVarName`: `lowerFirst(tipo) + "Collection"`, mesma
+  convenção de `sourceVar` em `decl_worker.go:emitContinuous`) — cada
+  `emitPolicyDecl` anexa `WithBuiltins(NewBuiltinLowerer(runtimeAlias, "ctx",
+  "").WithPerAggregateStore(typeToVar))`, roteando list/count pro
+  `Collection[T]` certo; (2) `policyBodyHasEmit` varre por `*ast.EmitStmt` e,
+  se alguma Policy do arquivo usa `emit`, declara `var policyDispatcher
+  runtime.Dispatcher` e anexa `StmtLowerer.WithEmitDispatch("policyDispatcher",
+  "ctx")` (o seam que já existia desde as camadas 1-2, só nunca consumido) —
+  `Wire` atribui `policyDispatcher = d` como 1ª linha do corpo, SEMPRE
+  (nunca condicionada a canal/Delivery por Policy, ao contrário do resto de
+  `Wire`). Ambos guardados: um arquivo cujas Policy não usam list/count/emit
+  gera Go byte-idêntico ao de antes desta fatia (`TestEmitPoliciesGolden`/
+  `TestGenerateShopPolicyRegistersSubscriberAndCompiles`, sobre a Policy real
+  do shop, continuam verdes sem alteração).
+
+  **Parte B** (`codegen/gentest.go`) implementou o cenário §22.4 em si:
+  `EmitTests` ganhou um parâmetro `policies map[string]*ast.PolicyDecl`
+  (`policiesByName`, construído em `codegen.go:generateModuleFiles` no MESMO
+  padrão de `aggregates`/`usecasesByName`/`sagasByName`) e um 4º ramo na
+  cadeia de resolução do alvo de um `Test` (depois de Aggregate/UseCase/Saga,
+  antes do erro final; propriedades — §22.5 — continuam recusadas aqui, mesmo
+  guard de UseCase/Saga). `given <binding> [...]` (`emitPolicyGiven`/
+  `emitPolicyGivenEntity`) constrói cada item ("itemN := Tipo{}" + um
+  "itemN.Campo = valor" por entrada do overlay `{...}`, SEM o prefixo
+  ".state." de Aggregate — aqui o item É o receptor) e o adiciona ao MESMO
+  var de pacote que a Policy sob teste lê (`policyCollectionVarName` reusada,
+  nunca reimplementada); o(s) argumento(s) posicional(is) da própria
+  construção (ex. o `"T1"` de `Ticket("T1")`) são ignorados — decisão
+  documentada: o exemplo canônico do spec usa esse argumento só como rótulo
+  legível, sem campo correspondente no item (diferente do `given` de
+  Aggregate, cujo Event tem um `id` de verdade a espelhar). Achado NOVO,
+  corrigido nesta fatia: `<tipo>Collection` é um var de PACOTE compartilhado
+  por TODO `func TestX` do arquivo (Go roda os testes de um pacote
+  sequencialmente, no mesmo processo) — sem reset, um item semeado por um
+  cenário sobreviveria e contaminaria a contagem/filtragem do próximo;
+  `emitPolicyGivenReset` reatribui cada `<tipo>Collection` referenciada pelo
+  cenário a um `runtime.NewMemoryCollection[T]()` NOVO antes de semear (mesmo
+  raciocínio de `<base>StepsOriginal` em `emitSagaScenarioBody`, adaptado:
+  `Collection[T]` não tem um "original" para restaurar — cada cenário semeia
+  do zero). `when event Evento(...)` chama a função gerada da Policy DIRETO
+  (`RefundAllOnEventCancelled(ctx, &ev)`), como caixa-preta — o MESMO
+  espírito de §22.1/22.2, nunca via `Dispatcher.Publish` (o Dispatcher aqui é
+  o SEAM DE SAÍDA de uma Policy, não sua entrada).
+
+  `then { emitted Evento(...), emitted count N }`: `policyEmittedEventNames`
+  varre o CORPO da Policy (não o `then` do cenário — um cenário cujo `then`
+  só tem `emitted count N` não revelaria tipo nenhum sozinho) por
+  `*ast.EmitStmt` e devolve os nomes de Event distintos emitidos
+  estaticamente; `emitPolicyDispatcherSetup` reatribui `policyDispatcher`
+  (var de pacote de `decl_policy.go`) para um `runtime.NewDispatcher()`
+  PRÓPRIO do cenário, com um `Subscribe` por nome apontando para o MESMO
+  coletor (`published []runtime.Event`), instalado ANTES de invocar a Policy
+  — só quando o cenário de fato usa `emitted` (guarda por SCENARIO, não só
+  por arquivo). `emitted Evento(...)` busca, em `published`, ALGUM evento
+  `reflect.DeepEqual` — decisão de design deliberada: checagem de MEMBRO
+  (conjunto), ORDEM-INDEPENDENTE, não por índice estático como "Subject
+  emitted" de §22.2 — uma Policy varre um `Collection[T]` cuja ordem é só a
+  de inserção do `given`, sem garantia de negócio alguma sobre a ORDEM de
+  emissão entre itens distintos, então comparar por conjunto é a leitura mais
+  fiel do `then` declarativo do spec (limitação documentada, narrow: não é
+  multiset — duas asserções `emitted X` idênticas no mesmo cenário poderiam
+  casar contra o MESMO evento publicado; não exercitado pela fixture, cujos
+  eventos são todos distintos). `emitted count N` compara `len(published)`.
+
+  **Adaptação da fixture (mesmo precedente de "Fixtures de exemplo não são
+  fonte de verdade", `.claude/specs/codegen/design.md` §6 — já usado pela
+  fatia de Saga, que sintetizou o módulo `Booking`, e pela de property, que
+  dropou o `Transfer` ilustrativo do spec):** nem wallet nem shop têm uma
+  Policy com corpo de negócio de verdade (o único Policy do shop é `execute {
+  return }`), então esta fatia sintetiza um módulo `Refunds` novo. O exemplo
+  canônico do spec agrupa por `orderId` (3 tickets, 2 orders, 2
+  `RefundRequested`) — exige `distinct`/agrupamento (§20), que este codegen
+  NÃO implementa em lugar nenhum (confirmado: só citado como trabalho futuro
+  em `codegen/lower/env.go`/`expr.go`). A fixture desta fatia dá a CADA
+  ticket um `orderId` DISTINTO — "para cada Ticket casado pelo `where`, emite
+  um `RefundRequested`" já produz, sem nenhuma lógica de dedup, um evento por
+  ticket — e ajusta as contagens do `then` de acordo (4 tickets, 3 casam com
+  o Event cancelado "E1", 1 não casa — 3 `RefundRequested`, não 2, e um
+  scenario extra prova o predicado FILTRANDO de verdade: 1 ticket de outro
+  evento, 0 reembolsos). Provado via golden (`testdata/
+  tests_policy_refunds.go.golden`) + determinismo + smoke-compile do projeto
+  inteiro + `TestEmitPolicyTestsRunGreen` (`go test ./...` de verdade sobre o
+  projeto gerado — os 2 `func TestRefundAllOnEventCancelled_*` gerados a
+  partir do `*.test.ds` SÃO os testes que rodam, mesmo espírito de
+  `TestEmitSagaTestsRunGreen`/`TestEmitTestsWalletRunsGreen` — prova, sobre o
+  Go de fato gerado, que o predicado por item filtra de verdade e que cada
+  `RefundRequested` publicado é observado pelo coletor).
+
+  **H4 está completo** — as sete formas de cenário do §22 (cruzando as 4
+  famílias de alvo: Aggregate/UseCase/Policy-Query/Saga, mais mock/fail-step/
+  property/Fixture) estão todas cobertas. Só falta H5 (fechamento).
   **Commit:** `feat(codegen): geração de testes a partir de *.test.ds (cenário de Aggregate)`,
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de UseCase)`,
   `feat(codegen): geração de testes a partir de *.test.ds (Fixture reusável)`,
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de Saga)`,
-  `feat(codegen): geração de testes a partir de *.test.ds (property-based)`
+  `feat(codegen): geração de testes a partir de *.test.ds (property-based)`,
+  `feat(codegen): geração de testes a partir de *.test.ds (cenário de Policy/Query)`
 
 - [ ] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
   limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,
