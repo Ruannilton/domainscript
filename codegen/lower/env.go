@@ -366,6 +366,25 @@ func (env *TypeEnv) inferQueryExpr(qe *ast.QueryExpr) (types.Type, error) {
 	}
 }
 
+// ItemTypeOf resolve o tipo do ITEM que um "list T .../count T ..." varre
+// (H4, §22.4) — o tipo nomeado por qe.Target, SEMPRE (mesmo quando há uma
+// cláusula "as V": ao contrário de inferQueryExpr's "list", que devolve
+// List<V> como o tipo GERAL da expressão, o predicado de "where" sempre
+// filtra itens do tipo BASE T, nunca da projeção V — "as" não foi desenhado,
+// nesta task, para compor com um predicado por item). Usado por
+// lower/stmt.go's hoistQueryPredicate (redesenho de E5.3 — antes desta task,
+// "where" era avaliado uma única vez como bool solto, sem nenhum item
+// vinculado; ver a doc de hoistQueryPredicate) para saber a que tipo Go
+// vincular o parâmetro sintético da lambda "func(item T) bool { ... }".
+func (env *TypeEnv) ItemTypeOf(qe *ast.QueryExpr) (types.Type, error) {
+	name := astutil.HeadName(qe.Target)
+	t := env.typeOfName(name)
+	if types.IsError(t) {
+		return nil, fmt.Errorf("lower: %s: não consegui resolver o tipo do item de %q", qe.Op, name)
+	}
+	return t, nil
+}
+
 // listAsClause procura a cláusula "as" entre as QueryClause de um QueryExpr e
 // devolve o nome do tipo (Extra), se houver.
 func listAsClause(clauses []ast.QueryClause) (string, bool) {

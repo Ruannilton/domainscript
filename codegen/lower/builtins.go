@@ -14,11 +14,15 @@ import (
 //     Random/RandomStr em codegen/rtsrc/util.go.txt).
 //   - load T(id) → reconstrução de Aggregate via o seam de persistência
 //     (convenção de nome Load<T>, cuja implementação real é E6.2).
-//   - list T [where ...] [as V] / count [where ...] → operações de leitura
-//     PROVISÓRIAS: nenhum mecanismo de query real existe no runtime ainda
-//     (isso é E8, Read Side) — aqui só se fixa a FORMA sintática da
-//     lowering, testável isoladamente, sem travar esta task no desenho do
-//     Read Side inteiro.
+//   - list T [where ...] [as V] / count [where ...] → desde H4 (§22.4),
+//     backed de verdade por runtime.Collection[T] (rtsrc/collection.go.txt):
+//     "where" vira um PREDICADO POR ITEM ("func(item T) bool { ... }" — ver
+//     stmt.go, hoistQueryPredicate), não mais um bool solto avaliado uma
+//     única vez (a forma anterior a esta task, insuficiente para filtrar de
+//     verdade — documentada como achado em hoistQueryPredicate). Ainda
+//     deliberadamente NARROW: sem ordenação/paginação/joins, que continuam
+//     Read Side de verdade (E8, Marco E fase 8) quando surgir necessidade
+//     real de Query/View mais completas.
 //   - exists (QueryExpr pós-fixo de "ensure X exists") → checagem estrutural
 //     "X != nil" sobre um Aggregate já carregado; a semântica completa
 //     (infra vs. não-encontrado vs. idempotência) é G2.
@@ -374,32 +378,35 @@ func (b *BuiltinLowerer) LoadCall(typeName, idGo string) string {
 	return fmt.Sprintf("%s(%s, %s)", b.loadFuncName(typeName), b.store(typeName), idGo)
 }
 
-// ListCall devolve o texto Go PROVISÓRIO (sem "tmp, err :=") de uma
-// "list T [where Cond] [as V]": "<store>.List(<ctx>, <predicado>)".
-// predGo é "nil" (texto Go literal) quando a QueryExpr não tem cláusula
-// "where" — hoistList (stmt.go) decide isso.
+// ListCall devolve o texto Go (sem "tmp, err :=") de uma "list T [where
+// Cond] [as V]": "<store>.List(<ctx>, <predicado>)". predGo é "nil" (texto
+// Go literal) quando a QueryExpr não tem cláusula "where", ou um
+// "func(item T) bool { ... }" de verdade quando tem (hoistQueryPredicate,
+// stmt.go — H4, §22.4, ver a doc lá sobre o redesenho desta task). typeName
+// é o nome nu do tipo listado (Target de qe, ex. "Ticket") — roteado por
+// b.store(typeName), o MESMO mecanismo que LoadCall já usa (WithPerAggregate
+// Store, G1): antes desta task, ListCall/CountCall usavam b.storeGoName
+// direto, sem roteamento por tipo — inofensivo enquanto o único chamador
+// real era um único "store"/"tx" fixo (UseCase/Query), mas insuficiente para
+// Policy (H4), que precisa de um runtime.Collection[T] DIFERENTE por T
+// (decl_policy.go: um var de pacote por tipo referenciado, ex.
+// "ticketCollection").
 //
-// DECISÃO EXPLICITAMENTE PROVISÓRIA (documentada aqui e no prompt da task
-// E5.3): não existe NENHUM mecanismo de query real no runtime ainda — nem
-// Repository nem EventStore (codegen/rtsrc) têm um jeito de listar/filtrar.
-// Construir isso de verdade é o Read Side inteiro (E8, Marco E fase 8), que
-// pode escolher uma API bem diferente depois de ver Query/View reais (ex.
-// cláusulas orderBy/skip/take completas, joins). Esta task só estabelece que
-// a FORMA da lowering existe e é testável isoladamente (com um stub
-// sintético de <store> no teste, o mesmo padrão que E3.2 usou pra Errors) —
-// sem comprometer a API real de E8. O receptor reusa storeGoName (o mesmo
-// parâmetro de acesso à persistência de LoadCall): não há, hoje, um conceito
-// de "repositório de leitura" distinto no runtime; E8 decide se isso muda.
-func (b *BuiltinLowerer) ListCall(predGo string) string {
-	return fmt.Sprintf("%s.List(%s, %s)", b.storeGoName, b.ctxGoName, predGo)
+// API ainda deliberadamente NARROW (documentado desde E5.3): runtime.
+// Collection[T] (rtsrc/collection.go.txt, H4) só filtra por predicado —
+// sem ordenação/paginação/joins, que continuam Read Side de verdade (E8,
+// Marco E fase 8) quando surgir necessidade real de Query/View mais
+// completas.
+func (b *BuiltinLowerer) ListCall(typeName, predGo string) string {
+	return fmt.Sprintf("%s.List(%s, %s)", b.store(typeName), b.ctxGoName, predGo)
 }
 
 // CountCall é o análogo de ListCall para "count [where Cond]":
-// "<store>.Count(<ctx>, <predicado>)", devolvendo (int64, error). Mesma
-// ressalva de API provisória documentada em ListCall — E8 decide a forma
-// final.
-func (b *BuiltinLowerer) CountCall(predGo string) string {
-	return fmt.Sprintf("%s.Count(%s, %s)", b.storeGoName, b.ctxGoName, predGo)
+// "<store>.Count(<ctx>, <predicado>)", devolvendo (int64, error). Mesmo
+// roteamento por typeName e mesma ressalva de escopo narrow documentada em
+// ListCall.
+func (b *BuiltinLowerer) CountCall(typeName, predGo string) string {
+	return fmt.Sprintf("%s.Count(%s, %s)", b.store(typeName), b.ctxGoName, predGo)
 }
 
 // --- helpers de QueryClause compartilhados por builtins.go/stmt.go. ---

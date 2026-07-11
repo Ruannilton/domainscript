@@ -1,0 +1,129 @@
+package runtime
+
+import (
+	"context"
+	"testing"
+)
+
+// collection_test.go.txt prova o comportamento do seam Collection[T] (H4,
+// §22.4): Add preserva a ordem de inserção, List/Count filtram por predicado
+// (nil casa com tudo), e cada Collection[T] é independente por tipo T.
+
+type collectionTestItem struct {
+	ID    string
+	Group string
+}
+
+func TestMemoryCollection_AddThenListPreservesInsertionOrder(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemoryCollection[collectionTestItem]()
+
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	for _, item := range items {
+		if err := c.Add(ctx, item); err != nil {
+			t.Fatalf("Add(%v): erro inesperado: %v", item, err)
+		}
+	}
+
+	got, err := c.List(ctx, nil)
+	if err != nil {
+		t.Fatalf("List(nil): erro inesperado: %v", err)
+	}
+	if len(got) != len(items) {
+		t.Fatalf("List(nil) devolveu %d item(ns), want %d", len(got), len(items))
+	}
+	for i, want := range items {
+		if got[i] != want {
+			t.Fatalf("List(nil)[%d] = %+v, want %+v (ordem de inserção não preservada)", i, got[i], want)
+		}
+	}
+}
+
+func TestMemoryCollection_ListWithPredicateFiltersPerItem(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemoryCollection[collectionTestItem]()
+	for _, item := range []collectionTestItem{
+		{ID: "1", Group: "A"},
+		{ID: "2", Group: "B"},
+		{ID: "3", Group: "A"},
+	} {
+		if err := c.Add(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := c.List(ctx, func(item collectionTestItem) bool { return item.Group == "A" })
+	if err != nil {
+		t.Fatalf("List(pred): erro inesperado: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List(pred) devolveu %d item(ns), want 2 (Group == \"A\"): %+v", len(got), got)
+	}
+	for _, item := range got {
+		if item.Group != "A" {
+			t.Fatalf("List(pred) devolveu um item fora do predicado: %+v", item)
+		}
+	}
+}
+
+func TestMemoryCollection_CountWithNilPredicateCountsEverything(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemoryCollection[collectionTestItem]()
+	for i := 0; i < 5; i++ {
+		if err := c.Add(ctx, collectionTestItem{ID: string(rune('a' + i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := c.Count(ctx, nil)
+	if err != nil {
+		t.Fatalf("Count(nil): erro inesperado: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("Count(nil) = %d, want 5", n)
+	}
+}
+
+func TestMemoryCollection_CountWithPredicateCountsMatchingOnly(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemoryCollection[collectionTestItem]()
+	for _, item := range []collectionTestItem{
+		{ID: "1", Group: "A"},
+		{ID: "2", Group: "B"},
+		{ID: "3", Group: "A"},
+		{ID: "4", Group: "A"},
+	} {
+		if err := c.Add(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := c.Count(ctx, func(item collectionTestItem) bool { return item.Group == "A" })
+	if err != nil {
+		t.Fatalf("Count(pred): erro inesperado: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("Count(pred) = %d, want 3", n)
+	}
+}
+
+func TestMemoryCollection_EmptyCollectionListsAndCountsEmpty(t *testing.T) {
+	ctx := context.Background()
+	c := NewMemoryCollection[collectionTestItem]()
+
+	got, err := c.List(ctx, nil)
+	if err != nil {
+		t.Fatalf("List(nil) sobre coleção vazia: erro inesperado: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("List(nil) sobre coleção vazia: esperava slice vazio, got %+v", got)
+	}
+
+	n, err := c.Count(ctx, nil)
+	if err != nil {
+		t.Fatalf("Count(nil) sobre coleção vazia: erro inesperado: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("Count(nil) sobre coleção vazia = %d, want 0", n)
+	}
+}

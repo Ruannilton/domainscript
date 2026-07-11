@@ -148,6 +148,40 @@ type StmtLowerer struct {
 	// existente (nenhum caminho de F1/F2/F3 reconhecia essa forma).
 	notifyAdapters map[string]*ast.AdapterDecl
 	ctxGoName      string
+	// emitDispatch habilita emitStmt a traduzir "emit Evento(...)" para uma
+	// chamada DIRETA a Dispatcher.Publish em vez do "events = append(events,
+	// ...)" de sempre — anexado via WithEmitDispatch. nil (o default)
+	// preserva o comportamento de sempre (Handle/Apply, que sempre têm um
+	// local "events []runtime.Event" declarado pelo emissor ao redor).
+	emitDispatch *emitDispatchConfig
+}
+
+// emitDispatchConfig descreve como lowerizar um "emit" FORA de um Handle
+// (que sempre acumula em "events []runtime.Event", ver a doc de emitStmt) —
+// o caso novo desta task (H4, §22.4): o execute de uma Policy. Investigação
+// desta task (registrada aqui, única vez): nenhum Policy real do wallet/shop
+// jamais usou "emit" (o único corpo real, "execute { return }", nunca o
+// exercitou) — confirmado empiricamente que emitStmt SEMPRE assumiu um
+// "events" local em escopo, o que quebraria a compilação se um corpo de
+// Policy (cuja assinatura fixa é "(ctx, ev) error" — runtime.Dispatcher/
+// Outbox.Subscribe exigem essa forma EXATA, decl_policy.go — sem devolver
+// slice algum) contivesse um "emit" sem este mecanismo.
+type emitDispatchConfig struct {
+	// dispatcherGoName é a expressão Go (tipicamente um var de PACOTE escrito
+	// só por Wire, ex. "policyDispatcher" — decl_policy.go) que expõe um
+	// runtime.Dispatcher para publicar o evento construído.
+	dispatcherGoName string
+	// ctxGoName é o nome Go do parâmetro/local context.Context em escopo
+	// (ex. "ctx" — o parâmetro de toda função de Policy gerada).
+	ctxGoName string
+}
+
+// WithEmitDispatch anexa cfg a sl (encadeável) — ver a doc de
+// emitDispatchConfig e de emitStmt. Devolve o próprio sl (mesmo padrão de
+// WithHandleDispatch/WithNotifyAdapters).
+func (sl *StmtLowerer) WithEmitDispatch(dispatcherGoName, ctxGoName string) *StmtLowerer {
+	sl.emitDispatch = &emitDispatchConfig{dispatcherGoName: dispatcherGoName, ctxGoName: ctxGoName}
+	return sl
 }
 
 // NewStmtLowerer cria um StmtLowerer raiz (loopDepth 0, sem label ativo, com
@@ -563,12 +597,17 @@ func (sl *StmtLowerer) hoistStore(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 }
 
 // hoistList traduz "list T [where Cond] [as V]" para
-// "tmpN, err := <store>.List(<ctx>, <predicado-ou-nil>); if err != nil {
-// <ctx.ExitOnError> }" — API PROVISÓRIA (documentada em builtins.go,
-// BuiltinLowerer.ListCall): nenhum mecanismo de query real existe no runtime
-// ainda (isso é E8, Read Side); esta task só estabelece que a FORMA da
-// lowering existe. tmpN é vinculado ao tipo List<V> (ou List<T> sem "as"),
-// via TypeEnv.InferAssignRHS (E5.0), que já resolve essa forma.
+// "tmpN, err := <store>.List(<ctx>, <predicado>); if err != nil {
+// <ctx.ExitOnError> }" — desde H4 (§22.4), backed de verdade por
+// runtime.Collection[T] (rtsrc/collection.go.txt): "<store>" é resolvido por
+// BuiltinLowerer.store(typeName), roteado por TIPO (T, o nome nu de
+// qe.Target) — o mesmo mecanismo que já roteava "load" por Aggregate em G1
+// (WithPerAggregateStore), agora reusado para Policy rotear cada
+// Collection[T] para o var de pacote certo (ver decl_policy.go). O
+// predicado (hoistQueryPredicate, abaixo) é sempre um "func(item T) bool {
+// ... }" — nunca mais um bool solto, ver a doc de hoistQueryPredicate sobre
+// o redesenho desta task. tmpN é vinculado ao tipo List<V> (ou List<T> sem
+// "as"), via TypeEnv.InferAssignRHS (E5.0), que já resolve essa forma.
 func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: list ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
@@ -587,17 +626,17 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 	tmp := sl.newTmp()
 	sl.bindTmp(tmp, t)
 	lines := append(hoisted,
-		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(predGo)),
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(astutil.HeadName(n.Target), predGo)),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
 }
 
 // hoistCount traduz "count [where Cond]" para "tmpN, err := <store>.Count(
-// <ctx>, <predicado-ou-nil>); if err != nil { <ctx.ExitOnError> }" — mesma
-// ressalva de API provisória de hoistList (BuiltinLowerer.CountCall). tmpN é
-// vinculado a integer (TypeEnv.InferAssignRHS já resolve "count" assim,
-// independente do Target — env.go, inferQueryExpr).
+// <ctx>, <predicado>); if err != nil { <ctx.ExitOnError> }" — mesmo
+// roteamento por tipo e mesmo predicado por item de hoistList (ver sua
+// doc). tmpN é vinculado a integer (TypeEnv.InferAssignRHS já resolve
+// "count" assim, independente do Target — env.go, inferQueryExpr).
 func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: count ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
@@ -616,29 +655,98 @@ func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 	tmp := sl.newTmp()
 	sl.bindTmp(tmp, t)
 	lines := append(hoisted,
-		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(predGo)),
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(astutil.HeadName(n.Target), predGo)),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
 }
 
-// hoistQueryPredicate extrai e hoisteia (recursivamente) a cláusula "where"
-// de uma list/count, se houver — "nil" (texto Go literal) quando ausente.
-// Compartilhado por hoistList/hoistCount.
+// hoistQueryPredicate extrai a cláusula "where" de uma list/count e a
+// traduz para um PREDICADO POR ITEM — "nil" (texto Go literal) quando
+// ausente (runtime.Collection[T].List/Count, rtsrc/collection.go.txt,
+// tratam nil como "todo item passa"); com "where", "func(<item>
+// <TipoDoItem>) bool { return <cond> }", onde <item> é o nome do BINDING
+// declarado (ex. "list Ticket t where t.eventId == event.id",
+// QueryExpr.Binding == "t") ou o nome sintético "item" quando a query não
+// declara um (ex. "list StatementEntry where true", sem binding) — em
+// QUALQUER caso, um TypeEnv/StmtLowerer-FILHO vincula esse nome ao tipo do
+// item (TypeEnv.ItemTypeOf, env.go) para a DURAÇÃO da lowering de "where",
+// exatamente como ForStmt já abre um escopo-filho para a variável de
+// iteração (childForLoop) — member access dentro da condição (ex.
+// "t.eventId") resolve contra esse tipo normalmente, via o mesmo
+// Lowerer.member já existente, sem nenhum código novo de resolução de
+// membro.
+//
+// --- Achado documentado (H4, §22.4): o redesenho desta task ---
+//
+// Antes desta task, "where" era avaliado UMA VEZ como bool solto no escopo
+// ATUAL (nenhum item vinculado): correto só para uma condição que não
+// referencia nenhum campo do item (ex. "where true", o único teste
+// sintético que existia antes desta task — TestStmt_List_Synthetic_With
+// Where, builtins_test.go). Uma condição de filtragem de verdade (ex.
+// "eventId == 'E1'" varrendo vários Tickets) exige que cada item seja
+// vinculado ANTES de resolver a condição — esta função é o ponto único onde
+// isso passou a acontecer; ListCall/CountCall (builtins.go) continuam
+// recebendo só o TEXTO do predicado já pronto, sem saber se é "nil" ou uma
+// lambda de verdade.
+//
+// Limitação documentada: uma condição que precise de HOISTING (uma
+// construção de VO composto ou um operador de VO falível dentro do
+// "where") falha com um erro de geração claro — o corpo de um predicado Go
+// "func(T) bool" não tem onde acomodar um "if err != nil { ... }" antes do
+// "return" sem mudar a assinatura (que Collection[T] fixa em "bool", sem
+// error, ver rtsrc/collection.go.txt); os casos reais de §22.4 (comparação
+// de igualdade sobre campos wrapper/primitivos, ex. "t.eventId ==
+// event.id") não precisam de hoisting — um wrapper de 1 argumento
+// posicional já é tratado como conversão nativa por constructVO (expr.go),
+// sem hoisting.
 func (sl *StmtLowerer) hoistQueryPredicate(n *ast.QueryExpr, ctx StmtContext) (string, []string, error) {
 	where, ok := queryClauseByKw(n.Clauses, "where")
 	if !ok {
 		return "nil", nil, nil
 	}
-	wExpr, hoisted, err := sl.hoistSubtree(where, ctx)
+
+	itemType, err := sl.env.ItemTypeOf(n)
+	if err != nil {
+		return "", nil, fmt.Errorf("codegen: %s ... where ...: %w", n.Op, err)
+	}
+	itemGoType, err := goTypeString(itemType)
+	if err != nil {
+		return "", nil, fmt.Errorf("codegen: %s ... where ...: tipo do item: %w", n.Op, err)
+	}
+
+	paramName := n.Binding
+	if paramName == "" {
+		paramName = "item"
+	}
+	paramGo := goname.Ident(paramName)
+
+	childEnv := sl.env.Child()
+	childEnv.Bind(paramName, itemType)
+	child := &StmtLowerer{
+		Lowerer:        &Lowerer{env: childEnv, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins},
+		e:              sl.e,
+		ctx:            sl.ctx,
+		shared:         sl.shared,
+		loopDepth:      sl.loopDepth,
+		outerLabel:     sl.outerLabel,
+		aggregates:     sl.aggregates,
+		txGoName:       sl.txGoName,
+		txGoNameFor:    sl.txGoNameFor,
+		notifyAdapters: sl.notifyAdapters,
+		ctxGoName:      sl.ctxGoName,
+		emitDispatch:   sl.emitDispatch,
+	}
+
+	condGo, hoisted, err := child.exprHoisted(where, ctx)
 	if err != nil {
 		return "", nil, err
 	}
-	predGo, err := sl.Expr(wExpr)
-	if err != nil {
-		return "", nil, err
+	if len(hoisted) > 0 {
+		return "", nil, fmt.Errorf("codegen: %s ... where ...: condição que precisa de hoisting (construção de VO composto ou operador de VO falível) não é suportada dentro do predicado por item — o corpo \"func(%s %s) bool\" não tem onde acomodar tratamento de erro antes do return (Collection[T].List/Count fixam a assinatura do predicado em \"bool\", sem error)", n.Op, paramGo, itemGoType)
 	}
-	return predGo, hoisted, nil
+
+	return fmt.Sprintf("func(%s %s) bool { return %s }", paramGo, itemGoType, condGo), nil, nil
 }
 
 // fallibleVOOperator reporta se n (já com os filhos hoisted) é um BinaryExpr
@@ -1056,18 +1164,24 @@ func (sl *StmtLowerer) forCollection(n *ast.ForStmt, label string, emitLabel boo
 // childForLoop abre um StmtLowerer FILHO para o corpo de um for: usa env
 // (o TypeEnv-filho que tipa a variável de iteração), mas o MESMO
 // ctx/shared (não reinicia contagem de temporárias/labels) e loopDepth+1;
-// outerLabel é herdado (label), nunca recomputado pelo filho.
+// outerLabel é herdado (label), nunca recomputado pelo filho. emitDispatch
+// (H4, §22.4) é propagado: um "emit" dentro de "for x in xs { emit ... }" no
+// execute de uma Policy (ex. RefundAllOnEventCancelled, um refund por
+// Ticket casado) precisa da MESMA configuração do pai — sem isto, o corpo
+// do for cairia de volta no "events = append(...)" de sempre (quebrado
+// dentro de uma Policy, que não declara "events").
 func (sl *StmtLowerer) childForLoop(env *TypeEnv, label string) *StmtLowerer {
 	childLowerer := &Lowerer{env: env, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins}
 	return &StmtLowerer{
-		Lowerer:    childLowerer,
-		e:          sl.e,
-		ctx:        sl.ctx,
-		shared:     sl.shared,
-		loopDepth:  sl.loopDepth + 1,
-		outerLabel: label,
-		aggregates: sl.aggregates,
-		txGoName:   sl.txGoName,
+		Lowerer:      childLowerer,
+		e:            sl.e,
+		ctx:          sl.ctx,
+		shared:       sl.shared,
+		loopDepth:    sl.loopDepth + 1,
+		outerLabel:   label,
+		aggregates:   sl.aggregates,
+		txGoName:     sl.txGoName,
+		emitDispatch: sl.emitDispatch,
 	}
 }
 
@@ -1086,11 +1200,17 @@ func containsBreakAll(b *ast.Block) bool {
 
 // --- 5. EmitStmt (REQ-22.4). ---
 
-// emitStmt traduz "emit Evento(args)" para "events = append(events,
-// &Evento{...})". Assume que uma variável Go "events" (\[\]runtime.Event)
-// já está declarada no escopo do Handle sendo lowerizado — é responsabilidade
-// do EMISSOR do Handle (E6.1) declará-la antes de lowerizar o corpo;
-// StmtLowerer só emite o append.
+// emitStmt traduz "emit Evento(args)". Dois caminhos, por CONSTRUTO (ver
+// emitDispatchConfig): (a) o de sempre (Handle/Apply) — "events =
+// append(events, &Evento{...})", assumindo uma variável Go "events"
+// (\[\]runtime.Event) já declarada no escopo pelo EMISSOR do Handle (E6.1)
+// antes de lowerizar o corpo; (b) desde H4 (§22.4), quando sl.emitDispatch
+// foi anexado (WithEmitDispatch) — o caso de uma Policy, cuja assinatura
+// fixa "(ctx, ev) error" NUNCA tem um "events" para acumular — "if err :=
+// <dispatcher>.Publish(<ctx>, &Evento{...}); err != nil { <ExitOnError> }",
+// publicando o evento construído DIRETO no runtime.Dispatcher exposto por
+// emitDispatch (ver decl_policy.go sobre o var de pacote "policyDispatcher"
+// que Wire escreve).
 func (sl *StmtLowerer) emitStmt(n *ast.EmitStmt) error {
 	if _, ok := n.Call.(*ast.CallExpr); !ok {
 		return fmt.Errorf("codegen: emit: esperava construção de Event (CallExpr), got %T", n.Call)
@@ -1100,6 +1220,10 @@ func (sl *StmtLowerer) emitStmt(n *ast.EmitStmt) error {
 		return fmt.Errorf("codegen: emit: %w", err)
 	}
 	sl.emitLines(hoisted)
+	if sl.emitDispatch != nil {
+		sl.e.Line("if err := %s.Publish(%s, &%s); err != nil { %s }", sl.emitDispatch.dispatcherGoName, sl.emitDispatch.ctxGoName, goExpr, sl.ctx.ExitOnError("err"))
+		return nil
+	}
 	sl.e.Line("events = append(events, &%s)", goExpr)
 	return nil
 }

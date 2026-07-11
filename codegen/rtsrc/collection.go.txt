@@ -1,0 +1,80 @@
+package runtime
+
+import (
+	"context"
+	"sync"
+)
+
+// Collection is the minimal read/write seam behind the `list`/`count`
+// built-ins (REQ-22.7(a), §design codegen 3.6): a homogeneous, in-process set
+// of domain values T that a Policy/Query body can seed and then scan with a
+// per-item predicate. It is deliberately narrow — no ordering, pagination, or
+// persistence — just enough to filter by equality-style predicates, which is
+// the exact shape the generated calls expect:
+//
+//	items, err := <coll>.List(ctx, func(item T) bool { return item.Field == x })
+//	n, err := <coll>.Count(ctx, func(item T) bool { return ... })
+//
+// (see lower/builtins.go's ListCall/CountCall and lower/stmt.go's
+// hoistQueryPredicate). A fuller Read Side — orderBy/skip/take, joins, durable
+// storage — is Marco E8, out of scope here; this seam only unblocks per-item
+// predicate lowering. T is a per-domain value struct (e.g. a composite
+// ValueObject) unknown to this package, hence the generic — mirroring
+// Repository[T] (repository.go.txt).
+type Collection[T any] interface {
+	// Add appends item to the collection. Items keep insertion order, which
+	// is the order List/Count scan them in (and List returns them in).
+	Add(ctx context.Context, item T) error
+	// List returns every item for which pred reports true, in insertion
+	// order. A nil pred matches every item (a `list` with no `where`).
+	List(ctx context.Context, pred func(T) bool) ([]T, error)
+	// Count returns how many items pred reports true for. A nil pred counts
+	// every item (a `count` with no `where`).
+	Count(ctx context.Context, pred func(T) bool) (int64, error)
+}
+
+// memoryCollection is a thread-safe, in-process Collection[T] backed by a
+// slice kept in insertion order.
+type memoryCollection[T any] struct {
+	mu    sync.RWMutex
+	items []T
+}
+
+// NewMemoryCollection creates an empty in-memory Collection[T].
+func NewMemoryCollection[T any]() Collection[T] {
+	return &memoryCollection[T]{}
+}
+
+// Add implements Collection.
+func (c *memoryCollection[T]) Add(ctx context.Context, item T) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = append(c.items, item)
+	return nil
+}
+
+// List implements Collection. A nil pred matches everything.
+func (c *memoryCollection[T]) List(ctx context.Context, pred func(T) bool) ([]T, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]T, 0, len(c.items))
+	for _, item := range c.items {
+		if pred == nil || pred(item) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+// Count implements Collection. A nil pred counts everything.
+func (c *memoryCollection[T]) Count(ctx context.Context, pred func(T) bool) (int64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var n int64
+	for _, item := range c.items {
+		if pred == nil || pred(item) {
+			n++
+		}
+	}
+	return n, nil
+}

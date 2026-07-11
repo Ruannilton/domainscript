@@ -186,13 +186,15 @@ func TestStmt_Load_AsClause_FailsExplicitly(t *testing.T) {
 }
 
 // --- 4. list/count/exists: pelo menos 1 teste sintético cada, provando que
-// a forma é gerada — API PROVISÓRIA (documentada em builtins.go,
-// BuiltinLowerer.ListCall/CountCall): nenhum mecanismo de query real existe
-// no runtime ainda (isso é E8, Read Side); aqui só se fixa a FORMA sintática.
+// a forma é gerada — desde H4 (§22.4), backed de verdade por
+// runtime.Collection[T] (rtsrc/collection.go.txt, ver builtins.go/
+// stmt.go:hoistQueryPredicate): "where" vira um PREDICADO POR ITEM, não mais
+// um bool solto avaliado uma única vez.
 
 // TestStmt_List_Synthetic_NoWhere usa "list StatementEntry" (a MESMA forma
 // do "ListEntries" real do wallet, read.ds: "return list StatementEntry")
-// — sem cláusula "where", predGo é o literal Go "nil".
+// — sem cláusula "where", predGo é o literal Go "nil" (runtime.Collection[T]
+// trata nil como "todo item passa" — rtsrc/collection.go.txt).
 func TestStmt_List_Synthetic_NoWhere(t *testing.T) {
 	_, l := newWalletLowererWithBuiltins(t)
 	qe := ast.NewQueryExpr("list", ident("StatementEntry"), "", nil, ast.Span{})
@@ -201,18 +203,22 @@ func TestStmt_List_Synthetic_NoWhere(t *testing.T) {
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
 	if !strings.Contains(out, "tmp1, err := tx.List(ctx, nil)") {
-		t.Fatalf("esperava \"tmp1, err := tx.List(ctx, nil)\" (API provisória, E8 decide a forma final), got:\n%s", out)
+		t.Fatalf("esperava \"tmp1, err := tx.List(ctx, nil)\", got:\n%s", out)
 	}
 	if !strings.Contains(out, "entries := tmp1") {
 		t.Fatalf("esperava \"entries := tmp1\", got:\n%s", out)
 	}
 }
 
-// TestStmt_List_Synthetic_WithWhere prova que a cláusula "where" vira o
-// segundo argumento de List (em vez de "nil") — o wallet não usa "where" em
-// nenhum list/count, por isso sintética; a condição é um literal trivial só
-// para não entrar em dispatch de operador de VO (fora do escopo deste teste).
-func TestStmt_List_Synthetic_WithWhere(t *testing.T) {
+// TestStmt_List_Synthetic_WithWhere_NoBinding prova a forma SEM binding
+// explícito (ex. "list StatementEntry where true"): o predicado ainda vira
+// uma lambda de verdade (nunca mais um bool solto — a forma ANTERIOR a esta
+// task, documentada como achado incorreto na doc de hoistQueryPredicate),
+// usando o nome sintético "item" (default quando QueryExpr.Binding == "").
+// O wallet não usa "where" em nenhum list/count, por isso sintética; a
+// condição é um literal trivial só para não entrar em dispatch de operador
+// de VO (fora do escopo deste teste).
+func TestStmt_List_Synthetic_WithWhere_NoBinding(t *testing.T) {
 	_, l := newWalletLowererWithBuiltins(t)
 	clauses := []ast.QueryClause{{Kw: "where", Expr: lit(token.TRUE, "")}}
 	qe := ast.NewQueryExpr("list", ident("StatementEntry"), "", clauses, ast.Span{})
@@ -220,8 +226,77 @@ func TestStmt_List_Synthetic_WithWhere(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	if !strings.Contains(out, "tmp1, err := tx.List(ctx, true)") {
-		t.Fatalf("esperava \"tmp1, err := tx.List(ctx, true)\", got:\n%s", out)
+	if !strings.Contains(out, "tmp1, err := tx.List(ctx, func(item StatementEntry) bool { return true })") {
+		t.Fatalf("esperava \"tmp1, err := tx.List(ctx, func(item StatementEntry) bool { return true })\", got:\n%s", out)
+	}
+}
+
+// TestStmt_List_Synthetic_WithBinding_FiltersPerItem é o critério de
+// conclusão central do redesenho de H4 (§22.4, Camada 1): um "where" de
+// verdade, com um binding explícito ("list StatementEntry e where
+// e.description == ..."), precisa acessar um CAMPO do item — algo que a
+// forma ANTERIOR a esta task não suportava (o "where" era avaliado como bool
+// solto no escopo ATUAL, sem nenhum item vinculado — ver TestStmt_List_
+// Synthetic_WithWhere_NoBinding, que confirmava exatamente essa lacuna antes
+// de ser corrigida). "e" é vinculado ao tipo StatementEntry (TypeEnv.
+// ItemTypeOf) num escopo-filho só para a duração de "where", então
+// "e.description" resolve via o Lowerer.member já existente (nenhum código
+// novo de resolução de membro) para "e.Description".
+func TestStmt_List_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
+	_, l := newWalletLowererWithBuiltins(t)
+	cond := ast.NewBinaryExpr(token.EQ, member(ident("e"), "description"), callExpr(ident("TransactionDescription"), arg(lit(token.STRING, "Salário"))), ast.Span{})
+	clauses := []ast.QueryClause{{Kw: "where", Expr: cond}}
+	qe := ast.NewQueryExpr("list", ident("StatementEntry"), "e", clauses, ast.Span{})
+	assign := ast.NewAssignStmt(ident("entries"), qe, ast.Span{})
+
+	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
+
+	want := `tmp1, err := tx.List(ctx, func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })`
+	if !strings.Contains(out, want) {
+		t.Fatalf("esperava %q, got:\n%s", want, out)
+	}
+}
+
+// TestStmt_Count_Synthetic_WithBinding_FiltersPerItem é o análogo de count —
+// mesmo predicado por item, agora produzindo (int64, error).
+func TestStmt_Count_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
+	_, l := newWalletLowererWithBuiltins(t)
+	cond := ast.NewBinaryExpr(token.EQ, member(ident("e"), "description"), callExpr(ident("TransactionDescription"), arg(lit(token.STRING, "Salário"))), ast.Span{})
+	clauses := []ast.QueryClause{{Kw: "where", Expr: cond}}
+	qe := ast.NewQueryExpr("count", ident("StatementEntry"), "e", clauses, ast.Span{})
+	assign := ast.NewAssignStmt(ident("total"), qe, ast.Span{})
+
+	out := lowerInFunc(t, l, StmtContext{}, "func testCount()", assign)
+
+	want := `tmp1, err := tx.Count(ctx, func(e StatementEntry) bool { return e.Description == TransactionDescription("Salário") })`
+	if !strings.Contains(out, want) {
+		t.Fatalf("esperava %q, got:\n%s", want, out)
+	}
+}
+
+// TestStmt_List_Where_NeedsHoistingFailsExplicitly prova a limitação
+// documentada em hoistQueryPredicate: uma condição que precise de HOISTING
+// (aqui, "e.amount == Money(amount: 10, currency: \"BRL\")" — Money é VO
+// COMPOSTO, construído com args nomeados, o caso que needsHoistVOConstruct
+// sempre marca como falível) falha com um erro claro, nunca Go quebrado —
+// o corpo de um predicado "func(T) bool" não tem onde acomodar um "if err
+// != nil { ... }" antes do "return" sem mudar a assinatura que Collection[T]
+// fixa.
+func TestStmt_List_Where_NeedsHoistingFailsExplicitly(t *testing.T) {
+	_, l := newWalletLowererWithBuiltins(t)
+	moneyCall := callExpr(ident("Money"),
+		ast.Arg{Name: "amount", Value: lit(token.INT, "10")},
+		ast.Arg{Name: "currency", Value: lit(token.STRING, "BRL")},
+	)
+	cond := ast.NewBinaryExpr(token.EQ, member(ident("e"), "amount"), moneyCall, ast.Span{})
+	clauses := []ast.QueryClause{{Kw: "where", Expr: cond}}
+	qe := ast.NewQueryExpr("list", ident("StatementEntry"), "e", clauses, ast.Span{})
+	assign := ast.NewAssignStmt(ident("entries"), qe, ast.Span{})
+
+	e := emit.New("testpkg")
+	sl := NewStmtLowerer(l, e, StmtContext{})
+	if err := sl.Stmt(assign); err == nil {
+		t.Fatal("esperava erro explícito: condição que precisa de hoisting não cabe no predicado de item (func(T) bool, sem error)")
 	}
 }
 
