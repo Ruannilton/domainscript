@@ -784,7 +784,7 @@ func emitViewDowncast(e *emit.Emitter, viewName, version string, downcast *ast.V
 	if err != nil {
 		return err
 	}
-	l := lower.NewLowerer(env, goname.NewVOOperatorRegistry(), "")
+	l := lower.NewLowerer(env, goname.NewVOOperatorRegistry(), "").WithEmitter(e)
 	env.Bind("self", shape)
 	l.BindGoName("self", "v")
 

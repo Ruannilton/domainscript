@@ -223,7 +223,7 @@ func channelQueueConfigGo(ch *program.Channel, l *lower.Lowerer, runtimeAlias st
 // é necessário aqui).
 func emitChannelQueueVar(e *emit.Emitter, varName, op string, ch *program.Channel, candidates []channelEventCandidate, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias string) error {
 	env := lower.New(model, tab, module)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 
 	cfgGo, usesTime, err := channelQueueConfigGo(ch, l, runtimeAlias)
 	if err != nil {

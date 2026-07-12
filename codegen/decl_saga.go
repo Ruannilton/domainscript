@@ -555,7 +555,7 @@ func emitSagaDecl(e *emit.Emitter, decl *ast.SagaDecl, model *types.Model, tab *
 
 	env := lower.New(model, tab, module)
 	env.SeedSagaStep(decl.Name, decl.State)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 	// now()/uuid()/random(...)/random_str(...) (REQ-22.7(a)) são úteis dentro
 	// de um passo de Saga (ex.: gerar um PaymentId novo em ProcessPayment.up) —
 	// load/list/count NÃO se aplicam aqui (um passo não tem acesso a um

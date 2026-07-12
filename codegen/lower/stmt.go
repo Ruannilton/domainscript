@@ -187,6 +187,15 @@ func (sl *StmtLowerer) WithEmitDispatch(dispatcherGoName, ctxGoName string) *Stm
 // NewStmtLowerer cria um StmtLowerer raiz (loopDepth 0, sem label ativo, com
 // um contador de temporárias/labels próprio para o corpo inteiro).
 func NewStmtLowerer(l *Lowerer, e *emit.Emitter, ctx StmtContext) *StmtLowerer {
+	// l.WithEmitter(e) (I4.1, §design read-side 3.6): todo StmtLowerer real
+	// tem um Emitter (e, o parâmetro acima) — anexar ao Lowerer subjacente
+	// aqui, num ÚNICO ponto central, habilita o operador "in" a registrar o
+	// import "slices" (Lowerer.binaryIn, expr.go) sem precisar tocar as
+	// dezenas de call sites de lower.NewLowerer espalhadas por codegen/*.go:
+	// toda vez que ALGUÉM envolve um Lowerer com um StmtLowerer (o caminho
+	// comum para todo corpo executável — Handle/Apply/execute/Query/Policy/
+	// Worker), o Lowerer ganha o Emitter de graça.
+	l.WithEmitter(e)
 	return &StmtLowerer{Lowerer: l, e: e, ctx: ctx, shared: &stmtLowererShared{}}
 }
 
@@ -892,7 +901,7 @@ func (sl *StmtLowerer) hoistQueryPredicate(n *ast.QueryExpr, ctx StmtContext) (s
 	childEnv := sl.env.Child()
 	childEnv.Bind(paramName, itemType)
 	child := &StmtLowerer{
-		Lowerer:        &Lowerer{env: childEnv, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins},
+		Lowerer:        &Lowerer{env: childEnv, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins, emitter: sl.emitter},
 		e:              sl.e,
 		ctx:            sl.ctx,
 		shared:         sl.shared,
@@ -1072,7 +1081,7 @@ func (sl *StmtLowerer) childForKeyEval(childEnv *TypeEnv, paramName, goParamName
 	}
 	goNames[paramName] = goParamName
 	return &StmtLowerer{
-		Lowerer:        &Lowerer{env: childEnv, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: goNames, builtins: sl.builtins},
+		Lowerer:        &Lowerer{env: childEnv, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: goNames, builtins: sl.builtins, emitter: sl.emitter},
 		e:              sl.e,
 		ctx:            sl.ctx,
 		shared:         sl.shared,
@@ -1667,7 +1676,7 @@ func (sl *StmtLowerer) forCollection(n *ast.ForStmt, label string, emitLabel boo
 // do for cairia de volta no "events = append(...)" de sempre (quebrado
 // dentro de uma Policy, que não declara "events").
 func (sl *StmtLowerer) childForLoop(env *TypeEnv, label string) *StmtLowerer {
-	childLowerer := &Lowerer{env: env, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins}
+	childLowerer := &Lowerer{env: env, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: sl.goNames, builtins: sl.builtins, emitter: sl.emitter}
 	return &StmtLowerer{
 		Lowerer:      childLowerer,
 		e:            sl.e,

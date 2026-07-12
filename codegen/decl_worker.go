@@ -270,14 +270,16 @@ func workerParseSource(env *lower.TypeEnv, source *ast.Block) (workerSourceShape
 // aqui porque o Lowerer é construído fora do pacote lower (seus campos não
 // exportados impedem "&lower.Lowerer{...}" a partir de codegen — daí
 // lower.NewLowerer sobre o env filho em vez disso). "" (sem erro) quando não
-// há "where".
-func workerSourcePredicate(shape workerSourceShape, env *lower.TypeEnv, reg *goname.VOOperatorRegistry, runtimeAlias string) (string, error) {
+// há "where". e (I4.1) é anexado via WithEmitter — sem StmtLowerer ao redor
+// desta lowering pura, o operador "in" (§design read-side 3.6) precisa dele
+// para registrar o import "slices" quando o "where" da fonte usar "in".
+func workerSourcePredicate(e *emit.Emitter, shape workerSourceShape, env *lower.TypeEnv, reg *goname.VOOperatorRegistry, runtimeAlias string) (string, error) {
 	if shape.where == nil {
 		return "", nil
 	}
 	child := env.Child()
 	child.Bind(shape.binding, shape.itemType)
-	predLowerer := lower.NewLowerer(child, reg, runtimeAlias)
+	predLowerer := lower.NewLowerer(child, reg, runtimeAlias).WithEmitter(e)
 	predGo, err := predLowerer.Expr(shape.where)
 	if err != nil {
 		return "", fmt.Errorf("where: %w", err)
@@ -482,7 +484,7 @@ func (w *workerEmitter) emitContinuous() error {
 	if err != nil {
 		return fmt.Errorf("source: %w", err)
 	}
-	predGo, err := workerSourcePredicate(shape, w.env, w.reg, w.runtimeAlias)
+	predGo, err := workerSourcePredicate(e, shape, w.env, w.reg, w.runtimeAlias)
 	if err != nil {
 		return err
 	}

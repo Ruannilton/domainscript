@@ -108,7 +108,7 @@
 
 ### Fase I4 — Operador `in`
 
-- [ ] **I4.1** `BinaryExpr(token.IN)` no dispatch de operadores: RHS lista
+- [x] **I4.1** `BinaryExpr(token.IN)` no dispatch de operadores: RHS lista
   literal → `slices.Contains([]T{...}, lhs)`; RHS coleção → idem quando o
   elemento é comparável nativamente; VO composto no LHS → erro claro.
   Funciona em `where` e em qualquer expressão booleana. _(REQ-35.3/35.4,

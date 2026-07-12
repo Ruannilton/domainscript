@@ -188,7 +188,7 @@ func emitAdapterDecl(e *emit.Emitter, decl *ast.AdapterDecl, notif *ast.Notifica
 	}
 	env.Bind("notification", notifShape)
 
-	l := lower.NewLowerer(env, reg, "")
+	l := lower.NewLowerer(env, reg, "").WithEmitter(e)
 	l.BindGoName("notification", "n")
 	ctxAlias := e.Import("context")
 

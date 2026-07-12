@@ -306,7 +306,7 @@ func emitMetricEventSubscriber(e *emit.Emitter, decl *ast.MetricDecl, evt policy
 
 	env := lower.New(model, tab, module)
 	env.SeedMetricEvent(onIdent.Name)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 
 	isCounter, err := metricIsCounter(decl)
 	if err != nil {

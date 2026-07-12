@@ -337,7 +337,7 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 
 	env := lower.New(model, tab, module)
 	env.SeedPolicyExecute(decl.On)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 	l.BindGoName("caller", "caller")
 	if len(typeToVar) > 0 {
 		// WithPerAggregateStore roteia "list T .../count T ..." para o

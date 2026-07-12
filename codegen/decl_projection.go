@@ -168,7 +168,7 @@ func emitProjectionDecl(e *emit.Emitter, decl *ast.ProjectionDecl, model *types.
 		return err
 	}
 
-	l := lower.NewLowerer(env, reg, "")
+	l := lower.NewLowerer(env, reg, "").WithEmitter(e)
 	for _, s := range srcs {
 		env.Bind(s.name, s.shape)
 		l.BindGoName(s.name, s.stateGo)

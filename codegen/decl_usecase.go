@@ -237,7 +237,7 @@ func emitCrossTenantBypass(e *emit.Emitter, decl *ast.UseCaseDecl, runtimeAlias 
 func emitUseCaseDecl(e *emit.Emitter, decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string, idemBlock *ast.ConfigBlock) error {
 	env := lower.New(model, tab, module)
 	env.SeedUseCaseExecute(decl.Handles)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 	l.BindGoName("caller", "caller")
 
 	// Idempotência (G2, REQ-20.4, spec §14): decl.Idempotency == nil (o caso

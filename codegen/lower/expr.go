@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"domainscript/ast"
+	"domainscript/codegen/emit"
 	"domainscript/codegen/goname"
 	"domainscript/symbols"
 	"domainscript/token"
@@ -33,6 +34,24 @@ type Lowerer struct {
 	runtimeAlias string            // alias do import do runtime vendorado (p/ construir runtime.NewDecimalFromInt etc. — não usado diretamente por esta task, ver nota REQ-22.5 sobre decimal no dispatch binário)
 	goNames      map[string]string // override: nome DS -> texto Go (ex. "event"->"ev")
 	builtins     *BuiltinLowerer   // E5.3 (builtins.go): now/uuid/random/random_str/load/list/count/exists. nil ⇒ essas formas continuam "não suportadas" (comportamento de E5.1/E5.2).
+	// emitter (I4.1, §design read-side 3.6) habilita formas de Lowerer.Expr
+	// que precisam registrar um import stdlib NO PONTO em que o texto é
+	// produzido — hoje só o operador "in" (slices.Contains, REQ-35.3/35.4).
+	// Antes desta task, nenhuma forma de Lowerer.Expr (ao contrário de
+	// lowering de STATEMENT, StmtLowerer.e — ex. baseGoCompare's e.Import
+	// ("time")) precisava de um Emitter: todo o dispatch de operador de VO
+	// (goname.LowerVOBinaryDispatch, §4.2) só produz chamada de método ou
+	// operador nativo, nunca uma referência a pacote externo. nil (o default
+	// de NewLowerer) preserva esse comportamento para todo o resto — só o
+	// caminho de "in" checa e falha explicitamente (nunca emite
+	// "slices.Contains" sem o import correspondente registrado, NFR-20).
+	// Anexado via WithEmitter — chamado automaticamente por NewStmtLowerer
+	// (stmt.go) para todo StmtLowerer real, e propagado a cada Lowerer-FILHO
+	// construído à mão neste pacote (Lambda, hoistQueryPredicate,
+	// childForKeyEval, childForLoop) para que "in" funcione também dentro de
+	// where/orderBy-key/lambda/for — os mesmos escopos-filho que já herdam
+	// reg/runtimeAlias/goNames/builtins.
+	emitter *emit.Emitter
 }
 
 // NewLowerer cria um Lowerer sobre env (tipos), reg (dispatch de operador de
@@ -50,6 +69,21 @@ func NewLowerer(env *TypeEnv, reg *goname.VOOperatorRegistry, runtimeAlias strin
 // desta task.
 func (l *Lowerer) WithBuiltins(b *BuiltinLowerer) *Lowerer {
 	l.builtins = b
+	return l
+}
+
+// WithEmitter anexa e (o Emitter do arquivo Go corrente) a l e devolve o
+// próprio l (encadeável, mesmo espírito de WithBuiltins) — habilita o
+// operador "in" (I4.1) a registrar o import "slices" no ponto em que
+// "slices.Contains(...)" é de fato emitido. NewStmtLowerer (stmt.go) chama
+// isto automaticamente para todo StmtLowerer real; um Lowerer "puro" (sem
+// StmtLowerer ao redor, ex. lowerAccessCondition de Access/workerSourcePredicate
+// de Worker Source where) precisa que o CHAMADOR (fora do pacote lower)
+// encadeie WithEmitter explicitamente quando o corpo lowerizado pode conter
+// "in" — sem isso, o operador "in" falha com um erro de geração claro em vez
+// de emitir "slices.Contains" sem o import (NFR-20).
+func (l *Lowerer) WithEmitter(e *emit.Emitter) *Lowerer {
+	l.emitter = e
 	return l
 }
 
@@ -482,9 +516,13 @@ func (l *Lowerer) constructShapePositional(t *types.ShapeType, args []ast.Arg) (
 	return fmt.Sprintf("%s{%s}", t.Name, strings.Join(assigns, ", ")), nil
 }
 
-// --- 5. BinaryExpr: dispatch §4.2 via goname.LowerVOBinaryDispatch ---
+// --- 5. BinaryExpr: dispatch §4.2 via goname.LowerVOBinaryDispatch;
+// token.IN via §design read-side 3.6 (I4.1, REQ-35.3/35.4). ---
 
 func (l *Lowerer) binary(n *ast.BinaryExpr) (string, error) {
+	if n.Op == token.IN {
+		return l.binaryIn(n)
+	}
 	leftGo, err := l.Expr(n.Left)
 	if err != nil {
 		return "", err
@@ -496,6 +534,111 @@ func (l *Lowerer) binary(n *ast.BinaryExpr) (string, error) {
 	leftType := l.inferType(n.Left)
 	rightType := l.inferType(n.Right)
 	return goname.LowerVOBinaryDispatch(l.reg, n.Op, leftGo, leftType.String(), rightGo, rightType.String())
+}
+
+// binaryIn traduz "x in RHS" (§design read-side 3.6, REQ-35.3/35.4) via
+// slices.Contains (stdlib Go 1.21+, NFR-12 intacto — nenhuma dependência
+// externa): RHS *ast.ListExpr literal (a forma do spec, ex. "t.status in
+// [TicketStatus.Sold, TicketStatus.Used]") vira "slices.Contains([]T{e1,
+// e2, ...}, x)" — T inferido do LHS, cada elemento lowerizado normalmente
+// via l.Expr; qualquer outra forma de RHS (uma expressão de coleção, ex.
+// uma variável List<T>/Set<T>) vira "slices.Contains(rhs, x)" direto, sem
+// literal ao redor. Os dois ramos exigem a MESMA checagem prévia —
+// inComparableGoType, abaixo — porque slices.Contains é genérico sobre
+// "E comparable": mesmo no ramo literal, "[]T{...}" só compila se T de fato
+// satisfizer essa restrição.
+func (l *Lowerer) binaryIn(n *ast.BinaryExpr) (string, error) {
+	leftGo, err := l.Expr(n.Left)
+	if err != nil {
+		return "", err
+	}
+	elemGoType, err := inComparableGoType(l.inferType(n.Left))
+	if err != nil {
+		return "", fmt.Errorf("codegen: %s in ...: %w", leftGo, err)
+	}
+	if l.emitter == nil {
+		return "", fmt.Errorf("codegen: %s in ...: operador \"in\" precisa registrar o import \"slices\", mas este Lowerer não tem Emitter anexado (Lowerer.WithEmitter) — bug de geração, não uma condição do programa DomainScript", leftGo)
+	}
+	l.emitter.Import("slices")
+
+	if list, ok := n.Right.(*ast.ListExpr); ok {
+		elemsGo := make([]string, len(list.Elems))
+		for i, elem := range list.Elems {
+			elemGo, err := l.Expr(elem)
+			if err != nil {
+				return "", err
+			}
+			elemsGo[i] = elemGo
+		}
+		return fmt.Sprintf("slices.Contains([]%s{%s}, %s)", elemGoType, strings.Join(elemsGo, ", "), leftGo), nil
+	}
+
+	rightGo, err := l.Expr(n.Right)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("slices.Contains(%s, %s)", rightGo, leftGo), nil
+}
+
+// nonComparablePrimitiveNames são os primitivos cujo tipo Go (goname.
+// GoPrimitive) NÃO satisfaz a restrição `comparable` de Go, que
+// slices.Contains exige do parâmetro de tipo E: "decimal" vira
+// runtime.Decimal, que embute um big.Int — que por sua vez embute um slice
+// interno (nat []Word) — NÃO comparável com "==" (documentado literalmente
+// em rtsrc/decimal.go.txt: "Decimal is NOT comparable with =="); "bytes"
+// vira []byte, um slice, e slice nunca satisfaz `comparable` em Go, ponto.
+// Todo outro primitivo do catálogo (integer/string/boolean/datetime/
+// duration/size/rate) tem forma Go comparável — um named type sobre int64/
+// string/bool/time.Duration, ou (datetime) um struct sem slice interno
+// (time.Time). Uma tabela por EXCLUSÃO, não por inclusão, porque a régua de
+// design (§design read-side 3.6) é "primitivo, wrapper, Enum" sem qualificar
+// — exceto os dois casos em que isso geraria Go que não compila (NFR-20).
+var nonComparablePrimitiveNames = map[string]bool{
+	"decimal": true,
+	"bytes":   true,
+}
+
+// inComparableGoType devolve o tipo Go de t quando t satisfaz a restrição
+// `comparable` na forma que "in" exige (§design read-side 3.6, REQ-35.3):
+// primitivo comparável, VO wrapper sobre um desses, ou Enum (sempre sobre
+// primitivo, §design read-side 3.2) sobre um desses. VO composto é RECUSADO
+// deliberadamente — mesmo quando "==" nativo funcionaria via
+// goname.LowerVOBinaryDispatch (structs Go são comparáveis por padrão,
+// campo a campo), "in" não tem forma de igualdade estrutural nativa por
+// design (ninguém no spec usa "in" sobre um composto, só sobre Enum — §6.3):
+// um composto que embrulhe decimal/bytes (ex. Money, wallet real) nem
+// chegaria a compilar de qualquer forma, e um composto "limpo" (só campos
+// comparáveis) ainda assim é recusado, para manter a regra simples e
+// previsível em vez de depender da composição interna do tipo. Erro de
+// geração claro (NFR-20) em qualquer outro caso — nunca Go que não compila.
+func inComparableGoType(t types.Type) (string, error) {
+	switch x := t.(type) {
+	case *types.Primitive:
+		if nonComparablePrimitiveNames[x.Name] {
+			return "", fmt.Errorf("tipo primitivo %q não é comparável nativamente em Go (não satisfaz a restrição comparable) — sem forma de usar como operando de \"in\" (§design read-side 3.6, NFR-20)", x.Name)
+		}
+		return goTypeString(t)
+
+	case *types.VOType:
+		if x.Base == nil {
+			return "", fmt.Errorf("ValueObject composto %q não tem igualdade estrutural nativa para \"in\" — sem forma de usar como operando à esquerda (§design read-side 3.6, NFR-20)", x.Name)
+		}
+		baseName, ok := primitiveNameOf(x.Base)
+		if !ok || nonComparablePrimitiveNames[baseName] {
+			return "", fmt.Errorf("ValueObject %q embrulha um tipo não comparável nativamente — sem forma de usar como operando de \"in\" (§design read-side 3.6, NFR-20)", x.Name)
+		}
+		return goTypeString(t)
+
+	case *types.EnumType:
+		baseName, ok := primitiveNameOf(x.Base)
+		if !ok || nonComparablePrimitiveNames[baseName] {
+			return "", fmt.Errorf("Enum %q: tipo base não é comparável nativamente — sem forma de usar como operando de \"in\" (§design read-side 3.6, NFR-20)", x.Name)
+		}
+		return goTypeString(t)
+
+	default:
+		return "", fmt.Errorf("tipo %s não é comparável nativamente — só primitivo comparável, VO wrapper ou Enum sobre um desses (§design read-side 3.6, NFR-20)", t.String())
+	}
 }
 
 // --- 6. IndexExpr ---
@@ -549,7 +692,7 @@ func (l *Lowerer) Lambda(le *ast.LambdaExpr, paramGoType string) (string, error)
 	if t := l.env.TypeOfName(paramGoType); !types.IsError(t) {
 		childEnv.Bind(le.Param, t)
 	}
-	child := &Lowerer{env: childEnv, reg: l.reg, runtimeAlias: l.runtimeAlias, goNames: l.goNames, builtins: l.builtins}
+	child := &Lowerer{env: childEnv, reg: l.reg, runtimeAlias: l.runtimeAlias, goNames: l.goNames, builtins: l.builtins, emitter: l.emitter}
 
 	bodyGo, err := child.Expr(le.Body)
 	if err != nil {
@@ -580,6 +723,20 @@ func (l *Lowerer) Lambda(le *ast.LambdaExpr, paramGoType string) (string, error)
 // IDÊNTICA ao próprio Aggregate (mesma convenção de sema/rules_typecheck.go,
 // REQ-12), então "X.state" aqui devolve o MESMO ShapeType de X. Nunca
 // devolve nil: no pior caso, types.ErrorType (o sentinela anti-cascata).
+//
+// Quarto caso especial (I4.1, §design read-side 3.6): um *ast.BinaryExpr com
+// Op == token.IN sempre produz boolean — types.Model.Infer (pacote types,
+// compartilhado com o front-end) não cobre token.IN em binaryResult (types/
+// infer.go): a checagem de tipos REQ-13 nunca precisou saber o tipo
+// RESULTANTE de "in", só que os operandos existem, então devolveria
+// types.ErrorType aqui. Isso não é inofensivo para a GERAÇÃO: uma composição
+// "t.status in [...] and x == y" passa pelo dispatch geral de binary() para o
+// "and" externo, que chama inferType em CADA operando para alimentar
+// goname.LowerVOBinaryDispatch — um ErrorType ali seria confundido com "nome
+// de ValueObject desconhecido" e produziria um erro de geração falso. A MESMA
+// correção existe em TypeEnv.InferAssignRHS (env.go), o outro ponto que hoje
+// contorna types.Model.Infer para formas que ele não cobre (ex. "x = a in
+// [...]", um AssignStmt de alvo nu).
 func (l *Lowerer) inferType(e ast.Expr) types.Type {
 	switch n := e.(type) {
 	case *ast.QueryExpr, *ast.MatchExpr, *ast.LambdaExpr:
@@ -593,6 +750,11 @@ func (l *Lowerer) inferType(e ast.Expr) types.Type {
 			if shape, ok := l.inferType(n.X).(*types.ShapeType); ok && shape.Kind == symbols.KindAggregate {
 				return shape
 			}
+		}
+		return l.env.model.Infer(l.env.module, e, l.env)
+	case *ast.BinaryExpr:
+		if n.Op == token.IN {
+			return &types.Primitive{Name: "boolean"}
 		}
 		return l.env.model.Infer(l.env.module, e, l.env)
 	default:

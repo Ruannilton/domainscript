@@ -6,6 +6,7 @@ import (
 	"domainscript/ast"
 	"domainscript/astutil"
 	"domainscript/symbols"
+	"domainscript/token"
 	"domainscript/types"
 )
 
@@ -310,6 +311,20 @@ func (env *TypeEnv) InferAssignRHS(rhs ast.Expr) (types.Type, error) {
 	case *ast.CallExpr:
 		if t, ok, err := env.inferSmartPartialCall(n); ok {
 			return t, err
+		}
+		return env.model.Infer(env.module, rhs, env), nil
+	case *ast.BinaryExpr:
+		// "x = a in [...]" (I4.1, §design read-side 3.6): token.IN não está
+		// em binaryResult (types/infer.go, pacote compartilhado com o
+		// front-end) — REQ-13 nunca precisou saber o tipo RESULTANTE de
+		// "in", só que os operandos existem — então model.Infer devolveria
+		// ErrorType aqui. A MESMA correção existe em Lowerer.inferType
+		// (expr.go), o outro ponto que contorna model.Infer para formas que
+		// ele não cobre; esta cobre o caso em que "in" aparece como RHS nu
+		// de um AssignStmt (ex. "matched = t.status in [...]"), que passa
+		// por InferAssignRHS, não por Lowerer.inferType.
+		if n.Op == token.IN {
+			return &types.Primitive{Name: "boolean"}, nil
 		}
 		return env.model.Infer(env.module, rhs, env), nil
 	default:

@@ -131,7 +131,7 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string, mod *program.Module) (*queryCachePlan, error) {
 	env := lower.New(model, tab, module)
 	env.SeedQuery(decl.Params)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "store").WithFileStorage(fsByField, fsDefault).WithEventLoaderWrapping())
 
 	// signed_url(ref, expires: <duração>) (G1a, §2.5) loweriza o argumento

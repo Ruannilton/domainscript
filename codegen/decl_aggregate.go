@@ -226,7 +226,7 @@ func emitHandle(e *emit.Emitter, decl *ast.AggregateDecl, h *ast.HandleDecl, mod
 
 	env := lower.New(model, tab, module)
 	env.SeedHandle(decl.Name, h.Params)
-	l := lower.NewLowerer(env, reg, runtimeAlias)
+	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 	l.BindGoName("self", receiver+".state")
 	l.BindGoName("state", receiver+".state")
 	l.BindGoName("caller", "caller")
