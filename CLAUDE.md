@@ -59,8 +59,10 @@ change is needed, update the spec.
   validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
   suite. Once green, update `.claude/state.md` and the current spec's
   `tasks.md` (mark the task done), then commit.
-- **Full suite only at spec closure.** `go test ./...` (and `go vet ./...`)
-  runs only once, at the end of the *entire* spec — not after every task.
+- **No full-suite run at spec closure.** `go test ./...` and `go vet ./...`
+  are not run locally at the end of a spec — CI runs them on the pull
+  request. Closing a spec still means every task in its `tasks.md` is
+  checked off and `.claude/state.md` reflects `done`.
 - **Refine `tasks.md` at spec-creation time.** When writing a new spec's
   `tasks.md`, break tasks down as far as practical up front — small,
   independently verifiable, vertically sliced — so execution never needs to
@@ -218,8 +220,9 @@ A `Makefile` wraps these with `build`/`test`/`lint`/`fmt` targets — prefer
 - **Every §23 rule needs a positive *and* a negative test** — one program that
   violates it (expects the exact diagnostic) and one correct program (expects
   silence). This pairing is the central Definition of Done (NFR-4).
-- **Green tree before commit.** Only commit with `go build ./...` and
-  `go test ./...` passing. One atomic commit per completed task.
+- **Green tree before commit.** Only commit with `go build ./...` passing and
+  the task-scoped tests green (see Execution rules above — not the whole
+  suite). One atomic commit per completed task.
 - **Conventional Commits**, in Portuguese imperative, e.g.
   `feat(parser): declaração Aggregate`. Types: `feat`/`test`/`refactor`/`chore`/
   `docs`/`fix`. Scopes: `lexer`/`parser`/`ast`/`diag`/`sema`/`resolver`/
