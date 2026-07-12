@@ -13,7 +13,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | transpilador (front-end, REQ-1..8) | `.claude/specs/transpilador/` | done | — |
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
-| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I5.1 |
+| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I6.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -36,14 +36,15 @@ que o back-end entrega — não são tasks pendentes desta spec.
 
 ## read-side — `.claude/specs/read-side/tasks.md`
 
-Marco I ("Read Side de Verdade"), REQ-33..40. Fases I0–I4 concluídas (seam no
+Marco I ("Read Side de Verdade"), REQ-33..40. Fases I0–I5 concluídas (seam no
 runtime, predicado falível, `orderBy`/`skip`/`take`, `load X(id).entries` +
-`as V`, operador `in`).
+`as V`, operador `in`, `join` mesmo-banco — âncora 2 `GetMyTickets` verde:
+golden + determinismo + smoke + comportamental,
+`codegen/gentest_query_getmytickets_test.go`). `orderBy`/`skip`/`take`
+pós-join ficou fora do escopo de I5.1 (desvio registrado no `tasks.md`).
 
 Pendente, na ordem do plano:
 
-- [ ] **I5.1** — Lowering do `join` mesmo-banco (materializa as duas fontes,
-      loop aninhado) — fatia `GetMyTickets`.
 - [ ] **I6.2** — Âncora 3 + des-adaptação: fixture da Policy §7 para Smart
       Partial Loading (§20).
 - [ ] **I7.0** — Seam `Dialect` + registro único de provider (REQ-40).

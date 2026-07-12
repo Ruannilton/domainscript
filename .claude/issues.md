@@ -24,4 +24,20 @@ Cada issue é um bloco novo, nesta forma:
 
 ---
 
-(nenhuma issue registrada ainda)
+## ISSUE-1
+- SPEC: read-side
+- TASK: I5.1
+- DESCRIPTION: `emitQueryJoinCollectionVars` (`codegen/decl_query.go`) gera
+  variáveis de pacote como `var ticketCollection = runtime.NewMemoryCollection[Ticket]()`
+  no arquivo `queries.go`. Se o MESMO tipo (ex. `Ticket`) também for
+  referenciado num `list`/`count` dentro de uma Policy do MESMO módulo,
+  `emitPolicyCollectionVars` (`codegen/decl_policy.go`) gera a MESMA variável,
+  com o MESMO nome (`policyCollectionVarName`/convenção `<tipo>Collection`),
+  em `policies.go` — os dois arquivos compartilham o MESMO pacote Go, então o
+  compilador falha com "redeclared in this block". Nenhum exemplo real hoje
+  exercita essa combinação (nenhum módulo tem Query com join E Policy com
+  list/count sobre o mesmo tipo), por isso não foi pego pelos testes
+  existentes. Correção sugerida: centralizar a declaração dessas
+  Collection[T] var num único arquivo por módulo (ex. `collections.go`),
+  compartilhado entre `EmitQueries`/`EmitPolicies`, em vez de cada emissor
+  declarar as suas independentemente.

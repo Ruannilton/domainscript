@@ -498,6 +498,15 @@ func (sl *StmtLowerer) hoistQueryExpr(n *ast.QueryExpr, ctx StmtContext) (ast.Ex
 		}
 		return sl.hoistLoad(n, ctx)
 	case "list":
+		// "list A a join B b on ... [where ...] [as V]" (I5.1, REQ-35.1/35.2,
+		// §design read-side 3.7) precisa de correlação de DUAS fontes — uma
+		// forma inteiramente diferente de hoistList (uma Query[T] sobre UMA
+		// fonte só). Detectado aqui, antes de hoistList, pela presença de uma
+		// cláusula "join" (a única forma que o parser produz para join,
+		// parser/parse_query.go).
+		if hasQueryClause(n.Clauses, "join") {
+			return sl.hoistJoin(n, ctx)
+		}
 		return sl.hoistList(n, ctx)
 	case "count":
 		return sl.hoistCount(n, ctx)
