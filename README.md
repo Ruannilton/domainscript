@@ -134,10 +134,10 @@ escrito em `out` e `err` é (ou envolve) `codegen.ErrHasDiagnostics`.
 ## Estado
 
 **Completo** — front-end e back-end. Todas as fases dos três planos
-(`.claude/specs/tasks.md`, `.claude/specs/type-checking/tasks.md`,
+(`.claude/specs/transpilador/tasks.md`, `.claude/specs/type-checking/tasks.md`,
 `.claude/specs/codegen/tasks.md`) implementadas.
 
-Front-end (`.claude/specs/requirements.md` §5):
+Front-end (`.claude/specs/transpilador/requirements.md` §5):
 
 1. Todos os construtos do spec v6 reconhecidos pelo parser (REQ-2).
 2. Toda regra ❌ da §23 detectada e reportada como erro (REQ-5).

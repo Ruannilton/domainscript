@@ -23,7 +23,7 @@ import (
 //
 // --- A fixture: PurchaseTickets, do spec (§18.2) ---
 //
-// docs/domainscript-spec-v6.md §18.2 tem um "Saga PurchaseTickets handles
+// .claude/steerings/domainscript-spec-v6.md §18.2 tem um "Saga PurchaseTickets handles
 // PurchaseTicketsCmd" real, com "mode await timeout 60s", exatamente os 3
 // campos de state usados aqui (orderId/ticketIds/paymentId) e exatamente os
 // 3 passos (ReserveTickets/ProcessPayment/ConfirmPurchase, na mesma ordem) —

@@ -2,7 +2,7 @@
 
 > Documento complementar ao ciclo `requirements.md` → `design.md` → `tasks.md`
 > (REQ-14..32, Marcos E–H, **completo**). Registra, ordenado por criticidade, o
-> que o spec da linguagem (`docs/domainscript-spec-v6.md`) promete e o
+> que o spec da linguagem (`.claude/steerings/domainscript-spec-v6.md`) promete e o
 > transpilador ainda não entrega — auditoria feita após o fechamento de H5,
 > cruzando o spec com o código real e as notas de escopo de `tasks.md`.
 >
