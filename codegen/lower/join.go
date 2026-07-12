@@ -276,6 +276,9 @@ func memberAliasOf(e ast.Expr) (string, bool) {
 // duplicado aqui (não importado) porque a direção de dependência do
 // projeto é codegen → codegen/lower, nunca o inverso (CLAUDE.md).
 func fieldsOfType(t types.Type) ([]types.Field, error) {
+	if t == nil {
+		return nil, fmt.Errorf("tipo <nil> não tem campos nomeados")
+	}
 	switch x := t.(type) {
 	case *types.VOType:
 		return x.Fields, nil
