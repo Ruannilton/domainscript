@@ -105,6 +105,17 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 	}
 	fsDefault := moduleFileStorageDefault(mod)
 
+	// Collection[T] var por tipo referenciado como fonte de um "join" (I5.1,
+	// §design read-side 3.7 passo 1) — ver a doc de emitQueryJoinCollectionVars.
+	// joinTypeToVar fica nil (o default) quando NENHUMA Query do arquivo usa
+	// join: preserva Go idêntico ao gerado antes desta task para todo módulo
+	// sem join (GetStatement/GetWallet, ex.).
+	joinTypeNames := queryJoinCollectionTypeNames(decls)
+	var joinTypeToVar map[string]string
+	if len(joinTypeNames) > 0 {
+		joinTypeToVar = emitQueryJoinCollectionVars(e, runtimeAlias, joinTypeNames)
+	}
+
 	// cached acumula, por Query com "cache" (G3, spec §15), o plano já
 	// resolvido — emitQueryCacheWireFunc consome isso no final do arquivo
 	// para montar "func WireQueryCache(d runtime.Dispatcher)" (ver
@@ -114,7 +125,7 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 		if i > 0 {
 			e.Line("")
 		}
-		plan, err := emitQueryDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias, fsByField, fsDefault, mod)
+		plan, err := emitQueryDecl(e, decl, aggregates, model, tab, module, reg, ctxAlias, runtimeAlias, fsByField, fsDefault, mod, joinTypeToVar)
 		if err != nil {
 			return nil, err
 		}
@@ -143,11 +154,26 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 // seguro (nenhum fallback disponível, mesmo efeito de mod.ds sem Cache{}).
 // Devolve o queryCachePlan resolvido (nil quando a Query não usa cache) para
 // EmitQueries acumular e montar WireQueryCache.
-func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string, mod *program.Module) (*queryCachePlan, error) {
+func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, ctxAlias, runtimeAlias string, fsByField map[string]string, fsDefault string, mod *program.Module, joinTypeToVar map[string]string) (*queryCachePlan, error) {
 	env := lower.New(model, tab, module)
 	env.SeedQuery(decl.Params)
 	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
-	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, "ctx", "store").WithFileStorage(fsByField, fsDefault).WithEventLoaderWrapping())
+	builtins := lower.NewBuiltinLowerer(runtimeAlias, "ctx", "store").WithFileStorage(fsByField, fsDefault).WithEventLoaderWrapping()
+	if len(joinTypeToVar) > 0 {
+		// Roteia "list T ..." para o Collection[T] de join quando T é uma
+		// fonte de join deste arquivo (I5.1); qualquer outro tipo (ex. "load
+		// Agg(id)") cai no MESMO texto que WithEventLoaderWrapping já produzia
+		// sozinho — byte-idêntico, preservado explicitamente aqui porque
+		// WithPerAggregateStore, quando anexado, assume o roteamento POR
+		// INTEIRO (ver a doc de BuiltinLowerer.store, lower/builtins.go).
+		builtins = builtins.WithPerAggregateStore(func(typeName string) string {
+			if v, ok := joinTypeToVar[typeName]; ok {
+				return v
+			}
+			return fmt.Sprintf("%s.NewEventLoader(ctx, store)", runtimeAlias)
+		})
+	}
+	l.WithBuiltins(builtins)
 
 	// signed_url(ref, expires: <duração>) (G1a, §2.5) loweriza o argumento
 	// "expires" via lowerDurationLiteral (lower/expr.go), que produz o texto
@@ -304,6 +330,9 @@ func (qc *queryBodyEmitter) emitReturn(ret *ast.ReturnStmt) error {
 			}
 		}
 		if qe.Op == "list" {
+			if queryExprHasJoin(qe.Clauses) {
+				return qc.emitHoistedJoinReturn(qe)
+			}
 			if handled, err := qc.tryEmitListVO(qe); handled {
 				return err
 			}
@@ -518,6 +547,46 @@ func (qc *queryBodyEmitter) emitHoistedQueryReturn(qe *ast.QueryExpr) error {
 	return qc.emitAsProjection(stripped, itemsGo, viewName)
 }
 
+// --- 4. "return list A a join B b on ... [where ...] [as V]" (I5.1,
+// §design read-side 3.7). ---
+
+// emitHoistedJoinReturn traduz "return list A a join B b on ... [where ...]
+// [as V]". AO CONTRÁRIO de emitHoistedQueryReturn (que REMOVE "as" antes de
+// hoistear e projeta NUM LOOP, por cima, porque a fonte tem UM tipo só —
+// projectFieldAssignments/emitAsProjection), join resolve "as" INTEIRO
+// dentro do próprio hoisting (lower.StmtLowerer.hoistJoin, codegen/lower/
+// join.go): a projeção precisa dos DOIS aliases em escopo, que só existem
+// DENTRO do loop que o hoisting já constrói — não há como separar essas duas
+// etapas como no caminho de uma fonte só. Esta função só valida o tipo de
+// retorno declarado da Query contra a forma esperada (List<V> com "as", ou
+// List<AliasBase> sem "as", §design read-side 3.7 ponto 3) e emite o
+// resultado, já pronto, que o hoisting devolve.
+func (qc *queryBodyEmitter) emitHoistedJoinReturn(qe *ast.QueryExpr) error {
+	viewName, hasAs := queryClauseExtra(qe.Clauses, "as")
+	wantElem, ok := listReturnElement(qc.decl.Return)
+	if hasAs {
+		if !ok || wantElem != viewName {
+			return fmt.Errorf("... as %s: tipo de retorno da Query deveria ser List<%s>, declarado %s", viewName, viewName, qc.decl.Return.Name)
+		}
+	} else {
+		aliasTypeName := astutil.HeadName(qe.Target)
+		if !ok || wantElem != aliasTypeName {
+			return fmt.Errorf("list ... join ...: tipo de retorno da Query deveria ser List<%s> (o alias base, sem \"as\"), declarado %s", aliasTypeName, qc.decl.Return.Name)
+		}
+	}
+
+	sl := lower.NewStmtLowerer(qc.l, qc.e, lower.StmtContext{ZeroValues: []string{"nil"}, CtxVar: "ctx"})
+	itemsGo, hoisted, err := sl.ExprHoisted(qe)
+	if err != nil {
+		return fmt.Errorf("return: %w", err)
+	}
+	for _, line := range hoisted {
+		qc.e.Line("%s", line)
+	}
+	qc.e.Line("return %s, nil", itemsGo)
+	return nil
+}
+
 // emitAsProjection projeta itemsGo ([]T, já materializado por
 // emitHoistedQueryReturn) para []V (viewName) NUM LOOP, campo a campo
 // (REQ-34.1) — reusa projectFieldAssignments (a MESMA rotina que
@@ -685,6 +754,90 @@ func correlateListVOAggregate(aggregates map[string]*ast.AggregateDecl, voName s
 		return "", "", fmt.Errorf("não consegui correlacionar com exatamente 1 Aggregate cujo state declare um campo AppendList<%s> (achei %d candidato(s))", voName, len(candidates))
 	}
 	return candidates[0].aggName, candidates[0].fieldName, nil
+}
+
+// --- join (I5.1, §design read-side 3.7): Collection[T] var por fonte. ---
+
+// queryExprHasJoin reporta se clauses (de um QueryExpr "list") tem uma
+// cláusula "join" — o sinal que distingue "list A a join B b on ..." (I5.1,
+// roteado para emitHoistedJoinReturn) de qualquer outra forma de "list"
+// (tryEmitListVO/tryEmitHoistedQueryReturn).
+func queryExprHasJoin(clauses []ast.QueryClause) bool {
+	for _, c := range clauses {
+		if c.Kw == "join" {
+			return true
+		}
+	}
+	return false
+}
+
+// queryJoinCollectionTypeNames varre CADA decl.Body de decls (todas as
+// Queries do arquivo, não só uma — várias podem referenciar o MESMO tipo, e
+// só queremos UM var de Collection por tipo, mesmo padrão de
+// decl_policy.go:policyCollectionTypeNames) por *ast.QueryExpr "list" com
+// cláusula "join" (I5.1) e devolve, em ordem alfabética (determinismo,
+// NFR-13), o conjunto de nomes NUS de tipo referenciados como fonte de um
+// join — tanto o alvo base ("list Ticket t join ...") quanto a fonte
+// juntada ("join Order o ..."). Só join precisa deste roteamento: "list <VO>"
+// SEM join continua coberto por tryEmitListVO (correlação com um Aggregate,
+// I3.2) — nenhuma mudança para esse caminho.
+func queryJoinCollectionTypeNames(decls []*ast.QueryDecl) []string {
+	seen := make(map[string]bool)
+	for _, d := range decls {
+		if d == nil || d.Body == nil {
+			continue
+		}
+		astutil.ForEachExprInBlock(d.Body, func(e ast.Expr) {
+			qe, ok := e.(*ast.QueryExpr)
+			if !ok || qe.Op != "list" || !queryExprHasJoin(qe.Clauses) {
+				return
+			}
+			if name := astutil.HeadName(qe.Target); name != "" {
+				seen[name] = true
+			}
+			for _, c := range qe.Clauses {
+				if c.Kw == "join" {
+					if name := astutil.HeadName(c.Expr); name != "" {
+						seen[name] = true
+					}
+				}
+			}
+		})
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// emitQueryJoinCollectionVars emite, uma vez por tipo distinto de names,
+// "var <tipo>Collection = runtime.NewMemoryCollection[<Tipo>]()" (I5.1,
+// mesmo padrão de decl_policy.go:emitPolicyCollectionVars, generalizado para
+// Query): um "list A a join B b on ..." dentro de um Query.Body materializa
+// as duas fontes por inteiro (§design read-side 3.7 passo 1) sobre o MESMO
+// seam runtime.Collection[T] que Policy já usa para list/count simples (H4,
+// §22.4) — reusa policyCollectionVarName (mesma convenção de nome, ex.
+// "ticketCollection") para que o var seja previsível independente de qual
+// emissor o declarou. Nenhum wiring de produção real (popular a partir de
+// um EventStore/projeção) ainda: um teste comportamental semeia via .Add
+// diretamente — mesmo espírito da nota de escopo de decl_policy.go.
+func emitQueryJoinCollectionVars(e *emit.Emitter, runtimeAlias string, names []string) map[string]string {
+	typeToVar := make(map[string]string, len(names))
+	for _, name := range names {
+		v := policyCollectionVarName(name)
+		typeToVar[name] = v
+		e.Line("// %s é o runtime.Collection[%s] que \"list %s ... join ...\" (I5.1,", v, name, name)
+		e.Line("// §design read-side 3.7) materializa por inteiro dentro de uma Query deste")
+		e.Line("// pacote — semeado por um teste que aciona a Query gerada diretamente; um")
+		e.Line("// wiring de produção real (popular a partir de um EventStore/projeção) fica")
+		e.Line("// para quando um exemplo real precisar dele (mesmo espírito da nota de escopo")
+		e.Line("// de decl_policy.go).")
+		e.Line("var %s = %s.NewMemoryCollection[%s]()", v, runtimeAlias, name)
+		e.Line("")
+	}
+	return typeToVar
 }
 
 // --- helpers compartilhados. ---

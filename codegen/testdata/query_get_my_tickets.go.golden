@@ -1,0 +1,46 @@
+package tickets
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	slices "slices"
+)
+
+// orderCollection é o runtime.Collection[Order] que "list Order ... join ..." (I5.1,
+// §design read-side 3.7) materializa por inteiro dentro de uma Query deste
+// pacote — semeado por um teste que aciona a Query gerada diretamente; um
+// wiring de produção real (popular a partir de um EventStore/projeção) fica
+// para quando um exemplo real precisar dele (mesmo espírito da nota de escopo
+// de decl_policy.go).
+var orderCollection = runtime.NewMemoryCollection[Order]()
+
+// ticketCollection é o runtime.Collection[Ticket] que "list Ticket ... join ..." (I5.1,
+// §design read-side 3.7) materializa por inteiro dentro de uma Query deste
+// pacote — semeado por um teste que aciona a Query gerada diretamente; um
+// wiring de produção real (popular a partir de um EventStore/projeção) fica
+// para quando um exemplo real precisar dele (mesmo espírito da nota de escopo
+// de decl_policy.go).
+var ticketCollection = runtime.NewMemoryCollection[Ticket]()
+
+// GetMyTickets é a Query GetMyTickets (§6.3): leitura pura, sem unit of work.
+func GetMyTickets(ctx context.Context, store runtime.EventStore, userId UserId) ([]TicketVW, error) {
+	tmp1, err := ticketCollection.Select(ctx, runtime.Query[Ticket]{})
+	if err != nil {
+		return nil, err
+	}
+	tmp2, err := orderCollection.Select(ctx, runtime.Query[Order]{})
+	if err != nil {
+		return nil, err
+	}
+	tmp3 := make([]TicketVW, 0)
+	for _, t := range tmp1 {
+		for _, o := range tmp2 {
+			if t.OrderId == o.Id {
+				if o.UserId == userId && slices.Contains([]TicketStatus{TicketStatusSold, TicketStatusUsed}, t.Status) {
+					tmp3 = append(tmp3, TicketVW{OrderId: t.OrderId, Status: t.Status})
+				}
+			}
+		}
+	}
+	return tmp3, nil
+}

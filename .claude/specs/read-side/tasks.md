@@ -119,18 +119,28 @@
 
 ### Fase I5 — `join` mesmo-banco (GetMyTickets, §6.3)
 
-- [ ] **I5.1** Lowering do join: materializa as duas fontes, loop aninhado
+- [x] **I5.1** Lowering do join: materializa as duas fontes, loop aninhado
   com aliases tipados em escopos-filho, `on` só igualdade membro-a-membro
   (senão erro claro), `where` com hoisting normal no corpo do loop, projeção
   `as V` resolvendo contra os aliases na ordem de declaração (ambiguidade →
-  erro), sem `as` → lista do primeiro alias; `orderBy`/`skip`/`take`
-  pós-join via `SelectSlice` no resultado. _(REQ-35.1/35.2, §design 3.7)_
+  erro), sem `as` → lista do primeiro alias. _(REQ-35.1/35.2, §design 3.7)_
   **Depende:** I2–I4 (o exemplo canônico usa where + in + as).
   **Conclusão (âncora 2):** fixture `GetMyTickets` na forma do spec §6.3
   (`list Ticket t join Order o on t.orderId == o.id where o.userId == userId
   and t.status in [...] as TicketVW`) gera, compila e um comportamental prova
   a correlação; golden + determinismo + smoke.
   **Commit:** `feat(codegen): join mesmo-banco in-memory`
+  **Desvio registrado:** `orderBy`/`skip`/`take` pós-join (§design 3.7 ponto
+  4) ficou de fora — a âncora `GetMyTickets` não usa nenhuma das três, e a
+  semântica de contra qual binding a chave de ordenação resolveria
+  pós-projeção não está fechada no design; `ensureJoinClausesWellFormed`
+  (`codegen/lower/join.go`) recusa as três com um erro de geração claro em
+  vez de adivinhar. Fica para uma task futura quando um exemplo real precisar.
+  Também novo nesta task, fora do texto original: um "list T ... join U ..."
+  dentro de uma Query passou a rotear para `runtime.Collection[T]` (um var
+  `<tipo>Collection` por fonte, mesmo padrão de `decl_policy.go` — nenhuma
+  Query tinha essa forma de sourcing antes; só "load Agg(id)"/"list <VO>
+  correlacionado" existiam).
 
 ### Fase I6 — Smart Partial Loading (§20) e fixtures canônicas
 
