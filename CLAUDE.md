@@ -59,6 +59,10 @@ change is needed, update the spec.
   validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
   suite. Once green, update `.claude/state.md` and the current spec's
   `tasks.md` (mark the task done), then commit.
+- **Open a pull request when a task is done.** After the commit for a
+  completed task lands, push the branch and open a PR for it — CI then runs
+  the full suite (see the rule above) against that task's diff. One PR per
+  completed task, not one PR per spec.
 - **No full-suite run at spec closure.** `go test ./...` and `go vet ./...`
   are not run locally at the end of a spec — CI runs them on the pull
   request. Closing a spec still means every task in its `tasks.md` is
