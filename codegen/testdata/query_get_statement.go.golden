@@ -1,0 +1,24 @@
+package ledger
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	time "time"
+)
+
+// GetStatement é a Query GetStatement (§6.3): leitura pura, sem unit of work.
+func GetStatement(ctx context.Context, store runtime.EventStore, accountId AccountId, page int64) ([]StatementEntryVW, error) {
+	tmp1, err := LoadAccount(runtime.NewEventLoader(ctx, store), accountId)
+	if err != nil {
+		return nil, err
+	}
+	tmp2, err := runtime.SelectSlice(tmp1.state.Entries.Items(), runtime.Query[StatementEntry]{Less: func(a, b StatementEntry) (bool, error) { return time.Time(b.Date).Before(time.Time(a.Date)), nil }, OrderField: "date", OrderDesc: true, Skip: int(page * 20), Take: 20})
+	if err != nil {
+		return nil, err
+	}
+	projected := make([]StatementEntryVW, 0, len(tmp2))
+	for _, item := range tmp2 {
+		projected = append(projected, StatementEntryVW{Amount_value: item.Amount.Value, Amount_currency: item.Amount.Currency, Date: item.Date})
+	}
+	return projected, nil
+}

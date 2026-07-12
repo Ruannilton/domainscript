@@ -78,6 +78,16 @@ func emitValueObjectWrapper(e *emit.Emitter, decl *ast.ValueObjectDecl) error {
 	if err != nil {
 		return fmt.Errorf("codegen: ValueObject %s: %w", decl.Name, err)
 	}
+	// Um wrapper sobre "datetime" (goname.GoFieldType → "time.Time", goname/
+	// types.go) gera "type X time.Time" — precisa do import "time" mesmo sem
+	// nenhum Operator (o caminho de "runtimeAlias" abaixo só entra quando há
+	// Valid a checar). Gap pré-existente nunca exercitado antes do ciclo
+	// Read Side (§design read-side 3.4/3.9): nenhum VO wrapper sobre
+	// datetime tinha golden/smoke test até a fixture GetStatement precisar
+	// de um campo "date" ordenável.
+	if goType == "time.Time" {
+		e.Import("time")
+	}
 
 	cond, err := extractValidCondition(decl)
 	if err != nil {

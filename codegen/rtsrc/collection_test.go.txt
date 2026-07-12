@@ -323,6 +323,56 @@ func TestNewQuery_StartsSkipAndTakeAtNegativeOneSentinel(t *testing.T) {
 	}
 }
 
+// --- 5a. Fast path REQ-37.4 (§design read-side 3.4): sem Where NEM Less,
+// skip/take reslicam DIRETO — zero cópia. Provado por identidade de ponteiro
+// do primeiro elemento do resultado contra o slice original (uma cópia
+// alocaria um backing array NOVO, então os endereços divergiriam). ---
+
+func TestSelectSlice_NoWhereNoLessReslicesWithoutCopying(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}, {ID: "5"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{Skip: 1, Take: 2})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "2" || got[1].ID != "3" {
+		t.Fatalf("SelectSlice(Skip: 1, Take: 2) = %+v, want [2, 3]", got)
+	}
+	if &got[0] != &items[1] {
+		t.Fatalf("SelectSlice sem Where/Less copiou o slice (esperava reslicing zero-cópia, REQ-37.4): &got[0]=%p, &items[1]=%p", &got[0], &items[1])
+	}
+}
+
+func TestSelectSlice_NoWhereNoLessNoSkipTakeReturnsSameBackingArray(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}, {ID: "3"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != len(items) || &got[0] != &items[0] {
+		t.Fatalf("SelectSlice(Query{}) deveria devolver o MESMO backing array (zero cópia): got=%+v", got)
+	}
+}
+
+// TestSelectSlice_WherePresentStillCopiesEvenWithoutLess prova que o fast
+// path só se aplica quando Where TAMBÉM está ausente — com Where presente
+// (mesmo passando todo item), o resultado é uma cópia nova (Where sempre
+// precisa filtrar para um slice novo).
+func TestSelectSlice_WherePresentStillCopiesEvenWithoutLess(t *testing.T) {
+	items := []collectionTestItem{{ID: "1"}, {ID: "2"}}
+	got, err := SelectSlice(items, Query[collectionTestItem]{
+		Where: func(item collectionTestItem) (bool, error) { return true, nil },
+	})
+	if err != nil {
+		t.Fatalf("SelectSlice: erro inesperado: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("SelectSlice(Where sempre true) = %+v, want os 2 itens", got)
+	}
+	if &got[0] == &items[0] {
+		t.Fatalf("SelectSlice com Where presente não deveria compartilhar o backing array original")
+	}
+}
+
 // --- 6. Erro de predicado/Less aborta a operação INTEIRA (REQ-36.1) — nunca
 // pula o item silenciosamente. ---
 

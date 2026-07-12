@@ -219,7 +219,22 @@ func applyWhere[T any](q Query[T], item T) (bool, error) {
 // that no closure backs is, for this function, indistinguishable from "no
 // filter"/"no order" — proven by TestSelectSlice_IgnoresDeclarativeDescriptors
 // in collection_test.go.txt).
+//
+// Fast path (REQ-37.4, §design read-side 3.4): when NEITHER Where nor Less is
+// set, nothing needs to be copied or reordered — skip/take reslice items
+// DIRECTLY, at zero copy cost. This is the shape "load X(id).entries skip ...
+// take ..." (no where, no orderBy — task I3) takes when the aggregate's
+// collection field is paginated as-is. The moment either Where or Less is
+// present, the defensive copy below is unavoidable: Where needs a new slice
+// to filter into, and Less must never sort the CALLER's backing array in
+// place (that would silently reorder a slice the caller may still hold a
+// reference to — e.g. an AppendList's own storage). See
+// TestSelectSlice_NoWhereNoLessReslicesWithoutCopying.
 func SelectSlice[T any](items []T, q Query[T]) ([]T, error) {
+	if q.Where == nil && q.Less == nil {
+		return paginate(items, q.Skip, q.Take), nil
+	}
+
 	filtered := make([]T, 0, len(items))
 	for _, item := range items {
 		ok, err := applyWhere(q, item)
@@ -249,16 +264,23 @@ func SelectSlice[T any](items []T, q Query[T]) ([]T, error) {
 		}
 	}
 
-	if q.Skip > 0 {
-		if q.Skip >= len(filtered) {
-			filtered = filtered[:0]
+	return paginate(filtered, q.Skip, q.Take), nil
+}
+
+// paginate applies Query[T]'s skip/take rule (see SelectSlice's doc, steps 3
+// and 4) to items via plain reslicing — no copy, in either the fast path
+// above or the general one. Skip/Take <= 0 mean "absent" (covers both
+// NewQuery's -1 sentinel and a bare Query[T]{} literal's Go zero value 0).
+func paginate[T any](items []T, skip, take int) []T {
+	if skip > 0 {
+		if skip >= len(items) {
+			items = items[:0]
 		} else {
-			filtered = filtered[q.Skip:]
+			items = items[skip:]
 		}
 	}
-	if q.Take > 0 && q.Take < len(filtered) {
-		filtered = filtered[:q.Take]
+	if take > 0 && take < len(items) {
+		items = items[:take]
 	}
-
-	return filtered, nil
+	return items
 }

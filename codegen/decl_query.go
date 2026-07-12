@@ -12,6 +12,7 @@ import (
 	"domainscript/codegen/lower"
 	"domainscript/program"
 	"domainscript/symbols"
+	"domainscript/token"
 	"domainscript/types"
 )
 
@@ -48,18 +49,32 @@ import (
 //
 // Qualquer outro "return" cai num fallback de expressão PURA simples
 // (lower.Lowerer.Expr — idents, membro, literal, construção de VO wrapper de
-// 1 arg, binário) emitido como "return <expr>, nil". Formas que precisam de
-// hoisting (ensure, load/list/count fora dos dois casos acima) não são
-// suportadas por esta task — erro de geração claro. Statements que não são
+// 1 arg, binário) emitido como "return <expr>, nil". Statements que não são
 // "return" (não exercitados pelas 2 Queries reais) delegam para
 // lower.StmtLowerer normalmente.
 //
-// Cláusulas SQL-like (where/orderBy/skip/take) NÃO aparecem em nenhuma das
-// duas Queries reais do wallet — não implementadas por esta task (suporte
-// parcial documentado, não coberto): aplicá-las exigiria um mecanismo de
-// query real sobre coleções em memória, que builtins.go (E5.3) já registrou
-// como decisão explicitamente adiada para quando o Read Side tiver mais
-// exemplos reais para desenhar a API por cima (E8 fase mínima).
+// --- Cláusulas SQL-like (where/orderBy/skip/take/as) — ciclo Read Side
+// (REQ-33/REQ-34, §design read-side 3.4/3.5, tasks I3.1/I3.2) ---
+//
+// O "mínimo de E8.1" acima (exatamente "load Agg(id) as View" ou "list <VO>"
+// SEM cláusula nenhuma) continua o caminho RÁPIDO — histórico, byte-idêntico
+// — para as 2 Queries reais do wallet. QUALQUER outra forma de QueryExpr
+// (cláusulas presentes em "load X(id).<campo>" ou em "list <VO>") delega ao
+// hoisting de CORPO completo (lower.StmtLowerer.ExprHoisted — o MESMO
+// mecanismo que Handle/Apply/UseCase/Policy usam, "hoist then return the
+// temp", ver stmt.go/returnStmt) via emitHoistedQueryReturn — "list <VO>
+// [cláusulas]" primeiro se REESCREVE para "load <Agg correlacionado>(<param>)
+// .<campo> [cláusulas]" (tryEmitListVO, abaixo), a mesma forma que
+// StmtLowerer.hoistLoadCollection (I3.1, stmt.go) já sabe hoistear por
+// inteiro (where/orderBy/skip/take), sem nenhuma lógica de query nova aqui.
+// A cláusula "as V" (REQ-34, a projeção para View) é tratada SEPARADAMENTE
+// por emitHoistedQueryReturn: removida ANTES de hoistear (StmtLowerer não
+// sabe o que é uma View) e aplicada NUM LOOP por item sobre o resultado
+// materializado — reusando projectFieldAssignments, a MESMA rotina de
+// mapeamento campo-a-campo (com achatamento de VO composto, ex.
+// "amount_value"/"amount_currency" de um campo Money) que emitLoadAsView usa
+// para a forma "load X(id) as V" de sempre (ambas chamam a mesma função,
+// agora factorada — ver a doc de projectFieldAssignments).
 
 // EmitQuery gera o Go de um único QueryDecl — a mesma forma de EmitQueries,
 // mantendo o contrato uniforme entre as duas funções (mesmo padrão de
@@ -266,9 +281,11 @@ func (qc *queryBodyEmitter) emitBody(b *ast.Block) error {
 	return nil
 }
 
-// emitReturn traduz "return <Value>": as 2 formas especiais desta task (load
-// ... as V; list <VO> correlate — ver a doc do arquivo), com fallback para
-// uma expressão pura simples emitida como "return <expr>, nil".
+// emitReturn traduz "return <Value>": os 2 fast-paths históricos de E8.1
+// (load Agg(id) as V; list <VO> sem cláusula nenhuma), o caminho geral de
+// I3.1/I3.2 para qualquer QueryExpr com cláusulas (ver a doc do arquivo), com
+// fallback final para uma expressão pura simples emitida como "return
+// <expr>, nil".
 func (qc *queryBodyEmitter) emitReturn(ret *ast.ReturnStmt) error {
 	if ret.Value == nil {
 		return fmt.Errorf("return sem valor não suportado em Query (toda Query devolve um valor de domínio)")
@@ -277,13 +294,22 @@ func (qc *queryBodyEmitter) emitReturn(ret *ast.ReturnStmt) error {
 	if qe, ok := ret.Value.(*ast.QueryExpr); ok {
 		if qe.Op == "load" {
 			if _, hasAs := queryClauseExtra(qe.Clauses, "as"); hasAs {
-				return qc.emitLoadAsView(qe)
+				// emitLoadAsView só reconhece Target == CallExpr (o "load
+				// Agg(id)" de sempre, um ÚNICO objeto). "load Agg(id).<campo>
+				// ... as V" (Target == MemberExpr, I3.1) tem Target de forma
+				// DIFERENTE e cai no caminho geral, abaixo.
+				if _, isMemberTarget := qe.Target.(*ast.MemberExpr); !isMemberTarget {
+					return qc.emitLoadAsView(qe)
+				}
 			}
 		}
 		if qe.Op == "list" {
 			if handled, err := qc.tryEmitListVO(qe); handled {
 				return err
 			}
+		}
+		if handled, err := qc.tryEmitHoistedQueryReturn(qe); handled {
+			return err
 		}
 	}
 
@@ -299,8 +325,12 @@ func (qc *queryBodyEmitter) emitReturn(ret *ast.ReturnStmt) error {
 
 // emitLoadAsView traduz "load Agg(id) as View": carrega Agg via Load<Agg>
 // sobre runtime.NewEventLoader(ctx, store) (a razão de EventLoader existir no
-// runtime — ver a doc do arquivo) e mapeia, campo a campo POR NOME, o state
-// carregado para o struct de View.
+// runtime — ver a doc do arquivo) e mapeia, campo a campo, o state carregado
+// para o struct de View — via projectFieldAssignments (REQ-34.1, achatamento
+// de VO composto incluso; para WalletView, cujos campos batem 1:1 por nome
+// com o state de Wallet, produz o MESMO texto de sempre — a extração para
+// uma rotina compartilhada com a projeção por item de I3.2 não muda esta
+// forma, só deixa de duplicá-la).
 func (qc *queryBodyEmitter) emitLoadAsView(qe *ast.QueryExpr) error {
 	viewName, _ := queryClauseExtra(qe.Clauses, "as")
 	if viewName != qc.returnGoType {
@@ -326,16 +356,6 @@ func (qc *queryBodyEmitter) emitLoadAsView(qe *ast.QueryExpr) error {
 		return fmt.Errorf("load %s(...) as %s: %w", aggName, viewName, err)
 	}
 
-	stateFields := make(map[string]bool, len(aggShape.Fields))
-	for _, f := range aggShape.Fields {
-		stateFields[f.Name] = true
-	}
-	for _, f := range viewShape.Fields {
-		if !stateFields[f.Name] {
-			return fmt.Errorf("load %s(...) as %s: campo %q da View não existe no state de %s", aggName, viewName, f.Name, aggName)
-		}
-	}
-
 	idGo, err := qc.l.Expr(call.Args[0].Value)
 	if err != nil {
 		return fmt.Errorf("load %s(...): %w", aggName, err)
@@ -348,9 +368,9 @@ func (qc *queryBodyEmitter) emitLoadAsView(qe *ast.QueryExpr) error {
 		qc.e.Line("return zero, err")
 	})
 
-	assigns := make([]string, len(viewShape.Fields))
-	for i, f := range viewShape.Fields {
-		assigns[i] = fmt.Sprintf("%s: %s.state.%s", goname.ExportField(f.Name), localVar, goname.ExportField(f.Name))
+	assigns, err := projectFieldAssignments(localVar+".state", aggShape.Fields, viewShape.Fields)
+	if err != nil {
+		return fmt.Errorf("load %s(...) as %s: %w", aggName, viewName, err)
 	}
 	qc.e.Line("return %s{%s}, nil", viewName, strings.Join(assigns, ", "))
 	return nil
@@ -358,12 +378,22 @@ func (qc *queryBodyEmitter) emitLoadAsView(qe *ast.QueryExpr) error {
 
 // --- 2. "return list <VO>" (definição desta task — ver a doc do arquivo). ---
 
-// tryEmitListVO reconhece e traduz "list <VO>" (Target é um Ident que resolve
-// a um ValueObject, não a um Aggregate). handled=false (sem erro) quando
-// Target não é essa forma — o chamador segue para o fallback genérico.
-// handled=true com err!=nil é uma falha de geração de verdade que o chamador
-// deve propagar (a forma FOI reconhecida como "list <VO>", mas a correlação
-// ou as cláusulas não são suportadas).
+// tryEmitListVO reconhece e traduz "list <VO> [cláusulas]" (Target é um
+// Ident que resolve a um ValueObject, não a um Aggregate). handled=false
+// (sem erro) quando Target não é essa forma — o chamador segue para o
+// fallback genérico. handled=true com err!=nil é uma falha de geração de
+// verdade que o chamador deve propagar (a forma FOI reconhecida como "list
+// <VO>", mas a correlação não é possível).
+//
+// A correlação com o Aggregate único (correlateListVOAggregate, abaixo) é a
+// MESMA nos dois ramos; só o que acontece DEPOIS diverge (§design read-side
+// 3.5): SEM cláusula nenhuma, o caminho histórico de E8.1 (Load + ".Items()"
+// direto, byte-idêntico ao golden anterior a este ciclo); COM cláusulas
+// (where/orderBy/skip/take/as — I3.2), "list <VO> [cláusulas]" é REESCRITO
+// para "load <Agg>(<param>).<campo> [MESMAS cláusulas]" — a forma que
+// StmtLowerer.hoistLoadCollection (I3.1, stmt.go) já sabe hoistear por
+// inteiro — e delegado a emitHoistedQueryReturn, exatamente como se o
+// programa tivesse escrito a forma "load" diretamente.
 func (qc *queryBodyEmitter) tryEmitListVO(qe *ast.QueryExpr) (handled bool, err error) {
 	ident, ok := qe.Target.(*ast.Ident)
 	if !ok {
@@ -372,15 +402,6 @@ func (qc *queryBodyEmitter) tryEmitListVO(qe *ast.QueryExpr) (handled bool, err 
 	voName := ident.Name
 	if _, ok := qc.env.TypeOfName(voName).(*types.VOType); !ok {
 		return false, nil // não resolve a um VO — não é o caso definido por esta task
-	}
-
-	if len(qe.Clauses) > 0 {
-		return true, fmt.Errorf("list %s: cláusulas SQL-like (where/orderBy/skip/take/as) sobre \"list <VO>\" não são suportadas nesta task (E8.1) — suporte mínimo definido pela task; mais casos entram quando surgir necessidade real", voName)
-	}
-
-	wantElem, ok := listReturnElement(qc.decl.Return)
-	if !ok || wantElem != voName {
-		return true, fmt.Errorf("list %s: tipo de retorno da Query deveria ser List<%s>, declarado %s", voName, voName, qc.decl.Return.Name)
 	}
 
 	aggName, fieldName, err := correlateListVOAggregate(qc.aggregates, voName)
@@ -405,15 +426,229 @@ func (qc *queryBodyEmitter) tryEmitListVO(qe *ast.QueryExpr) (handled bool, err 
 		return true, fmt.Errorf("list %s: parâmetro %s (%s) não bate com o tipo do id de %s (%s)", voName, param.Name, paramType.String(), aggName, idFieldType.String())
 	}
 
-	paramGo := goname.Ident(param.Name)
-	localVar := goname.Ident(strings.ToLower(aggName))
-	qc.e.Line("%s, err := Load%s(%s.NewEventLoader(ctx, store), %s)", localVar, aggName, qc.runtimeAlias, paramGo)
-	qc.e.Block("if err != nil", func() {
-		qc.e.Line("var zero %s", qc.returnGoType)
-		qc.e.Line("return zero, err")
+	if len(qe.Clauses) == 0 {
+		wantElem, ok := listReturnElement(qc.decl.Return)
+		if !ok || wantElem != voName {
+			return true, fmt.Errorf("list %s: tipo de retorno da Query deveria ser List<%s>, declarado %s", voName, voName, qc.decl.Return.Name)
+		}
+
+		paramGo := goname.Ident(param.Name)
+		localVar := goname.Ident(strings.ToLower(aggName))
+		qc.e.Line("%s, err := Load%s(%s.NewEventLoader(ctx, store), %s)", localVar, aggName, qc.runtimeAlias, paramGo)
+		qc.e.Block("if err != nil", func() {
+			qc.e.Line("var zero %s", qc.returnGoType)
+			qc.e.Line("return zero, err")
+		})
+		qc.e.Line("return %s.state.%s.Items(), nil", localVar, goname.ExportField(fieldName))
+		return true, nil
+	}
+
+	synthesized := ast.NewQueryExpr("load",
+		ast.NewMemberExpr(
+			ast.NewCallExpr(ast.NewIdent(aggName, qe.Span()), []ast.Arg{{Value: ast.NewIdent(param.Name, qe.Span())}}, qe.Span()),
+			fieldName, token.Pos{}, qe.Span()),
+		qe.Binding, qe.Clauses, qe.Span())
+	return true, qc.emitHoistedQueryReturn(synthesized)
+}
+
+// --- 3. Caminho geral de I3.1/I3.2 (§design read-side 3.4/3.5): qualquer
+// QueryExpr com cláusulas que os 2 fast-paths acima não reconheceram. ---
+
+// tryEmitHoistedQueryReturn reconhece "load T(id).<campo> [cláusulas]"
+// (Target == MemberExpr sobre a construção de um Aggregate, I3.1) — a ÚNICA
+// forma que chega aqui diretamente do corpo da Query (a forma "list <VO>
+// [cláusulas]" já foi REESCRITA para esta mesma forma por tryEmitListVO antes
+// de chamar emitHoistedQueryReturn). handled=false (sem erro) para qualquer
+// outro Op/Target — o chamador segue para o fallback de expressão pura.
+func (qc *queryBodyEmitter) tryEmitHoistedQueryReturn(qe *ast.QueryExpr) (handled bool, err error) {
+	if qe.Op != "load" {
+		return false, nil
+	}
+	if _, isMemberTarget := qe.Target.(*ast.MemberExpr); !isMemberTarget {
+		return false, nil
+	}
+	return true, qc.emitHoistedQueryReturn(qe)
+}
+
+// emitHoistedQueryReturn traduz "return <QueryExpr>" pelo caminho GERAL de
+// I3.1/I3.2 (§design read-side 3.4/3.5): delega ao MESMO hoisting de corpo
+// (lower.StmtLowerer.ExprHoisted) usado em qualquer outro construto — "hoist
+// then return the temp", o padrão de stmt.go/returnStmt — em vez de
+// reimplementar orderBy/skip/take/predicado aqui. qe.Target já deve ser um
+// MemberExpr (StmtLowerer.hoistLoadCollection, stmt.go, I3.1); o Op é sempre
+// "load" (tryEmitListVO já reescreveu "list <VO> [cláusulas]" para essa
+// forma antes de chegar aqui).
+//
+// A cláusula "as V" (REQ-34) é tratada FORA do hoisting: StmtLowerer/
+// Query[T] não sabem o que é uma View (conceito Read Side) — esta função
+// REMOVE "as" ANTES de hoistear (senão TypeEnv inferiria List<V> para uma
+// variável Go que na verdade recebe []T — ver env.go/inferQueryExpr) e, com
+// "as" presente, aplica a projeção campo-a-campo NUM LOOP sobre o resultado
+// materializado (emitAsProjection, abaixo), produzindo []V.
+//
+// ZeroValues é "nil" (não "zero"): toda forma que chega aqui (load
+// X(id).<campo> [...], list <VO> [...] reescrito por tryEmitListVO) sempre
+// devolve uma LISTA (List<T> ou List<V>) — ao contrário de emitLoadAsView/
+// tryEmitListVO's ramo sem cláusula (que devolvem um struct de View único e
+// por isso precisam de "var zero <View>" local), o zero value Go de um
+// slice É "nil" diretamente, sem declaração nenhuma — usar "zero" aqui
+// referenciaria uma variável que NUNCA é declarada neste caminho
+// (emitBody só declara "var zero" quando o corpo tem statement não-return
+// ANTES do return, o que nunca é o caso de um corpo de 1 linha só).
+func (qc *queryBodyEmitter) emitHoistedQueryReturn(qe *ast.QueryExpr) error {
+	viewName, hasAs := queryClauseExtra(qe.Clauses, "as")
+	stripped := qe
+	if hasAs {
+		stripped = ast.NewQueryExpr(qe.Op, qe.Target, qe.Binding, stripClause(qe.Clauses, "as"), qe.Span())
+	}
+
+	sl := lower.NewStmtLowerer(qc.l, qc.e, lower.StmtContext{ZeroValues: []string{"nil"}, CtxVar: "ctx"})
+	itemsGo, hoisted, err := sl.ExprHoisted(stripped)
+	if err != nil {
+		return fmt.Errorf("return: %w", err)
+	}
+	for _, line := range hoisted {
+		qc.e.Line("%s", line)
+	}
+
+	if !hasAs {
+		qc.e.Line("return %s, nil", itemsGo)
+		return nil
+	}
+	return qc.emitAsProjection(stripped, itemsGo, viewName)
+}
+
+// emitAsProjection projeta itemsGo ([]T, já materializado por
+// emitHoistedQueryReturn) para []V (viewName) NUM LOOP, campo a campo
+// (REQ-34.1) — reusa projectFieldAssignments (a MESMA rotina que
+// emitLoadAsView usa para "load X(id) as V", agora aplicada por ITEM em vez
+// de uma vez só). itemType vem de qc.env.ItemTypeOf(stripped) — o MESMO
+// mecanismo que hoistQueryPredicate/hoistOrderBy (stmt.go) usam para tipar o
+// binding do item, garantindo que "o item de origem" aqui é EXATAMENTE o
+// tipo que o hoisting acabou de produzir.
+func (qc *queryBodyEmitter) emitAsProjection(stripped *ast.QueryExpr, itemsGo, viewName string) error {
+	wantElem, ok := listReturnElement(qc.decl.Return)
+	if !ok || wantElem != viewName {
+		return fmt.Errorf("... as %s: tipo de retorno da Query deveria ser List<%s>, declarado %s", viewName, viewName, qc.decl.Return.Name)
+	}
+
+	itemType, err := qc.env.ItemTypeOf(stripped)
+	if err != nil {
+		return fmt.Errorf("... as %s: %w", viewName, err)
+	}
+	sourceFields, err := shapeFieldsOf(itemType)
+	if err != nil {
+		return fmt.Errorf("... as %s: item de origem: %w", viewName, err)
+	}
+
+	viewShape, err := qc.shapeOf(viewName, symbols.KindView)
+	if err != nil {
+		return fmt.Errorf("... as %s: %w", viewName, err)
+	}
+
+	assigns, err := projectFieldAssignments("item", sourceFields, viewShape.Fields)
+	if err != nil {
+		return fmt.Errorf("... as %s: %w", viewName, err)
+	}
+
+	resultVar := "projected"
+	qc.e.Line("%s := make([]%s, 0, len(%s))", resultVar, viewName, itemsGo)
+	qc.e.Block(fmt.Sprintf("for _, item := range %s", itemsGo), func() {
+		qc.e.Line("%s = append(%s, %s{%s})", resultVar, resultVar, viewName, strings.Join(assigns, ", "))
 	})
-	qc.e.Line("return %s.state.%s.Items(), nil", localVar, goname.ExportField(fieldName))
-	return true, nil
+	qc.e.Line("return %s, nil", resultVar)
+	return nil
+}
+
+// stripClause devolve uma CÓPIA de clauses sem nenhuma cláusula de keyword
+// kw — usado para remover "as" antes de hoistear via StmtLowerer, que não
+// conhece Views (um conceito Read Side, fora do vocabulário de lower/stmt.go).
+func stripClause(clauses []ast.QueryClause, kw string) []ast.QueryClause {
+	out := make([]ast.QueryClause, 0, len(clauses))
+	for _, c := range clauses {
+		if c.Kw != kw {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// shapeFieldsOf devolve os Fields (nome + tipo, na ordem declarada) de t —
+// *types.VOType (composto: Fields != nil quando Base == nil) ou
+// *types.ShapeType (Aggregate/View/Event/...). Erro de geração claro para
+// qualquer outro tipo (ex. um VO wrapper, um primitivo) — nenhum deles tem
+// campos nomeados para casar contra uma View.
+func shapeFieldsOf(t types.Type) ([]types.Field, error) {
+	switch x := t.(type) {
+	case *types.VOType:
+		return x.Fields, nil
+	case *types.ShapeType:
+		return x.Fields, nil
+	default:
+		return nil, fmt.Errorf("tipo %s não tem campos nomeados (esperava ValueObject composto ou um shape com campos)", t.String())
+	}
+}
+
+// projectFieldAssignments monta as atribuições "Campo: <expressão Go>" de um
+// literal de View a partir de sourceFields (os campos, NA ORDEM DECLARADA, do
+// tipo de origem — o state de um Aggregate ou o item de uma coleção) para
+// viewFields (os campos da View, NA ORDEM DECLARADA) — REQ-34.1: casamento
+// EXATO por nome primeiro (o caso de sempre, ex. WalletView.balance <-
+// Wallet.state.balance); quando ausente, achatamento de UM nível de VO
+// COMPOSTO (flattenedFieldExpr, abaixo) — "<campo>_<subcampo>", ex.
+// "amount_value"/"amount_currency" <- um campo Money (spec §6.1). Campo da
+// View sem correspondência (nem direto, nem achatado) é erro de geração
+// claro nomeando o campo (REQ-34.2, NFR-20) — nunca um struct parcialmente
+// preenchido. Compartilhada por emitLoadAsView (1 item) e emitAsProjection
+// (N itens, por cima de um "for _, item := range ...") — a MESMA rotina de
+// mapeamento, só o texto de sourceGo muda ("wallet.state" vs. "item").
+func projectFieldAssignments(sourceGo string, sourceFields, viewFields []types.Field) ([]string, error) {
+	bySourceName := make(map[string]bool, len(sourceFields))
+	for _, f := range sourceFields {
+		bySourceName[f.Name] = true
+	}
+
+	assigns := make([]string, len(viewFields))
+	for i, vf := range viewFields {
+		if bySourceName[vf.Name] {
+			assigns[i] = fmt.Sprintf("%s: %s.%s", goname.ExportField(vf.Name), sourceGo, goname.ExportField(vf.Name))
+			continue
+		}
+		expr, ok := flattenedFieldExpr(sourceGo, sourceFields, vf.Name)
+		if !ok {
+			return nil, fmt.Errorf("campo %q da View não existe no item de origem (nem direto, nem achatado de um ValueObject composto)", vf.Name)
+		}
+		assigns[i] = fmt.Sprintf("%s: %s", goname.ExportField(vf.Name), expr)
+	}
+	return assigns, nil
+}
+
+// flattenedFieldExpr tenta casar viewFieldName com "<campo>_<subcampo>"
+// contra UM dos sourceFields cujo tipo é um VO COMPOSTO (types.VOType com
+// Fields — Base == nil, nunca um wrapper) declarando subcampo — a forma de
+// achatamento de REQ-34.1 (ex. "amount_value" <- Money.amount, "
+// amount_currency" <- Money.currency, spec §6.1). Itera sourceFields NA
+// ORDEM DECLARADA (determinismo, NFR-13): nenhum caso real tem prefixos
+// ambíguos, e a ordem declarada torna o resultado determinístico mesmo se
+// houvesse.
+func flattenedFieldExpr(sourceGo string, sourceFields []types.Field, viewFieldName string) (string, bool) {
+	for _, sf := range sourceFields {
+		prefix := sf.Name + "_"
+		if !strings.HasPrefix(viewFieldName, prefix) {
+			continue
+		}
+		vo, ok := sf.Type.(*types.VOType)
+		if !ok || vo.Base != nil {
+			continue // wrapper (Base != nil) não tem sub-campos nomeados
+		}
+		subName := strings.TrimPrefix(viewFieldName, prefix)
+		for _, subF := range vo.Fields {
+			if subF.Name == subName {
+				return fmt.Sprintf("%s.%s.%s", sourceGo, goname.ExportField(sf.Name), goname.ExportField(subName)), true
+			}
+		}
+	}
+	return "", false
 }
 
 // correlateListVOAggregate implementa a correlação de "list <VO>" definida

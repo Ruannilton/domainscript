@@ -63,6 +63,19 @@ func emitViewDecl(e *emit.Emitter, decl *ast.ViewDecl, model *types.Model, tab *
 	if err != nil {
 		return fmt.Errorf("codegen: View %s: %w", decl.Name, err)
 	}
+	// Um campo cujo goType é "runtime.X" (ex. "decimal" → runtime.Decimal,
+	// goname/types.go) precisa do import do runtime vendorado — gap
+	// pré-existente nunca exercitado antes do ciclo Read Side (mesmo padrão
+	// de needsRuntime em decl_value.go:emitValueObjectComposite): nenhuma
+	// View real do wallet tinha um campo decimal direto até a projeção "as
+	// V" (I3.2) achatar um Money (amount_value decimal) para dentro de
+	// StatementEntryVW.
+	for _, fi := range infos {
+		if strings.HasPrefix(fi.goType, "runtime.") {
+			e.Import(RuntimeImportPath)
+			break
+		}
+	}
 
 	e.Line("// %s é a View %s (§6.1): %s.", decl.Name, decl.Name, viewFieldSummary(decl, infos))
 	e.Line("// Struct de leitura pura — sem validação, sem metadata.")

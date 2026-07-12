@@ -476,7 +476,7 @@ func TestHoistList_SkipTake_PlainExpressions(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	want := `tmp1, err := tx.Select(ctx, runtime.Query[Money]{Skip: page * 20, Take: 20})`
+	want := `tmp1, err := tx.Select(ctx, runtime.Query[Money]{Skip: int(page * 20), Take: 20})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
@@ -507,7 +507,7 @@ func TestHoistList_CompleteForm(t *testing.T) {
 	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{` +
 		`Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }, ` +
 		`Less: func(a, b StatementEntry) (bool, error) { return b.Description < a.Description, nil }, ` +
-		`OrderField: "description", OrderDesc: true, Skip: page * 20, Take: 20})`
+		`OrderField: "description", OrderDesc: true, Skip: int(page * 20), Take: 20})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava a Query[T] COMPLETA:\n%s\ngot:\n%s", want, out)
 	}

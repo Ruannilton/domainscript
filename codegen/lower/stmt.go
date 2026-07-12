@@ -487,6 +487,15 @@ func (sl *StmtLowerer) hoistSubtree(e ast.Expr, ctx StmtContext) (ast.Expr, []st
 func (sl *StmtLowerer) hoistQueryExpr(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	switch n.Op {
 	case "load":
+		// "load T(id).<campo> [cláusulas]" (I3.1, §design read-side 3.4): um
+		// MemberExpr sobre a CONSTRUÇÃO do aggregate — o sinal que distingue
+		// esta forma de "load T(id)" (Target == CallExpr) e "load File(ref)"
+		// (Target == CallExpr também, tratado dentro de hoistLoad). Precisa
+		// ser reconhecido AQUI, antes de hoistLoad, porque hoistLoad assume
+		// Target == CallExpr (o type assertion logo no início falharia).
+		if mem, ok := n.Target.(*ast.MemberExpr); ok {
+			return sl.hoistLoadCollection(n, mem, ctx)
+		}
 		return sl.hoistLoad(n, ctx)
 	case "list":
 		return sl.hoistList(n, ctx)
@@ -587,6 +596,150 @@ func (sl *StmtLowerer) hoistLoadFile(call *ast.CallExpr, n *ast.QueryExpr, ctx S
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// hoistLoadCollection traduz "load T(id).<campo> [where C] [orderBy K [dir]]
+// [skip N] [take M]" (I3.1, REQ-33.2, §design read-side 3.4) — quando o
+// Target de um "load" é um MemberExpr sobre a CONSTRUÇÃO do aggregate (ex.
+// "Wallet(walletId).entries", mem.X = CallExpr{Fn: Ident("Wallet"), ...},
+// mem.Name = "entries") — para:
+//
+//	tmpAgg, err := Load<T>(<store>, <idGo>); if err != nil { <ExitOnError> }
+//	tmpItems, err := runtime.SelectSlice(tmpAgg.state.<Campo>.Items(), <query>)
+//	if err != nil { <ExitOnError> }
+//
+// NENHUM Collection[T] envolvido — diferente de hoistList (cuja fonte é
+// sempre um Collection[T] roteado por tipo, ex. o "ticketCollection" de uma
+// Policy): aqui a fonte é a coleção JÁ MATERIALIZADA do state do aggregate
+// carregado, e o intérprete é o MESMO runtime.SelectSlice que
+// memoryCollection.Select usa por baixo (NFR-18, rtsrc/collection.go.txt).
+//
+// --- Passo 1: carrega o aggregate — EXATAMENTE a mesma máquina de hoistLoad
+// (E6.2), intocada. ---
+//
+// O único id hoisted possível é o argumento da construção do aggregate (ex.
+// um sub-expressão do id); nenhuma outra parte deste passo muda.
+//
+// --- Passo 2: monta a Query[T] — REUSA hoistQueryPredicate/hoistOrderBy/
+// hoistSkipTakeExpr de hoistList SEM NENHUMA MUDANÇA. ---
+//
+// Isso só funciona porque TypeEnv.ItemTypeOf (env.go) já sabe resolver o tipo
+// do item para ESTA forma de QueryExpr (Target == MemberExpr) exatamente como
+// resolve para "list T ..." (Target == Ident/CallExpr nu) — as duas funções
+// só chamam sl.env.ItemTypeOf(n) e nunca inspecionam n.Target diretamente, daí
+// não precisarem saber que n é, desta vez, um "load ...campo" em vez de um
+// "list T". A cláusula "as" (Read Side, projeção para View) é
+// DELIBERADAMENTE ignorada aqui — não é parte de Query[T] (Where/Less/
+// OrderField/OrderDesc/Skip/Take); "as" é responsabilidade do EMISSOR do
+// corpo (ex. codegen/decl_query.go, I3.2), que a REMOVE de n.Clauses antes de
+// chamar este hoisting e aplica a projeção por cima do resultado.
+//
+// --- Passo 3: aplica runtime.SelectSlice sobre .Items() (AppendList<T>) ou
+// direto (List<T>, já []T em Go). ---
+//
+// AppendList<T> é runtime.AppendList[T] — Items() devolve uma CÓPIA do slice
+// interno (rtsrc/appendlist.go.txt), a mesma convenção que "list <VO>"
+// (decl_query.go/tryEmitListVO) já usa para devolver o state cru sem
+// cláusulas. Essa cópia (uma só, não duas) é o que torna SEGURO o fast path
+// de SelectSlice sem Where/Less (rtsrc/collection.go.txt): reslicing direto
+// sobre uma cópia já isolada do state real do aggregate nunca corrompe
+// tmpAgg.state.<Campo> por trás — a "paginação sem cópia integral" de
+// REQ-37.4 é evitar uma SEGUNDA cópia dentro de SelectSlice, não eliminar a
+// única que Items() já faz por segurança.
+func (sl *StmtLowerer) hoistLoadCollection(n *ast.QueryExpr, mem *ast.MemberExpr, ctx StmtContext) (ast.Expr, []string, error) {
+	if sl.builtins == nil {
+		return nil, nil, fmt.Errorf("codegen: load ...%s: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)", mem.Name)
+	}
+	if err := ensureListClausesWellFormed("load", n.Clauses); err != nil {
+		return nil, nil, err
+	}
+
+	aggCall, ok := mem.X.(*ast.CallExpr)
+	if !ok || len(aggCall.Args) != 1 {
+		return nil, nil, fmt.Errorf("codegen: load ...%s: forma inesperada do alvo do aggregate (%T) — esperava \"T(id).%s\"", mem.Name, mem.X, mem.Name)
+	}
+	aggIdent, ok := aggCall.Fn.(*ast.Ident)
+	if !ok {
+		return nil, nil, fmt.Errorf("codegen: load ...%s: alvo de load não é um Aggregate nomeado (%T)", mem.Name, aggCall.Fn)
+	}
+	aggName := aggIdent.Name
+
+	aggType := sl.env.TypeOfName(aggName)
+	if types.IsError(aggType) {
+		return nil, nil, fmt.Errorf("codegen: load %s(...).%s: não consegui resolver o tipo de %q", aggName, mem.Name, aggName)
+	}
+
+	itemType, err := sl.env.ItemTypeOf(n)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codegen: load %s(...).%s: %w", aggName, mem.Name, err)
+	}
+	itemGoType, err := goTypeString(itemType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codegen: load %s(...).%s: tipo do item: %w", aggName, mem.Name, err)
+	}
+
+	// --- Passo 1: carrega o aggregate (E6.2, hoistLoad — mesma máquina). ---
+	idExpr, idHoisted, err := sl.hoistSubtree(aggCall.Args[0].Value, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	idGo, err := sl.Expr(idExpr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	aggTmp := sl.newTmp()
+	sl.bindTmp(aggTmp, aggType)
+	lines := append(idHoisted,
+		fmt.Sprintf("%s, err := %s", aggTmp, sl.builtins.LoadCall(aggName, idGo)),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+
+	// --- Passo 2: monta a Query[T] — REUSA hoistQueryPredicate/hoistOrderBy/
+	// hoistSkipTakeExpr de hoistList por inteiro (ver a doc acima). ---
+	predGo, _, err := sl.hoistQueryPredicate(n, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	lessGo, orderField, orderDesc, err := sl.hoistOrderBy(n)
+	if err != nil {
+		return nil, nil, err
+	}
+	skipGo, err := sl.hoistSkipTakeExpr(n, "skip")
+	if err != nil {
+		return nil, nil, err
+	}
+	takeGo, err := sl.hoistSkipTakeExpr(n, "take")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fields := queryLiteralFields{
+		Where:      predGo,
+		Less:       lessGo,
+		OrderField: orderField,
+		OrderDesc:  orderDesc,
+		Skip:       skipGo,
+		Take:       takeGo,
+	}
+
+	// --- Passo 3: runtime.SelectSlice sobre o campo de coleção do state. ---
+	_, ctor, _, err := sl.env.resolveLoadCollectionField(mem)
+	if err != nil {
+		return nil, nil, fmt.Errorf("codegen: load %s(...).%s: %w", aggName, mem.Name, err)
+	}
+	sliceGo := fmt.Sprintf("%s.state.%s", aggTmp, goname.ExportField(mem.Name))
+	if ctor == "AppendList" {
+		sliceGo += ".Items()"
+	}
+
+	resultTmp := sl.newTmp()
+	sl.bindTmp(resultTmp, &types.Generic{Ctor: "List", Args: []types.Type{itemType}})
+	lines = append(lines,
+		fmt.Sprintf("%s, err := %s.SelectSlice(%s, %s)", resultTmp, sl.runtimeAlias, sliceGo, sl.builtins.queryLiteral(itemGoType, fields)),
+		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
+	)
+	return ast.NewIdent(resultTmp, n.Span()), lines, nil
 }
 
 // hoistStore traduz "store <file>" (§2.5, G1a) para "tmpN, err :=
@@ -1242,6 +1395,23 @@ func (sl *StmtLowerer) buildLess(keyType types.Type, xGo, yGo string) (string, b
 // nessa posição). Devolve "" quando a cláusula está ausente — o chamador
 // (hoistList) então omite Query[T].Skip/Take do literal (Go zero value 0,
 // que SelectSlice trata como "ausente" também, rtsrc/collection.go.txt).
+//
+// --- Achado desta task (I3.1): conversão para "int" quando a expressão NÃO
+// é um literal nu ---
+//
+// Query[T].Skip/Take (rtsrc/collection.go.txt) são "int" nativo do Go; o
+// primitivo "integer" do DomainScript é "int64" (goname/types.go). Um
+// literal inteiro (ex. "take 20") é uma CONSTANTE Go não-tipada — cabe
+// direto num campo "int" sem conversão, o caso que toda fixture anterior a
+// esta task exercitava (Ranking, §I2.1: "skip 1 take 1"). Mas "skip page *
+// 20" (o exemplo do spec §6.3, GetStatement — o param "page" É um int64 de
+// verdade) produz uma expressão Go JÁ TIPADA int64, que o compilador Go
+// REJEITA num campo "int" sem conversão explícita — um caso nunca antes
+// smoke-compilado (as goldens/testes de I2.1 nunca chamavam "go build" de
+// verdade sobre um skip/take não-literal). Corrigido aqui: um literal INT nu
+// (ast.Literal) passa como está (preserva os goldens anteriores byte a
+// byte); qualquer outra forma (Ident, BinaryExpr, etc.) é envolvida em
+// "int(...)".
 func (sl *StmtLowerer) hoistSkipTakeExpr(n *ast.QueryExpr, kw string) (string, error) {
 	e, ok := queryClauseByKw(n.Clauses, kw)
 	if !ok {
@@ -1251,7 +1421,10 @@ func (sl *StmtLowerer) hoistSkipTakeExpr(n *ast.QueryExpr, kw string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("codegen: %s ... %s ...: %w", n.Op, kw, err)
 	}
-	return goExpr, nil
+	if lit, ok := e.(*ast.Literal); ok && lit.Kind == token.INT {
+		return goExpr, nil
+	}
+	return fmt.Sprintf("int(%s)", goExpr), nil
 }
 
 // fallibleVOOperator reporta se n (já com os filhos hoisted) é um BinaryExpr

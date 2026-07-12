@@ -84,7 +84,7 @@
 
 ### Fase I3 — `load X(id).entries` + projeção `as V` (GetStatement, §6.3)
 
-- [ ] **I3.1** Caminho sem Collection: `load` com Target `MemberExpr` sobre
+- [x] **I3.1** Caminho sem Collection: `load` com Target `MemberExpr` sobre
   construção de aggregate carrega o aggregate (LoadCall intocado) e aplica
   `runtime.SelectSlice` sobre o campo de coleção do state; `AppendList<T>`
   reslica sem cópia integral quando não há ordenação. Inferência de
@@ -92,7 +92,7 @@
   3.4/3.10)_
   **Commit:** `feat(codegen): cláusulas sobre coleção de aggregate carregado`
 
-- [ ] **I3.2** Projeção `as V` por item sobre resultado de query: reusa o
+- [x] **I3.2** Projeção `as V` por item sobre resultado de query: reusa o
   mapeamento campo-a-campo (com achatamento de VO composto) de `load X(id)
   as V` (E8.1), num loop de projeção; campo da View sem origem → erro de
   geração nomeando o campo. `decl_query.go` remove o erro "cláusulas não

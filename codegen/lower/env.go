@@ -401,6 +401,29 @@ func (env *TypeEnv) inferSmartPartialCall(n *ast.CallExpr) (types.Type, bool, er
 func (env *TypeEnv) inferQueryExpr(qe *ast.QueryExpr) (types.Type, error) {
 	switch qe.Op {
 	case "load":
+		// load T(id).<campo> [where/orderBy/skip/take] [as V] (I3.1, REQ-33.2,
+		// §design read-side 3.4/3.10): o Target é um MemberExpr sobre a
+		// CONSTRUÇÃO do aggregate (ex. "Wallet(walletId).entries"), não um
+		// CallExpr/Ident nu — o caminho sem Collection[T] (stmt.go,
+		// hoistLoadCollection). O tipo da expressão inteira é sempre uma
+		// LISTA: List<V> quando há "as V" (mesma convenção de "list ... as
+		// V", abaixo), senão List<T> (T = tipo do item da coleção do state) —
+		// NUNCA o tipo do Aggregate em si (esse é só um passo intermediário
+		// do lowering, invisível aqui).
+		if mem, ok := qe.Target.(*ast.MemberExpr); ok {
+			if v, ok := listAsClause(qe.Clauses); ok {
+				vt := env.typeOfName(v)
+				if types.IsError(vt) {
+					return nil, fmt.Errorf("lower: load ...%s as %s: não consegui resolver o tipo", mem.Name, v)
+				}
+				return &types.Generic{Ctor: "List", Args: []types.Type{vt}}, nil
+			}
+			_, _, itemType, err := env.resolveLoadCollectionField(mem)
+			if err != nil {
+				return nil, fmt.Errorf("lower: load ...%s: %w", mem.Name, err)
+			}
+			return &types.Generic{Ctor: "List", Args: []types.Type{itemType}}, nil
+		}
 		// load T(id) → o tipo de T, resolvido via typeOfName. "load File(ref)"
 		// (§2.5, G1a) é o único caso especial: "File" é um tipo OPACO embutido
 		// (types/model.go: primitives), nunca um símbolo declarado — typeOfName
@@ -462,12 +485,65 @@ func (env *TypeEnv) inferQueryExpr(qe *ast.QueryExpr) (types.Type, error) {
 // vinculado; ver a doc de hoistQueryPredicate) para saber a que tipo Go
 // vincular o parâmetro sintético da lambda "func(item T) bool { ... }".
 func (env *TypeEnv) ItemTypeOf(qe *ast.QueryExpr) (types.Type, error) {
+	// load T(id).<campo> (I3.1, §design read-side 3.4): o item filtrado/
+	// ordenado por where/orderBy é o elemento da COLEÇÃO do state, nunca o
+	// Aggregate T em si — resolveLoadCollectionField já devolve exatamente
+	// esse tipo, o MESMO mecanismo que inferQueryExpr("load") usa para a
+	// forma geral da expressão. Reusar aqui é o que faz hoistQueryPredicate/
+	// hoistOrderBy (stmt.go, escritos para "list") funcionarem, sem nenhuma
+	// mudança, também sobre "load ...<campo> where/orderBy ...".
+	if mem, ok := qe.Target.(*ast.MemberExpr); ok {
+		_, _, itemType, err := env.resolveLoadCollectionField(mem)
+		if err != nil {
+			return nil, fmt.Errorf("lower: %s: %w", qe.Op, err)
+		}
+		return itemType, nil
+	}
 	name := astutil.HeadName(qe.Target)
 	t := env.typeOfName(name)
 	if types.IsError(t) {
 		return nil, fmt.Errorf("lower: %s: não consegui resolver o tipo do item de %q", qe.Op, name)
 	}
 	return t, nil
+}
+
+// resolveLoadCollectionField resolve, para um MemberExpr mem = "<construção
+// de Aggregate>.<campo>" (ex. "Wallet(walletId).entries" —
+// mem.X = CallExpr{Fn: Ident("Wallet"), ...}, mem.Name = "entries"): o nome
+// do Aggregate, o construtor da coleção declarada (Ctor "List" ou
+// "AppendList", types.Generic) e o tipo do ITEM dessa coleção — usado tanto
+// por inferQueryExpr("load") quanto por ItemTypeOf para a forma "load
+// T(id).<campo> [cláusulas]" (I3.1, §design read-side 3.4/3.10). Erro de
+// geração claro (NFR-20) quando mem.X não é uma construção de Aggregate
+// nomeada, quando o nome não resolve a um Aggregate, ou quando o campo não
+// existe/não é uma coleção List/AppendList no state — nunca um palpite.
+func (env *TypeEnv) resolveLoadCollectionField(mem *ast.MemberExpr) (aggName, ctor string, itemType types.Type, err error) {
+	aggCall, ok := mem.X.(*ast.CallExpr)
+	if !ok {
+		return "", "", nil, fmt.Errorf("alvo de load não é uma construção de Aggregate (%T) — esperava \"T(id).%s\"", mem.X, mem.Name)
+	}
+	aggIdent, ok := aggCall.Fn.(*ast.Ident)
+	if !ok {
+		return "", "", nil, fmt.Errorf("alvo de load não nomeia um Aggregate (%T)", aggCall.Fn)
+	}
+	aggName = aggIdent.Name
+
+	aggType := env.typeOfName(aggName)
+	shape, ok := aggType.(*types.ShapeType)
+	if !ok || shape.Kind != symbols.KindAggregate {
+		return "", "", nil, fmt.Errorf("%q não resolve a um Aggregate (got %T)", aggName, aggType)
+	}
+	for _, f := range shape.Fields {
+		if f.Name != mem.Name {
+			continue
+		}
+		g, ok := f.Type.(*types.Generic)
+		if !ok || (g.Ctor != "List" && g.Ctor != "AppendList") || len(g.Args) != 1 {
+			return "", "", nil, fmt.Errorf("campo %q do state de %s não é uma coleção (List/AppendList) — é %s, sem forma de aplicar where/orderBy/skip/take (§design read-side 3.4, NFR-20)", mem.Name, aggName, f.Type.String())
+		}
+		return aggName, g.Ctor, g.Args[0], nil
+	}
+	return "", "", nil, fmt.Errorf("Aggregate %s não declara o campo %q em state", aggName, mem.Name)
 }
 
 // listAsClause procura a cláusula "as" entre as QueryClause de um QueryExpr e
