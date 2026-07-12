@@ -33,7 +33,7 @@
 
 ### Fase I0 — Seam novo no runtime
 
-- [ ] **I0.1** `runtime.Query[T]` + `Select`/`SelectSlice`/`Count` no lugar de
+- [x] **I0.1** `runtime.Query[T]` + `Select`/`SelectSlice`/`Count` no lugar de
   `List`/`Count` com predicado nu: a struct híbrida (closure + descritor
   declarativo), a ordem semântica fixa where→orderBy→skip→take num ÚNICO
   intérprete (`SelectSlice`, que `memoryCollection.Select` delega), sort
@@ -52,7 +52,7 @@
 
 ### Fase I1 — Predicado falível (fecha G-8)
 
-- [ ] **I1.1** `hoistQueryPredicate` emite corpo em bloco: linhas hoisted
+- [x] **I1.1** `hoistQueryPredicate` emite corpo em bloco: linhas hoisted
   antes do `return`, `if err != nil { return false, err }` entre elas — a
   condição com construção de VO composto/operador falível passa a ser aceita;
   a doc-nota da limitação G-8 em `lower/stmt.go` é substituída. Condição sem
@@ -67,7 +67,7 @@
 
 ### Fase I2 — orderBy/skip/take no lowering
 
-- [ ] **I2.1** `hoistList` monta a `Query[T]` completa: `orderBy` lowerizado
+- [x] **I2.1** `hoistList` monta a `Query[T]` completa: `orderBy` lowerizado
   em escopo-filho (mesmo mecanismo do predicado), corpo de `Less` decidido
   pela tabela de comparabilidade (§design 3.2 — primitivos/wrapper/Enum
   nativos, VO composto via `Operator </>` do registry, resto = erro de

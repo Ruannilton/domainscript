@@ -596,8 +596,8 @@ func (sl *StmtLowerer) hoistStore(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 	return ast.NewIdent(tmp, n.Span()), lines, nil
 }
 
-// hoistList traduz "list T [where Cond] [as V]" para
-// "tmpN, err := <store>.Select(<ctx>, <query>); if err != nil {
+// hoistList traduz "list T [where Cond] [orderBy K [dir]] [skip N] [take M]
+// [as V]" para "tmpN, err := <store>.Select(<ctx>, <query>); if err != nil {
 // <ctx.ExitOnError> }" — desde H4 (§22.4), backed de verdade por
 // runtime.Collection[T] (rtsrc/collection.go.txt), e desde o ciclo Read Side
 // (REQ-33/REQ-36/REQ-38, §design read-side 2) sobre o seam Select/
@@ -609,18 +609,33 @@ func (sl *StmtLowerer) hoistStore(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 // Collection[T] para o var de pacote certo (ver decl_policy.go). Desde I1.1,
 // o predicado (hoistQueryPredicate, abaixo) já é sempre um "func(item T)
 // (bool, error) { ... }" diretamente — a forma que Query[T].Where exige
-// (REQ-36.2), sem embrulho nenhum (o embrulho runtime.Infallible de I0.1 foi
-// removido junto com esta mudança, ver a doc de hoistQueryPredicate e de
-// queryLiteral em builtins.go). itemGoType (o T de Query[T]) é resolvido
-// aqui — não dentro de hoistQueryPredicate, que só o calcula quando HÁ
-// "where" — porque Query[T]{...} precisa de T mesmo sem predicado (o literal
-// Go de um tipo genérico não infere argumento de tipo a partir de contexto
-// como uma chamada genérica infere). tmpN é vinculado ao tipo List<V> (ou
-// List<T> sem "as"), via TypeEnv.InferAssignRHS (E5.0), que já resolve essa
-// forma.
+// (REQ-36.2), sem embrulho nenhum. itemGoType (o T de Query[T]) é resolvido
+// aqui — não dentro de hoistQueryPredicate/hoistOrderBy, que só o calculam
+// quando HÁ "where"/"orderBy" — porque Query[T]{...} precisa de T mesmo sem
+// nenhuma cláusula (o literal Go de um tipo genérico não infere argumento de
+// tipo a partir de contexto como uma chamada genérica infere). tmpN é
+// vinculado ao tipo List<V> (ou List<T> sem "as"), via TypeEnv.
+// InferAssignRHS (E5.0), que já resolve essa forma.
+//
+// --- I2.1 (REQ-33.1/33.3, §design read-side 3.1/3.2): orderBy/skip/take ---
+//
+// A ORDEM SEMÂNTICA das cláusulas (where → orderBy → skip → take) é fixa
+// independente da ordem TEXTUAL em que apareceram no fonte (§design
+// read-side 3.1) — isso já é garantido no nível do RUNTIME por SelectSlice
+// (rtsrc/collection.go.txt, desde I0.1); o trabalho desta função é só
+// EXTRAIR cada cláusula do slice n.Clauses (que preserva a ordem textual,
+// ver parser/parse_query.go) para o campo certo de Query[T], não importa em
+// que posição do slice ela esteja — cada hoistXxx abaixo procura sua própria
+// keyword via queryClauseByKw/queryClauseFull, ignorando a posição.
+// ensureListClausesWellFormed (abaixo) recusa cláusula duplicada (dois
+// "orderBy", etc. — NFR-20) e, para "count", recusa orderBy/skip/take de
+// saída (REQ-33.5: sem efeito observável numa contagem).
 func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: list ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
+	}
+	if err := ensureListClausesWellFormed(n.Op, n.Clauses); err != nil {
+		return nil, nil, err
 	}
 
 	t, err := sl.env.InferAssignRHS(n)
@@ -638,10 +653,33 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 		return nil, nil, err
 	}
 
+	lessGo, orderField, orderDesc, err := sl.hoistOrderBy(n)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	skipGo, err := sl.hoistSkipTakeExpr(n, "skip")
+	if err != nil {
+		return nil, nil, err
+	}
+	takeGo, err := sl.hoistSkipTakeExpr(n, "take")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fields := queryLiteralFields{
+		Where:      predGo,
+		Less:       lessGo,
+		OrderField: orderField,
+		OrderDesc:  orderDesc,
+		Skip:       skipGo,
+		Take:       takeGo,
+	}
+
 	tmp := sl.newTmp()
 	sl.bindTmp(tmp, t)
 	lines := append(hoisted,
-		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(astutil.HeadName(n.Target), itemGoType, predGo)),
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.ListCall(astutil.HeadName(n.Target), itemGoType, fields)),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
@@ -652,10 +690,16 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 // por tipo, mesmo predicado por item e mesma ponte para Query[T] de
 // hoistList (ver sua doc). tmpN é vinculado a integer (TypeEnv.
 // InferAssignRHS já resolve "count" assim, independente do Target — env.go,
-// inferQueryExpr).
+// inferQueryExpr). ensureListClausesWellFormed (chamada logo no início)
+// recusa orderBy/skip/take em "count" com um erro claro (REQ-33.5, NFR-20):
+// nenhum dos três tem efeito observável numa contagem, e aceitá-los em
+// silêncio esconderia um engano de quem escreveu o "count".
 func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, []string, error) {
 	if sl.builtins == nil {
 		return nil, nil, fmt.Errorf("codegen: count ...: BuiltinLowerer não configurado — anexe um via Lowerer.WithBuiltins (E5.3)")
+	}
+	if err := ensureListClausesWellFormed(n.Op, n.Clauses); err != nil {
+		return nil, nil, err
 	}
 
 	t, err := sl.env.InferAssignRHS(n)
@@ -680,6 +724,51 @@ func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil
+}
+
+// ensureNoDuplicateClause recusa uma cláusula kw que aparece mais de uma vez
+// em clauses — um erro de geração claro (NFR-20), não um "usa só a última"
+// silencioso: duas cláusulas "orderBy"/"where"/"skip"/"take" no mesmo
+// list/count quase certamente é um engano de cópia-e-cola (a ordem
+// SEMÂNTICA já é fixa, §design read-side 3.1 — "duas orderBy" não tem uma
+// leitura razoável como "ordena por duas chaves", ao contrário do ORDER BY
+// de SQL com vírgula).
+func ensureNoDuplicateClause(op string, clauses []ast.QueryClause, kw string) error {
+	n := 0
+	for _, c := range clauses {
+		if c.Kw == kw {
+			n++
+		}
+	}
+	if n > 1 {
+		return fmt.Errorf("codegen: %s ...: cláusula %q duplicada — cada cláusula (where/orderBy/skip/take) pode aparecer no máximo uma vez por list/count (§design read-side 3.1, NFR-20)", op, kw)
+	}
+	return nil
+}
+
+// ensureListClausesWellFormed valida o conjunto de cláusulas where/orderBy/
+// skip/take de uma QueryExpr "list"/"count" ANTES de qualquer lowering
+// (§design read-side 3.1, REQ-33.5, NFR-20): nenhuma das quatro pode se
+// repetir (ensureNoDuplicateClause); em "count", só "where" é aceita —
+// orderBy/skip/take não têm efeito observável numa contagem (REQ-33.5) e
+// aceitá-los em silêncio esconderia um engano de quem escreveu a query.
+// "join"/"on"/"as" não são cobertas aqui (fora do escopo desta task —
+// I4/I5/I3.2 respectivamente).
+func ensureListClausesWellFormed(op string, clauses []ast.QueryClause) error {
+	for _, kw := range []string{"where", "orderBy", "skip", "take"} {
+		if err := ensureNoDuplicateClause(op, clauses, kw); err != nil {
+			return err
+		}
+	}
+	if op != "count" {
+		return nil
+	}
+	for _, kw := range []string{"orderBy", "skip", "take"} {
+		if hasQueryClause(clauses, kw) {
+			return fmt.Errorf("codegen: count ... %s ...: cláusula %q não tem efeito observável numa contagem — só \"where\" é válido em \"count\" (REQ-33.5, NFR-20)", kw, kw)
+		}
+	}
+	return nil
 }
 
 // itemGoTypeOf resolve o tipo Go do item de n (TypeEnv.ItemTypeOf — o MESMO
@@ -817,6 +906,326 @@ func (sl *StmtLowerer) hoistQueryPredicate(n *ast.QueryExpr, ctx StmtContext) (s
 	}
 	fmt.Fprintf(&body, "return %s, nil\n}", condGo)
 	return body.String(), nil, nil
+}
+
+// --- orderBy/skip/take (I2.1, REQ-33.1/33.3, §design read-side 3.1/3.2). ---
+
+// hoistOrderBy extrai a cláusula "orderBy" de n (list/count — mas count já
+// foi barrado por ensureListClausesWellFormed antes de chegar aqui) e
+// traduz sua chave K para os campos Less/OrderField/OrderDesc de um literal
+// Query[T] (§design read-side 3.2). Devolve lessGo == "" (e orderField ==
+// "", orderDesc == false) quando NÃO há cláusula "orderBy" — o chamador
+// (hoistList) então omite os três campos do literal inteiramente (Go zero
+// value: nil/""/false, que SelectSlice já documenta como "ordem de
+// inserção", rtsrc/collection.go.txt — nenhuma mudança de contrato aqui).
+//
+// --- Escopo-filho: o MESMO mecanismo de hoistQueryPredicate, mas usado
+// DUAS vezes ---
+//
+// K é lowerizado num TypeEnv-filho com o binding vinculado ao tipo do item
+// (igual a hoistQueryPredicate) — mas, ao contrário de "where" (que só
+// precisa avaliar a condição UMA vez, sobre o item corrente), "Less(a, b)"
+// compara DOIS itens: por isso K é lowerizado DUAS vezes, uma com o binding
+// apontando para o texto Go "a" e outra para "b" (childForKeyEval, abaixo) —
+// cada evocação abre seu PRÓPRIO StmtLowerer-filho com uma CÓPIA do mapa
+// goNames (nunca o mapa original: mutar um mapa compartilhado entre as duas
+// evocações vazaria "binding -> a" para a lowering de "b", e além disso para
+// o que quer que sl lowerize DEPOIS desta chamada — goNames é um mapa,
+// tipo-referência em Go).
+//
+// --- Direção: convenção adotada aqui (design.md deixa a cargo da task) ---
+//
+// Less SEMPRE significa "a deve vir ANTES de b na ordem FINAL" — a direção
+// é embutida no CORPO de Less, não lida de Query[T].OrderDesc em runtime
+// (SelectSlice nunca lê OrderDesc; só o futuro adapter SQL, tarefa I7, o lê
+// como descritor declarativo, §design read-side 3.9). A implementação:
+// calcula keyA (K com o binding apontando para "a") e keyB (K apontando
+// para "b") uma única vez cada; para "ascending" (o default — Extra vazio,
+// "ascending" ou "asc"), a comparação "menor que" roda com (keyA, keyB) na
+// ordem natural; para "descending"/"desc", os MESMOS DOIS textos entram
+// TROCADOS (keyB, keyA) na mesmíssima lógica de "menor que" — álgebra
+// elementar (a > b ⇔ b < a) que funciona uniformemente sobre os quatro
+// ramos da tabela de comparabilidade (nativo/Decimal.Cmp/time.Before/
+// dispatch de Operator) sem duplicar a decisão de COMO comparar em cada um.
+//
+// --- OrderField: só quando K é um acesso de membro NU sobre o binding ---
+//
+// "<binding>.<campo>" (um *ast.MemberExpr cujo X é o *ast.Ident do PRÓPRIO
+// binding, não um acesso aninhado tipo "<binding>.<a>.<b>" nem uma chave
+// computada tipo "<binding>.<a> + <binding>.<b>") popula OrderField com o
+// nome de campo DomainScript NU — a forma que um futuro adapter SQL (tarefa
+// I7) mapeia para nome de coluna; qualquer outra forma de K deixa
+// OrderField vazio (só a closure Less desce, §design read-side 3.2).
+func (sl *StmtLowerer) hoistOrderBy(n *ast.QueryExpr) (lessGo, orderField string, orderDesc bool, err error) {
+	clause, ok := queryClauseFull(n.Clauses, "orderBy")
+	if !ok {
+		return "", "", false, nil
+	}
+	key := clause.Expr
+	desc := isDescendingDirection(clause.Extra)
+
+	itemType, err := sl.env.ItemTypeOf(n)
+	if err != nil {
+		return "", "", false, fmt.Errorf("codegen: %s ... orderBy ...: %w", n.Op, err)
+	}
+	itemGoType, err := goTypeString(itemType)
+	if err != nil {
+		return "", "", false, fmt.Errorf("codegen: %s ... orderBy ...: tipo do item: %w", n.Op, err)
+	}
+
+	paramName := n.Binding
+	if paramName == "" {
+		paramName = "item"
+	}
+
+	childEnv := sl.env.Child()
+	childEnv.Bind(paramName, itemType)
+	childA := sl.childForKeyEval(childEnv, paramName, "a")
+	childB := sl.childForKeyEval(childEnv, paramName, "b")
+
+	keyType := childA.inferType(key)
+	if types.IsError(keyType) {
+		return "", "", false, fmt.Errorf("codegen: %s ... orderBy ...: não consegui inferir o tipo da chave de ordenação (%T)", n.Op, key)
+	}
+
+	lessCtx := StmtContext{ZeroValues: []string{"false"}}
+	keyAGo, hoistedA, err := childA.exprHoisted(key, lessCtx)
+	if err != nil {
+		return "", "", false, fmt.Errorf("codegen: %s ... orderBy ...: %w", n.Op, err)
+	}
+	keyBGo, hoistedB, err := childB.exprHoisted(key, lessCtx)
+	if err != nil {
+		return "", "", false, fmt.Errorf("codegen: %s ... orderBy ...: %w", n.Op, err)
+	}
+
+	xGo, yGo := keyAGo, keyBGo
+	if desc {
+		xGo, yGo = keyBGo, keyAGo
+	}
+	cmpGo, fallible, err := sl.buildLess(keyType, xGo, yGo)
+	if err != nil {
+		return "", "", false, fmt.Errorf("codegen: %s ... orderBy: %w", n.Op, err)
+	}
+
+	// Forma compacta de uma linha só quando nada precisa de linha extra —
+	// nem hoisting da chave (K não é uma construção falível) nem o dispatch
+	// de Less em si (fallible, ex. Operator < de VO composto): o MESMO
+	// espírito de hoistQueryPredicate (acima) de não pagar custo de
+	// legibilidade extra no caso comum.
+	if len(hoistedA) == 0 && len(hoistedB) == 0 && !fallible {
+		return fmt.Sprintf("func(a, b %s) (bool, error) { return %s, nil }", itemGoType, cmpGo),
+			bareMemberField(key, paramName), desc, nil
+	}
+
+	var body strings.Builder
+	fmt.Fprintf(&body, "func(a, b %s) (bool, error) {\n", itemGoType)
+	for _, l := range hoistedA {
+		fmt.Fprintf(&body, "%s\n", l)
+	}
+	for _, l := range hoistedB {
+		fmt.Fprintf(&body, "%s\n", l)
+	}
+	if fallible {
+		fmt.Fprintf(&body, "lt, err := %s\n", cmpGo)
+		fmt.Fprintf(&body, "if err != nil { return false, err }\n")
+		fmt.Fprintf(&body, "return lt, nil\n}")
+	} else {
+		fmt.Fprintf(&body, "return %s, nil\n}", cmpGo)
+	}
+
+	return body.String(), bareMemberField(key, paramName), desc, nil
+}
+
+// childForKeyEval constrói um StmtLowerer-filho de sl que compartilha
+// runtimeAlias/reg/builtins/emitter/estado-de-loop/dispatch (tudo que
+// hoistQueryPredicate também herda ao montar seu próprio filho), mas com o
+// PRÓPRIO TypeEnv (childEnv, já vinculado: paramName -> o tipo do item) e a
+// PRÓPRIA CÓPIA do mapa goNames de sl, sobrepondo paramName -> goParamName
+// ("a" ou "b"). Uma cópia (nunca sl.goNames em si) é obrigatória: hoistOrderBy
+// chama esta função DUAS vezes (uma por lado de Less) — mutar um mapa
+// COMPARTILHADO vazaria "paramName -> a" para a lowering de "b" (e além
+// disso para qualquer lowering que sl faça DEPOIS desta chamada, já que
+// mapas em Go são tipos-referência) — diferente de hoistQueryPredicate, que
+// nunca sobrepõe o nome do binding (o parâmetro Go da closure de "where" É
+// o próprio nome DS escapado) e por isso pode reusar sl.goNames sem cópia.
+func (sl *StmtLowerer) childForKeyEval(childEnv *TypeEnv, paramName, goParamName string) *StmtLowerer {
+	goNames := make(map[string]string, len(sl.goNames)+1)
+	for k, v := range sl.goNames {
+		goNames[k] = v
+	}
+	goNames[paramName] = goParamName
+	return &StmtLowerer{
+		Lowerer:        &Lowerer{env: childEnv, reg: sl.reg, runtimeAlias: sl.runtimeAlias, goNames: goNames, builtins: sl.builtins},
+		e:              sl.e,
+		ctx:            sl.ctx,
+		shared:         sl.shared,
+		loopDepth:      sl.loopDepth,
+		outerLabel:     sl.outerLabel,
+		aggregates:     sl.aggregates,
+		txGoName:       sl.txGoName,
+		txGoNameFor:    sl.txGoNameFor,
+		notifyAdapters: sl.notifyAdapters,
+		ctxGoName:      sl.ctxGoName,
+		emitDispatch:   sl.emitDispatch,
+	}
+}
+
+// isDescendingDirection reporta se dir (QueryClause.Extra de "orderBy",
+// parser/parse_query.go: "" quando ausente, senão "ascending"/"descending"/
+// "asc"/"desc") pede ordem descendente. Qualquer outro valor (ausente,
+// "ascending", "asc") é ascendente — o default do spec (§6.3).
+func isDescendingDirection(dir string) bool {
+	return dir == "descending" || dir == "desc"
+}
+
+// bareMemberField devolve o nome de campo DS de key quando key é EXATAMENTE
+// "<paramName>.<campo>" (um *ast.MemberExpr cujo X é o *ast.Ident do
+// binding, diretamente) — a única forma simples o bastante para dobrar como
+// referência de coluna SQL (OrderField, §design read-side 3.2); qualquer
+// outra forma (acesso aninhado, expressão computada) devolve "".
+func bareMemberField(key ast.Expr, paramName string) string {
+	mem, ok := key.(*ast.MemberExpr)
+	if !ok {
+		return ""
+	}
+	id, ok := mem.X.(*ast.Ident)
+	if !ok || id.Name != paramName {
+		return ""
+	}
+	return mem.Name
+}
+
+// orderablePrimitives é a linha "primitivo ordenável" da tabela de
+// comparabilidade (§design read-side 3.2): integer/decimal/string/datetime/
+// duration/size. boolean/bytes/rate (e os três tipos opacos de arquivo) NÃO
+// são ordenáveis — exclusão deliberada, espelhando a tabela do design
+// literalmente: "ordenar por boolean" ou "ordenar por File" é um engano de
+// modelagem que este gerador recusa em vez de inventar uma forma Go.
+var orderablePrimitives = map[string]bool{
+	"integer": true, "decimal": true, "string": true,
+	"datetime": true, "duration": true, "size": true,
+}
+
+// primitiveLess devolve a comparação "xGo < yGo" para o primitivo name —
+// nativa para integer/string/duration/size (named types Go sobre um
+// underlying comparável aceitam operadores relacionais diretamente, mesmo
+// quando xGo/yGo têm um tipo NOMEADO diferente do primitivo cru, ex. um VO
+// wrapper — daí baseGoCompare não precisar converter esses quatro casos);
+// via runtime.Decimal.Cmp para decimal e time.Time.Before para datetime —
+// os dois únicos primitivos cujo Go NÃO é nativamente ordenável com "<"
+// (Decimal é backed por big.Int, ver rtsrc/decimal.go.txt; time.Time não
+// tem operador relacional algum em Go). Um name fora de orderablePrimitives
+// é erro de geração claro (NFR-20) — nunca Go que não compila.
+func (sl *StmtLowerer) primitiveLess(name, xGo, yGo string) (string, bool, error) {
+	if !orderablePrimitives[name] {
+		return "", false, fmt.Errorf("codegen: orderBy: tipo primitivo %q não é ordenável — só integer/decimal/string/datetime/duration/size (§design read-side 3.2, NFR-20)", name)
+	}
+	switch name {
+	case "decimal":
+		return fmt.Sprintf("%s.Cmp(%s) < 0", xGo, yGo), false, nil
+	case "datetime":
+		return fmt.Sprintf("%s.Before(%s)", xGo, yGo), false, nil
+	default: // integer, string, duration, size
+		return fmt.Sprintf("%s < %s", xGo, yGo), false, nil
+	}
+}
+
+// baseGoCompare prepara xGo/yGo (expressões Go de um tipo NOMEADO que
+// embrulha o primitivo baseName — um VO wrapper "type X Base" ou um Enum
+// "type X Base", goname/types.go) para primitiveLess: integer/string/
+// duration/size passam DIRETO (Go aceita operador relacional sobre QUALQUER
+// named type cujo underlying o suporte, mesmo que X não seja o próprio
+// Base); decimal/datetime exigem uma CONVERSÃO explícita para o tipo Go do
+// runtime/stdlib primeiro — Cmp/Before são métodos declarados sobre
+// runtime.Decimal/time.Time, e um "type X runtime.Decimal" (defined type,
+// não alias) NÃO herda o method-set de Decimal em Go. A conversão de
+// datetime referencia o literal "time.Time" — por isso e.Import("time")
+// aqui (mesma disciplina do resto do pacote: sl.e.Import é chamado no PONTO
+// em que o texto "time.X" é de fato emitido, ver logStmt/log/slog acima).
+func (sl *StmtLowerer) baseGoCompare(baseName, xGo, yGo string) (string, string) {
+	switch baseName {
+	case "decimal":
+		return fmt.Sprintf("%s.Decimal(%s)", sl.runtimeAlias, xGo), fmt.Sprintf("%s.Decimal(%s)", sl.runtimeAlias, yGo)
+	case "datetime":
+		sl.e.Import("time")
+		return fmt.Sprintf("time.Time(%s)", xGo), fmt.Sprintf("time.Time(%s)", yGo)
+	default:
+		return xGo, yGo
+	}
+}
+
+// primitiveNameOf devolve o Name de t quando t é um *types.Primitive.
+func primitiveNameOf(t types.Type) (string, bool) {
+	p, ok := t.(*types.Primitive)
+	if !ok {
+		return "", false
+	}
+	return p.Name, true
+}
+
+// buildLess decide a comparação "xGo < yGo" (semântica: xGo vem antes de
+// yGo na ordem ascendente) para keyType, pela tabela de comparabilidade
+// (§design read-side 3.2): primitivo ordenável e VO wrapper/Enum sobre um
+// primitivo ordenável são infalíveis (fallible=false); VO composto com
+// Operator "<" ou ">" declarado dispara o método correspondente — SEMPRE
+// falível (E3.2: todo Operator devolve (T, error), goname/vobinary.go) — o
+// CHAMADOR (hoistOrderBy) decide como propagar esse erro dentro do corpo de
+// Less. Qualquer outro tipo (VO composto sem "<"/">" declarado, Shape,
+// Generic, tipo primitivo não-ordenável, etc.) é erro de geração claro
+// (NFR-20), nomeando o tipo e a alternativa.
+func (sl *StmtLowerer) buildLess(keyType types.Type, xGo, yGo string) (string, bool, error) {
+	switch t := keyType.(type) {
+	case *types.Primitive:
+		return sl.primitiveLess(t.Name, xGo, yGo)
+
+	case *types.VOType:
+		if t.Base != nil {
+			baseName, ok := primitiveNameOf(t.Base)
+			if !ok {
+				return "", false, fmt.Errorf("codegen: orderBy: ValueObject %q embrulha um tipo não-primitivo — sem forma de ordenar (§design read-side 3.2, NFR-20)", t.Name)
+			}
+			bx, by := sl.baseGoCompare(baseName, xGo, yGo)
+			return sl.primitiveLess(baseName, bx, by)
+		}
+		if sl.reg.HasOperator(t.Name, "<") {
+			return fmt.Sprintf("%s.Lt(%s)", xGo, yGo), true, nil
+		}
+		if sl.reg.HasOperator(t.Name, ">") {
+			return fmt.Sprintf("%s.Gt(%s)", yGo, xGo), true, nil
+		}
+		return "", false, fmt.Errorf("codegen: orderBy: ValueObject composto %q não declara Operator < nem > — sem forma de ordenar; declare um dos dois Operators, ou use uma chave computada sobre um campo ordenável (§design read-side 3.2, NFR-20)", t.Name)
+
+	case *types.EnumType:
+		baseName, ok := primitiveNameOf(t.Base)
+		if !ok {
+			return "", false, fmt.Errorf("codegen: orderBy: Enum %q: tipo base não é primitivo — sem forma de ordenar (§design read-side 3.2, NFR-20)", t.Name)
+		}
+		bx, by := sl.baseGoCompare(baseName, xGo, yGo)
+		return sl.primitiveLess(baseName, bx, by)
+
+	default:
+		return "", false, fmt.Errorf("codegen: orderBy: tipo %s não é comparável — só primitivo ordenável, VO wrapper/Enum sobre primitivo ordenável, ou VO composto com Operator </> declarado (§design read-side 3.2, NFR-20)", keyType.String())
+	}
+}
+
+// hoistSkipTakeExpr traduz a cláusula "skip"/"take" de n (kw é "skip" ou
+// "take") para uma expressão Go inteira PURA — ao contrário de where/
+// orderBy, skip/take NUNCA precisam de hoisting (REQ-33: são expressões
+// inteiras comuns no spec, ex. "skip page * 20 take 20" — nenhuma
+// construção de VO composto nem operador falível faz sentido de negócio
+// nessa posição). Devolve "" quando a cláusula está ausente — o chamador
+// (hoistList) então omite Query[T].Skip/Take do literal (Go zero value 0,
+// que SelectSlice trata como "ausente" também, rtsrc/collection.go.txt).
+func (sl *StmtLowerer) hoistSkipTakeExpr(n *ast.QueryExpr, kw string) (string, error) {
+	e, ok := queryClauseByKw(n.Clauses, kw)
+	if !ok {
+		return "", nil
+	}
+	goExpr, err := sl.Expr(e)
+	if err != nil {
+		return "", fmt.Errorf("codegen: %s ... %s ...: %w", n.Op, kw, err)
+	}
+	return goExpr, nil
 }
 
 // fallibleVOOperator reporta se n (já com os filhos hoisted) é um BinaryExpr

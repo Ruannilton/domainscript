@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"strings"
 
 	"domainscript/ast"
 )
@@ -381,71 +382,97 @@ func (b *BuiltinLowerer) LoadCall(typeName, idGo string) string {
 	return fmt.Sprintf("%s(%s, %s)", b.loadFuncName(typeName), b.store(typeName), idGo)
 }
 
+// queryLiteralFields recolhe o texto Go já lowerizado (ou o valor zero,
+// significando "ausente") de cada campo OPCIONAL de um literal
+// "runtime.Query[T]{...}" — compartilhado por ListCall/CountCall/
+// queryLiteral (abaixo) como a ÚNICA fonte que decide quais campos o literal
+// de fato define (§design read-side 2.1, REQ-33.1/33.3, REQ-33.5). Where
+// mantém a convenção pré-existente do sentinela "nil" (hoistQueryPredicate,
+// stmt.go: "nil" == sem "where"); Less/Skip/Take usam "" como seu próprio
+// sentinela de ausência (uma closure Go ou uma expressão inteira nunca é
+// literalmente a string vazia); OrderField segue a mesma convenção de "";
+// OrderDesc não precisa de sentinela — seu próprio zero value, false, já
+// significa "ascending"/"não setado". list/count SÓ desde I2.1 (task
+// desta doc) preenchem Less/OrderField/OrderDesc/Skip/Take — antes,
+// só Where existia.
+type queryLiteralFields struct {
+	Where      string
+	Less       string
+	OrderField string
+	OrderDesc  bool
+	Skip       string
+	Take       string
+}
+
 // ListCall devolve o texto Go (sem "tmp, err :=") de uma "list T [where
-// Cond] [as V]": "<store>.Select(<ctx>, <query>)". Desde o ciclo Read Side
-// (REQ-33/REQ-36/REQ-38, §design read-side 2), <query> é um
-// "<runtimeAlias>.Query[<itemGoType>]{...}" — a evolução do antigo
-// "<store>.List(<ctx>, <predicado>)" (H4, §22.4), que somou junto com
-// runtime.Collection[T].List/Count em I0.1. predGo vem de
-// hoistQueryPredicate (stmt.go): "nil" (texto Go literal) quando a QueryExpr
-// não tem cláusula "where", ou um "func(item T) (bool, error) { ... }"
-// quando tem — desde I1.1, JÁ na assinatura que Query[T].Where exige
-// (REQ-36.2) diretamente, sem nenhuma ponte de adaptação (ver a doc de
-// hoistQueryPredicate sobre como o corpo do predicado acomoda hoisting —
-// I1.1, fecha G-8). itemGoType é o tipo Go do item (T de Query[T] —
+// Cond] [orderBy K [dir]] [skip N] [take M] [as V]": "<store>.Select(<ctx>,
+// <query>)". Desde o ciclo Read Side (REQ-33/REQ-36/REQ-38, §design
+// read-side 2), <query> é um "<runtimeAlias>.Query[<itemGoType>]{...}" — a
+// evolução do antigo "<store>.List(<ctx>, <predicado>)" (H4, §22.4), que
+// somou junto com runtime.Collection[T].List/Count em I0.1. fields vem de
+// StmtLowerer.hoistList (stmt.go): Where de hoistQueryPredicate (I1.1, JÁ na
+// assinatura que Query[T].Where exige, REQ-36.2); Less/OrderField/OrderDesc
+// de hoistOrderBy (I2.1, decidido pela tabela de comparabilidade, §design
+// read-side 3.2); Skip/Take de hoistSkipTakeExpr (I2.1, expressões inteiras
+// simples, nunca hoisted). itemGoType é o tipo Go do item (T de Query[T] —
 // obrigatório porque um composite literal genérico não infere T do contexto
 // como uma chamada genérica infere; ver StmtLowerer.hoistList/hoistCount,
 // que o calculam via TypeEnv.ItemTypeOf, o MESMO mecanismo que
 // hoistQueryPredicate já usa para vincular o binding).
-//
-// queryLiteral (abaixo) monta o literal Query[T]{...}: quando predGo é
-// "nil", o campo Where fica de fora do literal (Query[T]{} vazio == nenhum
-// filtro, mesmo contrato do antigo "List(ctx, nil)"); quando predGo é uma
-// lambda de verdade, ela entra DIRETO no campo Where, sem embrulho — até
-// I1.1, essa ponte era "<runtimeAlias>.Infallible(predGo)" (I0.1: predGo
-// ainda era "func(T) bool", sem error, e Infallible adaptava a assinatura
-// sem tocar hoistQueryPredicate; ver o histórico em git log se precisar da
-// forma exata). Com hoistQueryPredicate emitindo (bool, error) diretamente,
-// Infallible ficou sem nenhum chamador — removido do runtime
-// (rtsrc/collection.go.txt) junto com esta mudança (I1.1), não deixado como
-// hook especulativo sem uso.
 //
 // typeName é o nome nu do tipo listado (Target de qe, ex. "Ticket") —
 // roteado por b.store(typeName), o MESMO mecanismo que LoadCall já usa
 // (WithPerAggregateStore, G1) e que Policy (H4) precisa para rotear cada
 // runtime.Collection[T] para o var de pacote certo (decl_policy.go, ex.
 // "ticketCollection").
-//
-// Query[T] em si (Where/WhereEq/Less/OrderField/Skip/Take) já não é mais
-// deliberadamente NARROW — orderBy/skip/take/joins entram nas próximas tasks
-// do ciclo Read Side (I2+); WhereEq/Less/OrderField/Skip/Take continuam de
-// fora do literal aqui (só Where).
-func (b *BuiltinLowerer) ListCall(typeName, itemGoType, predGo string) string {
-	return fmt.Sprintf("%s.Select(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, predGo))
+func (b *BuiltinLowerer) ListCall(typeName, itemGoType string, fields queryLiteralFields) string {
+	return fmt.Sprintf("%s.Select(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, fields))
 }
 
 // CountCall é o análogo de ListCall para "count [where Cond]":
 // "<store>.Count(<ctx>, <query>)", devolvendo (int64, error). Mesmo
-// roteamento por typeName, mesma ponte de predicado e mesma ressalva
-// documentada em ListCall — orderBy/skip/take não fazem sentido em "count"
-// (REQ-33.5) e o gerador nunca os inclui em queryLiteral aqui (só Where).
+// roteamento por typeName, mesma ponte de predicado — orderBy/skip/take não
+// fazem sentido em "count" (REQ-33.5: o CHAMADOR, hoistCount, rejeita essas
+// cláusulas antes mesmo de chegar aqui, ensureListClausesWellFormed) e por
+// isso CountCall nunca recebe um queryLiteralFields completo: só Where.
 func (b *BuiltinLowerer) CountCall(typeName, itemGoType, predGo string) string {
-	return fmt.Sprintf("%s.Count(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, predGo))
+	return fmt.Sprintf("%s.Count(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, queryLiteralFields{Where: predGo}))
 }
 
 // queryLiteral monta o texto Go de "<runtimeAlias>.Query[<itemGoType>]{...}"
-// a partir de predGo (a saída de hoistQueryPredicate — já na forma
-// "func(T) (bool, error)" exigida por Query[T].Where, ver a doc de ListCall
-// sobre a remoção da ponte Infallible em I1.1). Compartilhado por ListCall/
-// CountCall: os dois só usam o campo Where de Query[T] até agora —
-// WhereEq/Less/OrderField/Skip/Take ficam de fora do literal (Go zero value:
-// nil/""/false/0), o que SelectSlice (rtsrc/collection.go.txt) trata como
-// "sem esse critério", exatamente o comportamento de hoje.
-func (b *BuiltinLowerer) queryLiteral(itemGoType, predGo string) string {
-	if predGo == "nil" {
+// a partir de fields — compartilhado por ListCall/CountCall. Cada campo
+// entra no literal só quando presente (ver a doc de queryLiteralFields sobre
+// os sentinelas de ausência de cada um); a ORDEM de emissão segue a ordem de
+// declaração do struct Query[T] em rtsrc/collection.go.txt (Where, Less,
+// OrderField, OrderDesc, Skip, Take — WhereEq fica de fora: nenhuma tarefa
+// deste ciclo o preenche ainda, REQ-38 é quem populará no futuro adapter
+// SQL), por determinismo (NFR-13): a mesma Query[T] gera sempre o MESMO
+// texto, byte a byte, independente de qual campo o chamador setou primeiro
+// em Go.
+func (b *BuiltinLowerer) queryLiteral(itemGoType string, fields queryLiteralFields) string {
+	var parts []string
+	if fields.Where != "" && fields.Where != "nil" {
+		parts = append(parts, fmt.Sprintf("Where: %s", fields.Where))
+	}
+	if fields.Less != "" {
+		parts = append(parts, fmt.Sprintf("Less: %s", fields.Less))
+	}
+	if fields.OrderField != "" {
+		parts = append(parts, fmt.Sprintf("OrderField: %q", fields.OrderField))
+	}
+	if fields.OrderDesc {
+		parts = append(parts, "OrderDesc: true")
+	}
+	if fields.Skip != "" {
+		parts = append(parts, fmt.Sprintf("Skip: %s", fields.Skip))
+	}
+	if fields.Take != "" {
+		parts = append(parts, fmt.Sprintf("Take: %s", fields.Take))
+	}
+	if len(parts) == 0 {
 		return fmt.Sprintf("%s.Query[%s]{}", b.runtimeAlias, itemGoType)
 	}
-	return fmt.Sprintf("%s.Query[%s]{Where: %s}", b.runtimeAlias, itemGoType, predGo)
+	return fmt.Sprintf("%s.Query[%s]{%s}", b.runtimeAlias, itemGoType, strings.Join(parts, ", "))
 }
 
 // --- helpers de QueryClause compartilhados por builtins.go/stmt.go. ---
@@ -468,4 +495,16 @@ func queryClauseByKw(clauses []ast.QueryClause, kw string) (ast.Expr, bool) {
 func hasQueryClause(clauses []ast.QueryClause, kw string) bool {
 	_, ok := queryClauseByKw(clauses, kw)
 	return ok
+}
+
+// queryClauseFull é queryClauseByKw, mas devolve a ast.QueryClause INTEIRA
+// (não só Expr) — usado por hoistOrderBy (stmt.go), que também precisa de
+// Extra (a direção declarada, "ascending"/"descending"/"asc"/"desc"/"").
+func queryClauseFull(clauses []ast.QueryClause, kw string) (ast.QueryClause, bool) {
+	for _, c := range clauses {
+		if c.Kw == kw {
+			return c, true
+		}
+	}
+	return ast.QueryClause{}, false
 }
