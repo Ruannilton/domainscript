@@ -49,7 +49,7 @@ Pendente, na ordem do plano:
 - [ ] **I7.0** — Seam `Dialect` + registro único de provider (REQ-40).
 - [ ] **I7.1** — Contraparte de `Collection[T]` sobre tabela no adapter
       sqlite.
-- [ ] **I8.1** — Revisão contra a DoD (`requirements.md` §5); atualizar
+- [ ] **I8.1** — Revisão contra a DoD (`.claude/specs/read-side/requirements.md` §5); atualizar
       documentação de fechamento.
 
 ## Issues em aberto

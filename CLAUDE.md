@@ -51,8 +51,8 @@ change is needed, update the spec.
   - If the error belongs to the spec/task currently being developed, fix it
     as part of the current task.
   - If the error comes from a different scope (another spec/task, pre-existing
-    code), log it in `.claude/issues.md` (`ISSUE-<n>`, `SPEC-<nome>`,
-    `TASK-<numero>`, `DESCRIPTION`) and keep going — unless the error blocks
+    code), log it in `.claude/issues.md` (`ISSUE-<n>` header with `SPEC`,
+    `TASK`, `DESCRIPTION` fields) and keep going — unless the error blocks
     the current task from being completed, in which case stop and report it
     instead of working around it.
 - **Test scope per task.** At the end of a task, run only the tests needed to
