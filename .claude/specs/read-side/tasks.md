@@ -134,7 +134,7 @@
 
 ### Fase I6 — Smart Partial Loading (§20) e fixtures canônicas
 
-- [ ] **I6.1** `distinct`/`sum`/`focus` como métodos embutidos com lambda
+- [x] **I6.1** `distinct`/`sum`/`focus` como métodos embutidos com lambda
   tipada (via `Lowerer.Lambda`, existente): `distinct` com mapa de vistos +
   ordem de 1ª aparição; `sum` como fold do primeiro item (numérico nativo ou
   `Operator +` via registry, com propagação de erro; vazio → zero value,

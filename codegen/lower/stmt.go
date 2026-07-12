@@ -408,6 +408,23 @@ func (sl *StmtLowerer) hoistSubtree(e ast.Expr, ctx StmtContext) (ast.Expr, []st
 		return ast.NewIndexExpr(x, idx, n.Span()), append(hx, hi...), nil
 
 	case *ast.CallExpr:
+		// Smart Partial Loading (§20, REQ-37, §design read-side 3.8, I6.1):
+		// "<coleção>.distinct(...)"/".sum(...)"/".focus(...)" são reconhecidos
+		// AQUI, ANTES da recursão genérica de Fn/Args abaixo — igual em
+		// espírito ao reconhecimento de "state.entries.add(...)" em
+		// exprStmtCall (mas em posição de EXPRESSÃO, não statement solto: os
+		// três produzem um VALOR, nunca void). smartpartial.go implementa o
+		// hoisting inteiro (receptor + lambda + loop) por conta própria — não
+		// reusa fn/args parcialmente hoisted abaixo, que não sabem lidar com
+		// LambdaExpr nem com o binding do parâmetro em escopo-filho.
+		if mem, ok := n.Fn.(*ast.MemberExpr); ok && isSmartPartialMethod(mem.Name) {
+			tmp, lines, err := sl.hoistSmartPartialMethod(mem, n, ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			return ast.NewIdent(tmp, n.Span()), lines, nil
+		}
+
 		fn, fh, err := sl.hoistSubtree(n.Fn, ctx)
 		if err != nil {
 			return nil, nil, err

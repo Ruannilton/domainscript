@@ -307,9 +307,79 @@ func (env *TypeEnv) InferAssignRHS(rhs ast.Expr) (types.Type, error) {
 		return env.inferMatchExpr(n)
 	case *ast.LambdaExpr:
 		return env.inferLambdaExpr(n)
+	case *ast.CallExpr:
+		if t, ok, err := env.inferSmartPartialCall(n); ok {
+			return t, err
+		}
+		return env.model.Infer(env.module, rhs, env), nil
 	default:
 		return env.model.Infer(env.module, rhs, env), nil
 	}
+}
+
+// inferSmartPartialCall reconhece uma chamada de método de Smart Partial
+// Loading (§20, REQ-37, §design read-side 3.8/3.10): "col.distinct(x =>
+// x.k)" → List<K>; "col.sum(x => x.v)" → o tipo de v; "col.focus(id)" → o
+// tipo do ITEM de col (não um "*item" — o sistema de tipos deste pacote não
+// distingue ponteiro/valor, a mesma convenção que "load T(id)" já usa: o Go
+// de verdade é *T, mas TypeEnv registra T, ver hoistLoad/InferAssignRHS's
+// caso "load").
+//
+// ok=false (sem erro) quando n não tem essa forma — Fn não é um MemberExpr,
+// ou Name não é um dos três nomes reservados: o CHAMADOR (InferAssignRHS)
+// cai para model.Infer, que hoje devolve ErrorType para essa forma
+// (types/infer.go: inferCall só resolve Fn=*ast.Ident diretamente; um
+// Fn=*ast.MemberExpr cai no caminho "chamada de função", que só resolve
+// quando o MemberExpr tem tipo de FuncType — nenhuma coleção declara um
+// método assim no catálogo de types.Model, deliberadamente permissivo por
+// design para métodos de coleção, ver requirements.md §1.2).
+//
+// ok=true com err!=nil é uma falha de geração de VERDADE (receptor não é uma
+// coleção conhecida, argumento ausente/não é lambda) que o chamador deve
+// propagar — nunca um ErrorType silencioso (o mesmo cuidado de
+// inferQueryExpr/inferMatchExpr, acima).
+func (env *TypeEnv) inferSmartPartialCall(n *ast.CallExpr) (types.Type, bool, error) {
+	mem, ok := n.Fn.(*ast.MemberExpr)
+	if !ok {
+		return nil, false, nil
+	}
+	switch mem.Name {
+	case "distinct", "sum", "focus":
+	default:
+		return nil, false, nil
+	}
+
+	recvType, err := env.InferAssignRHS(mem.X)
+	if err != nil {
+		return nil, true, fmt.Errorf("lower: %s(...): %w", mem.Name, err)
+	}
+	itemType := elementType(recvType)
+	if types.IsError(itemType) {
+		return nil, true, fmt.Errorf("lower: %s(...): receptor não é uma coleção conhecida (esperava List/AppendList/Set)", mem.Name)
+	}
+
+	if mem.Name == "focus" {
+		return itemType, true, nil
+	}
+
+	if len(n.Args) != 1 {
+		return nil, true, fmt.Errorf("lower: %s(...): espera exatamente 1 argumento (uma lambda, ex. \"x => x.k\"), recebeu %d", mem.Name, len(n.Args))
+	}
+	le, ok := n.Args[0].Value.(*ast.LambdaExpr)
+	if !ok {
+		return nil, true, fmt.Errorf("lower: %s(...): argumento precisa ser uma lambda (ex. \"x => x.k\"), recebeu %T", mem.Name, n.Args[0].Value)
+	}
+	child := env.Child()
+	child.seedIfKnown(le.Param, itemType)
+	bodyType, err := child.InferAssignRHS(le.Body)
+	if err != nil {
+		return nil, true, fmt.Errorf("lower: %s(%s => ...): %w", mem.Name, le.Param, err)
+	}
+
+	if mem.Name == "distinct" {
+		return &types.Generic{Ctor: "List", Args: []types.Type{bodyType}}, true, nil
+	}
+	return bodyType, true, nil // sum
 }
 
 // inferQueryExpr cobre load/list/count/store/exists (§design 3.6a, REQ-22.6).

@@ -1,0 +1,92 @@
+package ticketsales
+
+import (
+	context "context"
+	runtime "domainscript/generated/runtime"
+	fmt "fmt"
+)
+
+// ticketCollection é o runtime.Collection[Ticket] que "list Ticket .../count Ticket ..." (§22.4,
+// H4) varrem dentro do execute de uma Policy deste pacote — semeado por um
+// "given <binding> [...]" de um Test (gentest.go) nos testes gerados; um
+// wiring de produção real (popular a partir de um EventStore/projeção) fica
+// para quando um exemplo real precisar dele (mesmo espírito da nota de escopo
+// de decl_query.go sobre where/orderBy/skip/take).
+var ticketCollection = runtime.NewMemoryCollection[Ticket]()
+
+// policyDispatcher é o runtime.Dispatcher de verdade que Wire (abaixo)
+// recebe — o seam que "emit" usa dentro do execute de uma Policy deste
+// pacote (H4, §22.4): StmtLowerer.WithEmitDispatch publica DIRETO aqui, já
+// que uma Policy não tem "events []runtime.Event" local para acumular
+// (assinatura fixa "(ctx, ev) error") — ver a doc do arquivo/lower/stmt.go.
+var policyDispatcher runtime.Dispatcher
+
+// SummarizeSales é a Policy SummarizeSales (§7): reage ao Event SaleClosed, entrega BestEffort (in-process, runtime.Dispatcher).
+// Assinatura igual a runtime.Dispatcher/Outbox.Subscribe — registrada DIRETO
+// como handler pelo wiring do módulo (Wire, abaixo).
+func SummarizeSales(ctx context.Context, ev runtime.Event) error {
+	event, ok := ev.(*SaleClosed)
+	if !ok {
+		return fmt.Errorf("policy SummarizeSales: evento inesperado %T (esperava *SaleClosed)", ev)
+	}
+	caller, _ := runtime.CallerFrom(ctx)
+	_ = caller
+	_ = event
+	tmp1, err := ticketCollection.Select(ctx, runtime.Query[Ticket]{})
+	if err != nil {
+		return err
+	}
+	tickets := tmp1
+	tmp2 := map[OrderId]struct{}{}
+	tmp3 := make([]OrderId, 0, len(tickets))
+	for _, t := range tickets {
+		if _, ok := tmp2[t.OrderId]; !ok {
+			tmp2[t.OrderId] = struct{}{}
+			tmp3 = append(tmp3, t.OrderId)
+		}
+	}
+	orderIds := tmp3
+	for _, oid := range orderIds {
+		if err := policyDispatcher.Publish(ctx, &DistinctOrderFound{OrderId: oid}); err != nil {
+			return err
+		}
+	}
+	var tmp4 Money
+	if len(tickets) > 0 {
+		tmp5 := tickets[0]
+		tmp4 = tmp5.Price
+		for _, t := range tickets[1:] {
+			var err error
+			tmp4, err = tmp4.Add(t.Price)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	total := tmp4
+	if err := policyDispatcher.Publish(ctx, &TotalSalesComputed{Total: total}); err != nil {
+		return err
+	}
+	var tmp6 *Ticket
+	for i := range tickets {
+		if tickets[i].Id == event.ClosedBy {
+			tmp6 = &tickets[i]
+			break
+		}
+	}
+	focused := tmp6
+	if err := policyDispatcher.Publish(ctx, &TicketFocused{Id: focused.Id}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,
+// para uma Policy cross-service via canal "queue" da topologia, no seu
+// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —
+// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,
+// §design 3.11).
+func Wire(d runtime.Dispatcher) {
+	policyDispatcher = d
+	d.Subscribe("SaleClosed", SummarizeSales)
+}
