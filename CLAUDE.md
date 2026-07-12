@@ -4,28 +4,67 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Both the front-end and the back-end are implemented and green**
+**The front-end and the back-end are implemented and green**
 (`go build ./...` / `go test ./...`), committed in a Go module named
-`domainscript`. The original plan in `.claude/specs/{requirements,design,tasks}.md`
-(Fases 0–11, REQ-1..8) is done, the follow-up plan in
-`.claude/specs/type-checking/` — full name & type resolution (REQ-9..13) — is
-done, and the code-generation plan in `.claude/specs/codegen/` — the back-end,
-Marcos E/F/G/H (REQ-14..32) — is **also complete**: a validated program now
-generates an idiomatic, compilable Go project (`driver.GenerateProject` /
-`dsc gen`). Three spec sets are the source of truth and are written in
-Portuguese:
+`domainscript`. The original plan in `.claude/specs/transpilador/` (Fases
+0–11, REQ-1..8) is done, the follow-up plan in `.claude/specs/type-checking/`
+— full name & type resolution (REQ-9..13) — is done, and the code-generation
+plan in `.claude/specs/codegen/` — the back-end, Marcos E/F/G/H (REQ-14..32)
+— is **also complete**: a validated program now generates an idiomatic,
+compilable Go project (`driver.GenerateProject` / `dsc gen`). A fourth plan,
+`.claude/specs/read-side/` — query clauses & Smart Partial Loading
+(REQ-33..40) — is **in progress** (Marco I). Four spec sets are the source of
+truth and are written in Portuguese:
 
-- `.claude/specs/requirements.md` / `design.md` / `tasks.md` — the front-end
+- `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
   (REQ-1..8, NFR-1..7).
 - `.claude/specs/type-checking/{requirements,design,tasks}.md` — name & type
   resolution (REQ-9..13, NFR-8..10).
 - `.claude/specs/codegen/{requirements,design,tasks}.md` — the back-end / Go
   code generation (REQ-14..32, NFR-11..17).
+- `.claude/specs/read-side/{requirements,design,tasks}.md` — query clauses &
+  Smart Partial Loading (REQ-33..40).
 
 Work now is maintenance and extension, not greenfield. Still follow the spec
 flow: a task references the REQ it satisfies (`(REQ-n)`) and the design section
 (`(§design x)`). Do not invent architecture that contradicts `design.md`; if a
 change is needed, update the spec.
+
+## Spec-driven development structure
+
+```
+.claude/                       root of the spec-driven flow
+.claude/specs/<nome-da-spec>/  requirements.md, design.md, tasks.md per spec
+.claude/steerings/             reference docs useful as ambient context
+                                (e.g. domainscript-spec-v6.md, the language spec)
+.claude/issues.md              errors found during execution that are out of
+                                scope for the spec/task being worked on
+.claude/state.md               tracks the status of every spec::task, so
+                                execution can resume after an interruption
+```
+
+### Execution rules
+
+- **One task at a time.** Never start a second task before the current one is
+  committed. Pick the task up from `.claude/state.md`.
+- **Errors found mid-task:**
+  - If the error belongs to the spec/task currently being developed, fix it
+    as part of the current task.
+  - If the error comes from a different scope (another spec/task, pre-existing
+    code), log it in `.claude/issues.md` (`ISSUE-<n>`, `SPEC-<nome>`,
+    `TASK-<numero>`, `DESCRIPTION`) and keep going — unless the error blocks
+    the current task from being completed, in which case stop and report it
+    instead of working around it.
+- **Test scope per task.** At the end of a task, run only the tests needed to
+  validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
+  suite. Once green, update `.claude/state.md` and the current spec's
+  `tasks.md` (mark the task done), then commit.
+- **Full suite only at spec closure.** `go test ./...` (and `go vet ./...`)
+  runs only once, at the end of the *entire* spec — not after every task.
+- **Refine `tasks.md` at spec-creation time.** When writing a new spec's
+  `tasks.md`, break tasks down as far as practical up front — small,
+  independently verifiable, vertically sliced — so execution never needs to
+  re-plan mid-spec.
 
 ## What is being built
 
@@ -202,3 +241,8 @@ dispatcher/outbox/Notifications/Adapters/Foreign). G "infraestrutura real"
 advanced HTTP). H "exposição e observabilidade avançadas + testes" (gRPC, OTel,
 `Metric`, `*.test.ds` → Go tests, and closure — determinism/idempotency audit,
 docs) — back-end closes here.
+
+Read side (`.claude/specs/read-side/tasks.md`): I "Read Side de verdade"
+(query clauses — `orderBy`/`skip`/`take`/`in`/`join`, Smart Partial Loading
+`distinct`/`sum`/`focus`, and the SQL/sqlite descent) — **in progress**, see
+`.claude/state.md` for the exact next task.
