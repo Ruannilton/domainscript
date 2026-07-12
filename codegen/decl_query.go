@@ -564,14 +564,20 @@ func (qc *queryBodyEmitter) emitHoistedQueryReturn(qe *ast.QueryExpr) error {
 func (qc *queryBodyEmitter) emitHoistedJoinReturn(qe *ast.QueryExpr) error {
 	viewName, hasAs := queryClauseExtra(qe.Clauses, "as")
 	wantElem, ok := listReturnElement(qc.decl.Return)
+	var declared string
+	if qc.decl.Return != nil {
+		declared = qc.decl.Return.Name
+	} else {
+		declared = "vazio"
+	}
 	if hasAs {
 		if !ok || wantElem != viewName {
-			return fmt.Errorf("... as %s: tipo de retorno da Query deveria ser List<%s>, declarado %s", viewName, viewName, qc.decl.Return.Name)
+			return fmt.Errorf("... as %s: tipo de retorno da Query deveria ser List<%s>, declarado %s", viewName, viewName, declared)
 		}
 	} else {
 		aliasTypeName := astutil.HeadName(qe.Target)
 		if !ok || wantElem != aliasTypeName {
-			return fmt.Errorf("list ... join ...: tipo de retorno da Query deveria ser List<%s> (o alias base, sem \"as\"), declarado %s", aliasTypeName, qc.decl.Return.Name)
+			return fmt.Errorf("list ... join ...: tipo de retorno da Query deveria ser List<%s> (o alias base, sem \"as\"), declarado %s", aliasTypeName, declared)
 		}
 	}
 
