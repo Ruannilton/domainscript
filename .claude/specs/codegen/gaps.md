@@ -19,6 +19,18 @@
 
 ### G-1. Read Side incompleto: cláusulas SQL-like em Query (spec §6.3)
 
+**✅ Fechado pelo ciclo `.claude/specs/read-side/` (REQ-33..35/38/40, Marco I).**
+`where`/`orderBy`/`skip`/`take`/`as` sobre `list`/`load`-coleção, `join`
+mesmo-banco e o operador `in` geram Go real sobre `runtime.Query[T]`
+(in-memory) com descida para SQL parametrizado no adapter sqlite pelo seam
+`Dialect` (REQ-40). As Queries `GetStatement` e `GetMyTickets` do spec §6.3
+agora geram, compilam e passam teste comportamental (`.claude/specs/
+read-side/requirements.md` §1.4, itens 1–2). Desvio remanescente:
+`orderBy`/`skip`/`take` pós-join ficaram de fora (erro de geração claro em
+vez de adivinhar a semântica) — ver `read-side/tasks.md` I5.1. `join`
+traduzido para SQL real (hoje materializa in-memory mesmo no backend SQL) e
+`in` com subquery seguem fora de escopo (`read-side/design.md` §5).
+
 **Promessa:** `load`/`list` com `where`/`orderBy`/`skip`/`take`/`join`/`in`,
 `join` cross-database barrado (exige `Projection`).
 
@@ -44,6 +56,16 @@ próprio codebase (`lower/builtins.go`, `decl_query.go`, fatia H4 §22.4 em
 `tasks.md`).
 
 ### G-2. Smart Partial Loading: `distinct`/`sum`/`focus` (spec §20)
+
+**✅ Fechado pelo ciclo `.claude/specs/read-side/` (REQ-37, Marco I).**
+`distinct(lambda)`/`sum(lambda)`/`focus(id)` geram Go sobre `Lowerer.Lambda`
+com paginação nativa de `AppendList<T>`; a Policy `RefundAllOnEventCancelled`
+do spec §7 gera na forma canônica (`.claude/specs/read-side/requirements.md`
+§1.4, item 3; `read-side/tasks.md` I6.1/I6.2). Desvio remanescente: `sum`/
+`distinct` como agregação SQL (`SELECT SUM`/`DISTINCT`) não descem — o seam
+permite, mas entra só quando houver medição que justifique
+(`read-side/design.md` §5); `avg`/`min`/`max`/`group by` seguem fora
+(spec §25, planejado).
 
 **Promessa:** `state.items.focus(id)`, `.sum(i => i.price)`,
 `.distinct(t => t.orderId)`, paginação nativa de `AppendList<T>`.
@@ -97,11 +119,12 @@ implantável contra infraestrutura real** além de sqlite.
 **Fechar exige:** um provider real por vez, cada um opt-in e isolado (o
 padrão já existe: `codegen/sqlrt/`, `codegen/grpcrt/`, `codegen/otelrt/`).
 Postgres ou rabbitmq primeiro — são os que validam os seams mais centrais
-(persistência e canal cross-service). **Nota (ciclo read-side):** REQ-40 do
-ciclo `.claude/specs/read-side/` cria o seam `Dialect` + registro único de
-provider — depois dele, adicionar um banco vira "implementar uma interface +
-uma entrada de registro" (modelo de ORM), reduzindo o custo da parte SQL
-deste gap.
+(persistência e canal cross-service). **Nota (ciclo read-side, fechado):**
+REQ-40 (`.claude/specs/read-side/`, task I7.0) já entregou o seam `Dialect`
++ registro único de provider (`codegen/sqlrt/dialect.go.txt`) — adicionar um
+banco agora é "implementar `Dialect` + uma entrada no registro" (modelo de
+ORM), reduzindo o custo da parte SQL deste gap. O restante (driver real além
+de sqlite, migrations, type mapping) segue em aberto.
 
 ### G-5. Field-Level Security de View: bloco `visibility` (spec §6.2)
 
@@ -143,15 +166,16 @@ Cada uma registrada nas fatias de H4 em `tasks.md` e/ou em
 | `Subject emitted`/`released` de dentro de um passo de Saga | §22.3 | erro de geração claro (passo de Saga não tem Tx/Store) |
 | Contra-exemplo **mínimo** (shrinking) em property | §22.5 | reporta a sequência completa, sem shrinking |
 | `rolledback` com reversão real | §22.2 | é só `err != nil` — a UnitOfWork in-memory não tem staging (`rtsrc/uow.go.txt`) |
-| Exemplo canônico de §22.4 (agrupamento por `orderId`) | §22.4 | depende de `distinct` (G-2); fixture adaptada |
+| Exemplo canônico de §22.4 (agrupamento por `orderId`) | §22.4 | **✅ fechado** — fixture des-adaptada pelo ciclo `.claude/specs/read-side/` (REQ-39.1, task I6.2): 3 tickets, 2 orders, `.distinct(t => t.orderId)`, `emitted count 2`, sem a adaptação "um orderId por ticket". Desvio remanescente: `reason` de `RefundRequested` usa o VO wrapper `RefundReason(string)` em vez do primitivo `string` cru do literal do spec — primitivo nu é proibido no Write Side (REQ-5.1); ver `read-side/tasks.md` I6.2. |
 
 ### G-8. Predicado de `where` com limitação de hoisting
 
-Condição que exija hoisting (construção de VO composto ou operador de VO
-falível dentro do `where`) → erro de geração claro — a assinatura
-`func(T) bool` de `Collection[T]` não acomoda `error`
-(`lower/stmt.go:hoistQueryPredicate`). Os casos reais de §22.4 (igualdade
-sobre campos wrapper/primitivos) não precisam. Reavaliar junto com G-1.
+**✅ Fechado pelo ciclo `.claude/specs/read-side/` (REQ-36, Marco I, task I1.1).**
+O seam de predicado evoluiu para `func(T) (bool, error)` (`runtime.Query[T]`,
+task I0.1): condição que exige hoisting (construção de VO composto, operador
+de VO falível) agora é aceita, propagando o erro do item para o chamador da
+query em vez de esbarrar num erro de geração arbitrário. Condição sem
+hoisting continua gerando o predicado enxuto de antes.
 
 ---
 
@@ -171,11 +195,13 @@ sobre campos wrapper/primitivos) não precisam. Reavaliar junto com G-1.
 
 ## Priorização recomendada
 
-1. **"Marco E8 de verdade"** — Read Side completo: G-1 + G-2 (+ reavaliar
-   G-8). Destrava três seções do spec de uma vez (§6.3, §7, §20 — e o §22.4
-   canônico de brinde) e é a dívida mais citada internamente.
+1. ~~**"Marco E8 de verdade"** — Read Side completo: G-1 + G-2 + G-8.~~
+   **Fechado** pelo ciclo `.claude/specs/read-side/` (Marco I) — §6.3, §7 e
+   §20 do spec geram Go de verdade, e o §22.4 canônico voltou à forma do
+   spec.
 2. **Primeiro provider real** — G-4, começando por postgres (valida o seam
-   de persistência sob produção) ou rabbitmq (valida o canal cross-service).
+   de persistência sob produção) ou rabbitmq (valida o canal cross-service);
+   o seam `Dialect` do read-side (REQ-40) já reduz o custo da parte SQL.
 3. **`visibility` de View** — G-5, por ser a única lacuna com cheiro de
    segurança que falha em silêncio (ou, como paliativo imediato, o warning
    de geração).
@@ -184,4 +210,5 @@ sobre campos wrapper/primitivos) não precisam. Reavaliar junto com G-1.
    inteiro.
 5. **G-6/G-7** — oportunistas: fechar quando o item vizinho for tocado (ex.
    métricas OTel quando mexer em telemetria; shrinking quando property
-   ganhar um caso real que o exija).
+   ganhar um caso real que o exija). O item de §22.4 em G-7 já fechou junto
+   com G-2.

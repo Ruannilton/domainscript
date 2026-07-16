@@ -13,7 +13,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | transpilador (front-end, REQ-1..8) | `.claude/specs/transpilador/` | done | — |
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
-| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I8.1 |
+| read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -72,10 +72,17 @@ datetime/decimal/duration/size incorretamente como texto). Testes pareados
 em `codegen/sql_collection_test.go`, unitários em
 `codegen/lower/whereeq_test.go`.
 
-Pendente, na ordem do plano:
-
-- [ ] **I8.1** — Revisão contra a DoD (`.claude/specs/read-side/requirements.md` §5); atualizar
-      documentação de fechamento.
+Concluído: **I8.1** — Revisão contra a DoD
+(`.claude/specs/read-side/requirements.md` §5): os três exemplos-âncora
+geram/compilam/se comportam corretamente (golden+smoke+comportamental), a
+fixture §22.4 está des-adaptada, o in-memory segue sem deps externas com o
+adapter sqlite traduzindo `where`-igualdade/`orderBy`/`skip`/`take`/`count`
+via `Dialect` (testes pareados), `go build`/`go test` verdes, wallet/shop sem
+regressão. `.claude/specs/codegen/gaps.md` atualizado: G-1/G-2/G-8 marcados
+fechados com ponteiro para este ciclo, item §22.4 de G-7 atualizado, nota de
+G-4 atualizada para o `Dialect` já entregue; `README.md`/`CLAUDE.md`
+atualizados para refletir o Marco I completo. **Marco I — Read Side de
+Verdade — fechado.**
 
 ## Issues em aberto
 

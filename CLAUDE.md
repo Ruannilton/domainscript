@@ -13,8 +13,12 @@ plan in `.claude/specs/codegen/` — the back-end, Marcos E/F/G/H (REQ-14..32)
 — is **also complete**: a validated program now generates an idiomatic,
 compilable Go project (`driver.GenerateProject` / `dsc gen`). A fourth plan,
 `.claude/specs/read-side/` — query clauses & Smart Partial Loading
-(REQ-33..40) — is **in progress** (Marco I). Four spec sets are the source of
-truth and are written in Portuguese:
+(REQ-33..40) — is **also complete** (Marco I): Query/Policy/Worker/UseCase
+bodies generate `where`/`orderBy`/`skip`/`take`/`as`/`join`/`in` and
+`distinct`/`sum`/`focus` over an in-memory seam (`runtime.Query[T]`) that
+descends to parametrized SQL on the sqlite adapter through a pluggable
+`Dialect`. Four spec sets are the source of truth and are written in
+Portuguese:
 
 - `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
   (REQ-1..8, NFR-1..7).
@@ -251,5 +255,6 @@ docs) — back-end closes here.
 
 Read side (`.claude/specs/read-side/tasks.md`): I "Read Side de verdade"
 (query clauses — `orderBy`/`skip`/`take`/`in`/`join`, Smart Partial Loading
-`distinct`/`sum`/`focus`, and the SQL/sqlite descent) — **in progress**, see
-`.claude/state.md` for the exact next task.
+`distinct`/`sum`/`focus`, and the SQL/sqlite descent) — **also complete**;
+read side closes here. See `.claude/specs/codegen/gaps.md` for the gaps this
+cycle closed (G-1, G-2, G-8) and what remains open.

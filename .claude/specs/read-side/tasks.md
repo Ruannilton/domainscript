@@ -239,7 +239,7 @@
 
 ### Fase I8 — Fechamento do ciclo
 
-- [ ] **I8.1** Revisão contra a DoD (requirements §5); atualizar
+- [x] **I8.1** Revisão contra a DoD (requirements §5); atualizar
   `.claude/specs/codegen/gaps.md` (G-1/G-2/G-8 fechados com ponteiro para
   este ciclo; item §22.4 de G-7 atualizado; "Fora de Escopo Registrado" do
   design §5 vira os gaps remanescentes); atualizar `README.md`/`CLAUDE.md` se
