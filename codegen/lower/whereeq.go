@@ -7,6 +7,7 @@ import (
 	"domainscript/ast"
 	"domainscript/astutil"
 	"domainscript/token"
+	"domainscript/types"
 )
 
 // whereeq.go extrai, de uma cláusula "where" de list/count, o subconjunto
@@ -31,12 +32,12 @@ import (
 // referencia o binding do item (um valor independente do item — ex.
 // "event.id", "TicketStatus.Sold" — nunca um campo do PRÓPRIO item, que não
 // faria sentido como parâmetro de uma comparação de coluna); (b) o tipo do
-// campo é "comparável" pela MESMA régua de "in" (inComparableGoType,
-// expr.go) — primitivo comparável (exceto decimal/bytes/rate, que não têm
-// uma forma de argumento de driver SQL segura), VO wrapper sobre um desses,
-// ou Enum — nunca um VO composto (igualdade estrutural não tem uma única
-// coluna JSON para comparar). Qualquer outra forma (OR, comparação
-// não-igualdade, RHS que referencia o item, campo de tipo não-comparável,
+// campo passa tanto inComparableGoType (comparável em GO — primitivo
+// comparável exceto decimal/bytes, VO wrapper ou Enum sobre um desses, nunca
+// um VO composto) QUANTO whereEqSafePrimitiveType (comparável em SQL — ver a
+// doc de lá sobre por que datetime/duration/size/rate também ficam de fora,
+// além de decimal/bytes). Qualquer outra forma (OR, comparação
+// não-igualdade, RHS que referencia o item, campo de tipo não-seguro,
 // "where" ausente, ausência total de where) devolve "" sem erro algum — ver
 // a doc do arquivo sobre por que "" é sempre uma degradação segura.
 func (sl *StmtLowerer) hoistWhereEq(n *ast.QueryExpr) string {
@@ -59,9 +60,13 @@ func (sl *StmtLowerer) hoistWhereEq(n *ast.QueryExpr) string {
 	}
 	fieldTypes := make(map[string]bool, len(fields))
 	for _, f := range fields {
-		if _, err := inComparableGoType(f.Type); err == nil {
-			fieldTypes[f.Name] = true
+		if _, err := inComparableGoType(f.Type); err != nil {
+			continue
 		}
+		if !whereEqSafePrimitiveType(f.Type) {
+			continue
+		}
+		fieldTypes[f.Name] = true
 	}
 
 	entries := make([]string, 0)
@@ -87,6 +92,63 @@ func (sl *StmtLowerer) hoistWhereEq(n *ast.QueryExpr) string {
 		return ""
 	}
 	return fmt.Sprintf("[]%s.FieldEq{%s}", sl.runtimeAlias, strings.Join(entries, ", "))
+}
+
+// unsafeWhereEqPrimitives são os primitivos cujo valor Go, passado como
+// argumento de uma query SQL (via database/sql), NÃO produz o MESMO texto/
+// forma que json_extract(payload,'$.<campo>') devolve para o MESMO campo —
+// uma igualdade "coluna = ?" contra um desses NUNCA bateria, silenciosamente
+// devolvendo zero linhas em vez de um erro (REQ-38.2 exige "nunca resultado
+// incorreto", não "falhar ruidosamente"). decimal/bytes já ficam de fora por
+// inComparableGoType (goTypeString os mapeia para runtime.Decimal/[]byte,
+// nenhum dos dois com forma de argumento SQL nativa); os três aqui têm o
+// MESMO risco por uma razão diferente: datetime (time.Time) serializa em
+// JSON como uma STRING RFC3339 (MarshalJSON, rtsrc), mas a maioria dos
+// drivers database/sql vincula um valor time.Time NATIVAMENTE (não como
+// esse mesmo texto formatado) — a comparação nunca bateria; duration/size/
+// rate dependem de como CADA driver escolhe representar o tipo Go
+// subjacente (não só do reflect.Kind), um risco não totalmente provado caso
+// a caso — excluídos por precaução em vez de auditar driver a driver: a
+// única perda é a otimização SQL (sempre disponível via degradação
+// in-memory), nunca a correção.
+var unsafeWhereEqPrimitives = map[string]bool{
+	"decimal": true, "bytes": true, "rate": true,
+	"datetime": true, "duration": true, "size": true,
+}
+
+// whereEqSafePrimitiveType reporta se t é seguro para virar WhereEq — além
+// de já ter passado inComparableGoType (comparável em GO), o primitivo de
+// base (direto, ou de um VO wrapper/Enum) não pode estar em
+// unsafeWhereEqPrimitives (comparável em SQL). t que não resolve a nenhum
+// primitivo (nunca deveria acontecer aqui — inComparableGoType já teria
+// recusado um VO composto antes desta função ser chamada) é tratado como
+// seguro por omissão: não há NADA na tabela para recusar.
+func whereEqSafePrimitiveType(t types.Type) bool {
+	name, ok := primitiveBaseName(t)
+	if !ok {
+		return true
+	}
+	return !unsafeWhereEqPrimitives[name]
+}
+
+// primitiveBaseName devolve o Name do primitivo de base de t: o próprio,
+// para um *types.Primitive; o Base, para um *types.VOType wrapper ou
+// *types.EnumType (ambos sempre sobre um primitivo, §design read-side 3.2).
+// ok=false para qualquer outra forma (ex. um VO composto, cujo Base é nil).
+func primitiveBaseName(t types.Type) (string, bool) {
+	switch x := t.(type) {
+	case *types.Primitive:
+		return x.Name, true
+	case *types.VOType:
+		if p, ok := x.Base.(*types.Primitive); ok {
+			return p.Name, true
+		}
+	case *types.EnumType:
+		if p, ok := x.Base.(*types.Primitive); ok {
+			return p.Name, true
+		}
+	}
+	return "", false
 }
 
 // flattenAndConjuncts descende recursivamente por BinaryExpr(token.AND),

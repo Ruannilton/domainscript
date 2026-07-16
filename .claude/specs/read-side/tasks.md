@@ -211,8 +211,20 @@
   vendorados. Testes sintéticos por caso em `codegen/lower/whereeq_test.go`
   (positivo: igualdade simples, AND de duas igualdades, operandos invertidos;
   negativo: sem where, OR, não-igualdade, campo não-comparável — VO
-  composto, RHS referenciando o item).
+  composto, RHS referenciando o item, e cada primitivo recusado por
+  `whereEqSafePrimitiveType`).
   **Commit:** `feat(codegen): descida de WhereEq para SQL no adapter sqlite`
+  **Correção pós-revisão (Gemini Code Assist, PR #5):** `WhereEq` só
+  considera um campo "comparável" quando passa TANTO `inComparableGoType`
+  (comparável em GO) QUANTO `whereEqSafePrimitiveType` (comparável em SQL,
+  `codegen/lower/whereeq.go`) — além de `decimal`/`bytes` (já fora por
+  `inComparableGoType`), `rate`/`datetime`/`duration`/`size` também ficam de
+  fora: o valor Go vinculado como argumento de query por um driver
+  `database/sql` nem sempre bate com o texto que
+  `json_extract(payload,'$.<campo>')` devolve para o MESMO campo (`datetime`
+  é o caso confirmado — `time.Time` vinculado nativamente vs. a string
+  RFC3339 do JSON; os outros três, excluídos por precaução, não por um bug
+  confirmado caso a caso).
   **Desvio de escopo (documentado, não um bug):** `orderBy`/`skip`/`take`
   NUNCA descem para SQL nesta task, mesmo com `OrderField` declarativo
   presente — `json_extract` devolve o tipo NATIVO do valor JSON, mas
