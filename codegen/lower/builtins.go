@@ -397,6 +397,7 @@ func (b *BuiltinLowerer) LoadCall(typeName, idGo string) string {
 // só Where existia.
 type queryLiteralFields struct {
 	Where      string
+	WhereEq    string
 	Less       string
 	OrderField string
 	OrderDesc  bool
@@ -434,25 +435,33 @@ func (b *BuiltinLowerer) ListCall(typeName, itemGoType string, fields queryLiter
 // roteamento por typeName, mesma ponte de predicado — orderBy/skip/take não
 // fazem sentido em "count" (REQ-33.5: o CHAMADOR, hoistCount, rejeita essas
 // cláusulas antes mesmo de chegar aqui, ensureListClausesWellFormed) e por
-// isso CountCall nunca recebe um queryLiteralFields completo: só Where.
-func (b *BuiltinLowerer) CountCall(typeName, itemGoType, predGo string) string {
-	return fmt.Sprintf("%s.Count(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, queryLiteralFields{Where: predGo}))
+// isso CountCall nunca recebe um queryLiteralFields completo: só Where e
+// WhereEq (I7.1, REQ-38.1 — hoistWhereEq, whereeq.go; "" quando o "where" não
+// é uma conjunção de igualdades simples, ver a doc de lá).
+func (b *BuiltinLowerer) CountCall(typeName, itemGoType, predGo, whereEqGo string) string {
+	return fmt.Sprintf("%s.Count(%s, %s)", b.store(typeName), b.ctxGoName, b.queryLiteral(itemGoType, queryLiteralFields{Where: predGo, WhereEq: whereEqGo}))
 }
 
 // queryLiteral monta o texto Go de "<runtimeAlias>.Query[<itemGoType>]{...}"
 // a partir de fields — compartilhado por ListCall/CountCall. Cada campo
 // entra no literal só quando presente (ver a doc de queryLiteralFields sobre
 // os sentinelas de ausência de cada um); a ORDEM de emissão segue a ordem de
-// declaração do struct Query[T] em rtsrc/collection.go.txt (Where, Less,
-// OrderField, OrderDesc, Skip, Take — WhereEq fica de fora: nenhuma tarefa
-// deste ciclo o preenche ainda, REQ-38 é quem populará no futuro adapter
-// SQL), por determinismo (NFR-13): a mesma Query[T] gera sempre o MESMO
-// texto, byte a byte, independente de qual campo o chamador setou primeiro
-// em Go.
+// declaração do struct Query[T] em rtsrc/collection.go.txt (Where, WhereEq,
+// Less, OrderField, OrderDesc, Skip, Take), por determinismo (NFR-13): a
+// mesma Query[T] gera sempre o MESMO texto, byte a byte, independente de
+// qual campo o chamador setou primeiro em Go. WhereEq (I7.1, REQ-38.1) é o
+// subconjunto declarativo de Where que o adapter SQL (codegen/sqlrt/
+// collection.go.txt) consome para montar um WHERE parametrizado; o caminho
+// puramente in-memory (rtsrc/collection.go.txt:SelectSlice) o IGNORA sempre
+// — populá-lo nunca muda o resultado in-memory, só habilita a otimização no
+// adapter SQL.
 func (b *BuiltinLowerer) queryLiteral(itemGoType string, fields queryLiteralFields) string {
 	var parts []string
 	if fields.Where != "" && fields.Where != "nil" {
 		parts = append(parts, fmt.Sprintf("Where: %s", fields.Where))
+	}
+	if fields.WhereEq != "" {
+		parts = append(parts, fmt.Sprintf("WhereEq: %s", fields.WhereEq))
 	}
 	if fields.Less != "" {
 		parts = append(parts, fmt.Sprintf("Less: %s", fields.Less))

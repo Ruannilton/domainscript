@@ -13,7 +13,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | transpilador (front-end, REQ-1..8) | `.claude/specs/transpilador/` | done | — |
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
-| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I7.1 |
+| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I8.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -59,10 +59,21 @@ mesma suíte comportamental roda contra `SQLiteDialect` (`?`) e um dialeto de
 teste posicional (`$N`, nunca registrado como provider real) sobre o mesmo
 driver sqlite.
 
+Concluído: **I7.1** — `Collection[T]` sobre tabela no adapter sqlite
+(`codegen/sqlrt/collection.go.txt`, novo): tabela genérica `(id TEXT,
+payload TEXT JSON)` via `Dialect.CreateCollectionTable`; `Select`/`Count`
+descem `WhereEq` (`WHERE json_extract(payload,'$.<campo>') = ?`) e
+delegam o resto a `runtime.SelectSlice`. Lowering nova em
+`codegen/lower/whereeq.go`: popula `Query[T].WhereEq` quando o `where`
+inteiro é um AND de igualdades de campo contra valor independente do item
+(campo comparável — mesma régua de `in`). `orderBy`/`skip`/`take` NUNCA
+descem (desvio documentado no `tasks.md`: `json_extract` compararia
+datetime/decimal/duration/size incorretamente como texto). Testes pareados
+em `codegen/sql_collection_test.go`, unitários em
+`codegen/lower/whereeq_test.go`.
+
 Pendente, na ordem do plano:
 
-- [ ] **I7.1** — Contraparte de `Collection[T]` sobre tabela no adapter
-      sqlite.
 - [ ] **I8.1** — Revisão contra a DoD (`.claude/specs/read-side/requirements.md` §5); atualizar
       documentação de fechamento.
 

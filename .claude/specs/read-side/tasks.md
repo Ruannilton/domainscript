@@ -191,20 +191,51 @@
   aos de antes (golden sem mudança para o usuário final).
   **Commit:** `refactor(codegen): seam Dialect e registro único de provider SQL`
 
-- [ ] **I7.1** Contraparte de `Collection[T]` sobre tabela no adapter sqlite:
-  `Select`/`Count` montam SQL parametrizado SÓ com os descritores presentes
-  (`WhereEq` → AND de `col = ?`; `OrderField`/`OrderDesc` → ORDER BY;
-  `Skip`/`Take` → LIMIT/OFFSET; `Count` só-WhereEq → `SELECT COUNT(*)`);
-  o resto pós-processa via o MESMO `SelectSlice`. Regra de correção: `Less`
-  sem descritor ⇒ `Skip`/`Take` também não descem. Todo SQL montado via o
-  `Dialect` de I7.0 — nunca string direta. O caminho in-memory segue sem dep
-  externa (NFR-12). _(REQ-38, §design 3.9/3.9a)_ **Depende:** I7.0.
-  **Toca:** `codegen/sqlrt/`, wiring de G1.
-  **Conclusão:** testes **pareados** (NFR-18): a mesma query, mesmo seed de
-  dados, nos dois backends, resultados idênticos — incluindo um caso que
-  força a degradação (closure não-descível) provando REQ-38.2; smoke do
-  caminho sqlite via a fixture opt-in de G1.
-  **Commit:** `feat(codegen): descida das cláusulas para SQL no adapter sqlite`
+- [x] **I7.1** Contraparte de `Collection[T]` sobre tabela no adapter sqlite:
+  `Select`/`Count` montam SQL parametrizado com o descritor presente
+  (`WhereEq` → AND de `json_extract(payload,'$.<campo>') = ?`; `Count`
+  só-WhereEq ou sem `Where` nenhum → `SELECT COUNT(*)`); o resto pós-processa
+  via o MESMO `SelectSlice`. Todo SQL montado via o `Dialect` de I7.0 —
+  nunca string direta. O caminho in-memory segue sem dep externa (NFR-12).
+  _(REQ-38, §design 3.9/3.9a)_ **Depende:** I7.0.
+  **Toca:** `codegen/lower/whereeq.go` (novo — popula `WhereEq` na lowering
+  de `list`/`count`), `codegen/sqlrt/collection.go.txt` (novo — `Collection[T]`
+  genérico sobre uma tabela `(id TEXT, payload TEXT JSON)`, criada por
+  `Dialect.CreateCollectionTable`).
+  **Conclusão:** testes **pareados** (NFR-18, `codegen/sql_collection_test.go`):
+  a mesma `Query[T]`, o mesmo seed de dados, nos dois backends
+  (`runtime.NewMemoryCollection`/`sqlruntime.NewCollection`), resultados
+  idênticos — um caso que desce `WhereEq` de verdade (REQ-38.1) e um caso
+  que força a degradação (closure não-descível, REQ-38.2); smoke via
+  `gentest.RunTests` sobre um projeto mínimo com runtime/sqlruntime
+  vendorados. Testes sintéticos por caso em `codegen/lower/whereeq_test.go`
+  (positivo: igualdade simples, AND de duas igualdades, operandos invertidos;
+  negativo: sem where, OR, não-igualdade, campo não-comparável — VO
+  composto, RHS referenciando o item, e cada primitivo recusado por
+  `whereEqSafePrimitiveType`).
+  **Commit:** `feat(codegen): descida de WhereEq para SQL no adapter sqlite`
+  **Correção pós-revisão (Gemini Code Assist, PR #5):** `WhereEq` só
+  considera um campo "comparável" quando passa TANTO `inComparableGoType`
+  (comparável em GO) QUANTO `whereEqSafePrimitiveType` (comparável em SQL,
+  `codegen/lower/whereeq.go`) — além de `decimal`/`bytes` (já fora por
+  `inComparableGoType`), `rate`/`datetime`/`duration`/`size` também ficam de
+  fora: o valor Go vinculado como argumento de query por um driver
+  `database/sql` nem sempre bate com o texto que
+  `json_extract(payload,'$.<campo>')` devolve para o MESMO campo (`datetime`
+  é o caso confirmado — `time.Time` vinculado nativamente vs. a string
+  RFC3339 do JSON; os outros três, excluídos por precaução, não por um bug
+  confirmado caso a caso).
+  **Desvio de escopo (documentado, não um bug):** `orderBy`/`skip`/`take`
+  NUNCA descem para SQL nesta task, mesmo com `OrderField` declarativo
+  presente — `json_extract` devolve o tipo NATIVO do valor JSON, mas
+  datetime/decimal/duration/size serializam como STRING JSON
+  (`MarshalJSON`), e `ORDER BY json_extract(...)` os ordenaria
+  LEXICOGRAFICAMENTE, incorreto para esses tipos (REQ-38.2 exige "nunca
+  resultado incorreto"). Descer `ORDER BY`/`LIMIT`/`OFFSET` só para os tipos
+  seguros exigiria replicar, no adapter, a mesma tabela de comparabilidade de
+  `buildLess` (`codegen/lower/stmt.go`) — adiado até haver medição real que
+  justifique (mesmo espírito de REQ-38.4 para `sum`); documentado em
+  `codegen/sqlrt/collection.go.txt`.
 
 ### Fase I8 — Fechamento do ciclo
 
