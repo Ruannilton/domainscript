@@ -175,7 +175,7 @@
 
 ### Fase I7 — Descida SQL (sqlite) sobre dialeto plugável
 
-- [ ] **I7.0** Seam `Dialect` + registro único de provider (REQ-40): extrair
+- [x] **I7.0** Seam `Dialect` + registro único de provider (REQ-40): extrair
   de `sqlrt` tudo que varia por banco (placeholders, DDL de `events`,
   paginação) para uma interface `Dialect` consumida por todo o adapter —
   nenhuma string SQL específica de banco fora dos dialetos; colapsar o

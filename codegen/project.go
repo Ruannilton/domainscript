@@ -141,9 +141,9 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter
 		version = "1.22"
 		switch {
 		case sqlAdapter:
-			version = sqliteMinGoVersion
+			version = sqlProviders["sqlite"].minGoVersion
 		case otelAdapter:
-			version = otelMinGoVersion // == sqliteMinGoVersion hoje ("1.25"); ver a doc das consts
+			version = otelMinGoVersion // == sqlProviders["sqlite"].minGoVersion hoje ("1.25"); ver a doc das consts
 		}
 	}
 
@@ -160,7 +160,8 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter
 		)
 	}
 	if sqlAdapter {
-		requires = append(requires, fmt.Sprintf("%s %s", sqliteDriverModule, sqliteDriverVersion))
+		sqlite := sqlProviders["sqlite"]
+		requires = append(requires, fmt.Sprintf("%s %s", sqlite.driverModule, sqlite.driverVersion))
 	}
 
 	if len(requires) == 0 {

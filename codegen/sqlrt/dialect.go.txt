@@ -1,0 +1,63 @@
+package sqlruntime
+
+import "fmt"
+
+// Dialect encapsula TUDO que varia por banco na superfície SQL que este
+// adapter emite (I7.0, REQ-40.1, §design read-side 3.9a): estilo de
+// placeholder, o DDL idempotente das duas únicas tabelas que o gerador
+// conhece (events, aqui; a tabela de Collection[T] de REQ-38 entra em I7.1)
+// e a forma de paginação. Nenhuma string SQL específica de banco vive fora
+// de uma implementação de Dialect — eventstore.go.txt/uow.go.txt/
+// twophase.go.txt montam toda query chamando um Dialect, nunca literais "?"
+// ou "$N" soltos.
+type Dialect interface {
+	// Placeholder devolve o marcador do n-ésimo parâmetro (1-based): "?"
+	// (sqlite/mysql) ou "$1" (postgres).
+	Placeholder(n int) string
+	// CreateEventsTable devolve o DDL idempotente da tabela "events" — um
+	// stream de eventos por (aggregate_id, sequence).
+	CreateEventsTable() string
+	// CreateCollectionTable devolve o DDL idempotente da tabela que
+	// sustenta um Collection[T] chamado name (REQ-38, adapter de I7.1) —
+	// parte do seam desde já para que I7.1 não precise reabrir a interface.
+	CreateCollectionTable(name string) string
+	// LimitOffset devolve a cláusula de paginação para limit/offset (LIMIT/
+	// OFFSET ANSI serve sqlite e postgres; o método existe para o banco que
+	// divergir).
+	LimitOffset(limit, offset int) string
+}
+
+// sqliteDialect implementa Dialect para o único driver real que este
+// gerador sabe vendorar hoje (modernc.org/sqlite, open_sqlite.go.txt).
+type sqliteDialect struct{}
+
+// SQLiteDialect devolve o Dialect usado por todo adapter gerado para um
+// Database provider:"sqlite" — o registro único de provider
+// (codegen/sql_wiring.go) chama este construtor pelo nome.
+func SQLiteDialect() Dialect { return sqliteDialect{} }
+
+func (sqliteDialect) Placeholder(int) string { return "?" }
+
+func (sqliteDialect) CreateEventsTable() string {
+	return `CREATE TABLE IF NOT EXISTS events (
+	aggregate_id TEXT NOT NULL,
+	sequence     INTEGER NOT NULL,
+	event_type   TEXT NOT NULL,
+	payload      TEXT NOT NULL,
+	recorded_at  TIMESTAMP NOT NULL,
+	tenant_id    TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (aggregate_id, sequence)
+)`
+}
+
+func (sqliteDialect) CreateCollectionTable(name string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	id      TEXT NOT NULL,
+	payload TEXT NOT NULL,
+	PRIMARY KEY (id)
+)`, name)
+}
+
+func (sqliteDialect) LimitOffset(limit, offset int) string {
+	return fmt.Sprintf("LIMIT %d OFFSET %d", limit, offset)
+}

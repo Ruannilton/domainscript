@@ -19,12 +19,13 @@ type Tx struct {
 	ctx      context.Context
 	sqlTx    *sql.Tx
 	registry map[string]EventFactory
+	dialect  Dialect
 	appended []runtime.Event
 }
 
 // Append implementa runtime.Tx.
 func (t *Tx) Append(aggregateID string, events []runtime.Event) error {
-	if err := appendWithinTx(t.ctx, t.sqlTx, aggregateID, events); err != nil {
+	if err := appendWithinTx(t.ctx, t.sqlTx, t.dialect, aggregateID, events); err != nil {
 		return err
 	}
 	t.appended = append(t.appended, events...)
@@ -36,7 +37,7 @@ func (t *Tx) Append(aggregateID string, events []runtime.Event) error {
 // anterior) já escreveu dentro desta unit of work enxerga suas próprias
 // escritas — semântica padrão de transação "read-your-writes".
 func (t *Tx) Load(aggregateID string) ([]runtime.Event, error) {
-	return loadWithinQuerier(t.ctx, t.sqlTx, t.registry, aggregateID)
+	return loadWithinQuerier(t.ctx, t.sqlTx, t.dialect, t.registry, aggregateID)
 }
 
 // UnitOfWork é o runtime.UnitOfWork de um único banco sobre database/sql (G1,
@@ -46,6 +47,7 @@ func (t *Tx) Load(aggregateID string) ([]runtime.Event, error) {
 type UnitOfWork struct {
 	db        *sql.DB
 	registry  map[string]EventFactory
+	dialect   Dialect
 	publisher runtime.Publisher
 }
 
@@ -53,9 +55,10 @@ type UnitOfWork struct {
 // eventos via registry — mesma convenção de publisher opcional de
 // runtime.NewUnitOfWork (rtsrc/uow.go.txt): quando dado, todo evento
 // apensado por um Run bem-sucedido é publicado (dispatcher/canal de saída),
-// na mesma ordem de apensação, logo após o commit.
-func NewUnitOfWork(db *sql.DB, registry map[string]EventFactory, publisher ...runtime.Publisher) *UnitOfWork {
-	u := &UnitOfWork{db: db, registry: registry}
+// na mesma ordem de apensação, logo após o commit. dialect (I7.0) é repassado
+// a cada Tx que Run cria.
+func NewUnitOfWork(db *sql.DB, registry map[string]EventFactory, dialect Dialect, publisher ...runtime.Publisher) *UnitOfWork {
+	u := &UnitOfWork{db: db, registry: registry, dialect: dialect}
 	if len(publisher) > 0 {
 		u.publisher = publisher[0]
 	}
@@ -68,7 +71,7 @@ func (u *UnitOfWork) Run(ctx context.Context, fn func(tx runtime.Tx) error) erro
 	if err != nil {
 		return err
 	}
-	tx := &Tx{ctx: ctx, sqlTx: sqlTx, registry: u.registry}
+	tx := &Tx{ctx: ctx, sqlTx: sqlTx, registry: u.registry, dialect: u.dialect}
 	if err := fn(tx); err != nil {
 		_ = sqlTx.Rollback()
 		return err

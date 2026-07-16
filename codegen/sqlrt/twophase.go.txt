@@ -77,7 +77,7 @@ func (u *UnitOfWork2PC) Run(ctx context.Context, dbNames []string, fn func(txs m
 		}
 		sqlTxs[name] = sqlTx
 		begunOrder = append(begunOrder, name)
-		tx := &Tx{ctx: ctx, sqlTx: sqlTx, registry: store.registry}
+		tx := &Tx{ctx: ctx, sqlTx: sqlTx, registry: store.registry, dialect: store.dialect}
 		innerTxs[name] = tx
 		txs[name] = tx
 	}

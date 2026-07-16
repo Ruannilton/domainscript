@@ -65,7 +65,7 @@ func openTestStore(t *testing.T) (*sqlruntime.EventStore, *sql.DB) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	store, err := sqlruntime.NewEventStore(context.Background(), db, testRegistry())
+	store, err := sqlruntime.NewEventStore(context.Background(), db, testRegistry(), sqlruntime.SQLiteDialect())
 	if err != nil {
 		t.Fatalf("NewEventStore: %v", err)
 	}
