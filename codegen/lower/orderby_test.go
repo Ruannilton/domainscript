@@ -485,8 +485,11 @@ func TestHoistList_SkipTake_PlainExpressions(t *testing.T) {
 // TestHoistList_CompleteForm é o critério de conclusão LITERAL da task
 // (tasks.md I2.1): "list T t where C orderBy t.k descending skip N take M"
 // gera um Select com a Query[T] COMPLETA — todos os campos populados
-// corretamente, na ordem de declaração de Query[T] (Where, Less, OrderField,
-// OrderDesc, Skip, Take — rtsrc/collection.go.txt).
+// corretamente, na ordem de declaração de Query[T] (Where, WhereEq, Less,
+// OrderField, OrderDesc, Skip, Take — rtsrc/collection.go.txt). WhereEq
+// (I7.1, REQ-38.1) também aparece aqui: o "where" é exatamente uma
+// igualdade simples de campo, então hoistWhereEq (whereeq.go) o reconhece
+// mesmo dentro desta forma completa.
 func TestHoistList_CompleteForm(t *testing.T) {
 	_, l := newWalletLowererWithBuiltins(t)
 	l.env.Bind("page", &types.Primitive{Name: "integer"})
@@ -506,6 +509,7 @@ func TestHoistList_CompleteForm(t *testing.T) {
 
 	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{` +
 		`Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }, ` +
+		`WhereEq: []runtime.FieldEq{{Field: "description", Value: TransactionDescription("Salário")}}, ` +
 		`Less: func(a, b StatementEntry) (bool, error) { return b.Description < a.Description, nil }, ` +
 		`OrderField: "description", OrderDesc: true, Skip: int(page * 20), Take: 20})`
 	if !strings.Contains(out, want) {
@@ -632,7 +636,7 @@ func TestHoistCount_WhereStillWorks(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testCount()", assign)
 
-	want := `tmp1, err := tx.Count(ctx, runtime.Query[Money]{Where: func(m Money) (bool, error) { return m.Currency == "BRL", nil }})`
+	want := `tmp1, err := tx.Count(ctx, runtime.Query[Money]{Where: func(m Money) (bool, error) { return m.Currency == "BRL", nil }, WhereEq: []runtime.FieldEq{{Field: "currency", Value: "BRL"}}})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}

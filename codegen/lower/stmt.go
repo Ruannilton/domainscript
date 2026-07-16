@@ -840,6 +840,7 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 	if err != nil {
 		return nil, nil, err
 	}
+	whereEqGo := sl.hoistWhereEq(n)
 
 	lessGo, orderField, orderDesc, err := sl.hoistOrderBy(n)
 	if err != nil {
@@ -857,6 +858,7 @@ func (sl *StmtLowerer) hoistList(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, [
 
 	fields := queryLiteralFields{
 		Where:      predGo,
+		WhereEq:    whereEqGo,
 		Less:       lessGo,
 		OrderField: orderField,
 		OrderDesc:  orderDesc,
@@ -904,11 +906,12 @@ func (sl *StmtLowerer) hoistCount(n *ast.QueryExpr, ctx StmtContext) (ast.Expr, 
 	if err != nil {
 		return nil, nil, err
 	}
+	whereEqGo := sl.hoistWhereEq(n)
 
 	tmp := sl.newTmp()
 	sl.bindTmp(tmp, t)
 	lines := append(hoisted,
-		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(astutil.HeadName(n.Target), itemGoType, predGo)),
+		fmt.Sprintf("%s, err := %s", tmp, sl.builtins.CountCall(astutil.HeadName(n.Target), itemGoType, predGo, whereEqGo)),
 		fmt.Sprintf("if err != nil { %s }", ctx.ExitOnError("err")),
 	)
 	return ast.NewIdent(tmp, n.Span()), lines, nil

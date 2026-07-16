@@ -1,0 +1,180 @@
+package sqlruntime
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"domainscript/generated/runtime"
+)
+
+// Collection[T] é o runtime.Collection[T] de verdade sobre database/sql
+// (I7.1, REQ-38, §design read-side 3.9): cada item vira uma linha (id TEXT,
+// payload TEXT — um JSON de T, via encoding/json) na tabela que
+// Dialect.CreateCollectionTable cria — a MESMA forma para QUALQUER T (o
+// gerador nunca precisa conhecer o schema de T; json.Marshal/Unmarshal
+// fazem todo o trabalho, e os nomes de campo do JSON SEMPRE batem com os
+// nomes DomainScript — decl_value.go/decl_event.go tagueiam cada campo
+// exportado com `json:"<nomeOriginal>"`). id é só uma chave técnica
+// (runtime.UUID() a cada Add) — Collection[T] nunca exige que T tenha um
+// campo "id" de domínio.
+//
+// --- O que desce para SQL (REQ-38.1) e o que fica in-memory (REQ-38.2) ---
+//
+// Select/Count descem q.WhereEq — populado pelo gerador (codegen/lower/
+// whereeq.go) só quando TODO o "where" é uma conjunção AND de igualdades de
+// campo contra valores independentes do item — como um AND de
+// "json_extract(payload,'$.<Field>') = ?", reduzindo as linhas buscadas
+// ANTES de qualquer processamento in-memory. TUDO o resto (q.Where além do
+// WhereEq, q.Less/q.OrderField/q.OrderDesc/q.Skip/q.Take) roda in-memory via
+// o MESMO runtime.SelectSlice que o caminho puramente in-memory usa —
+// mesma semântica sempre, nunca resultado diferente entre os dois backends
+// (NFR-18).
+//
+// orderBy/skip/take NUNCA descem nesta task, nem quando a chave de
+// ordenação é um campo bare (OrderField não-vazio): json_extract devolve o
+// tipo NATIVO do valor JSON (INTEGER/REAL para número, TEXT para string),
+// mas datetime/decimal/duration/size serializam como STRING JSON
+// (MarshalJSON, rtsrc) — "ORDER BY json_extract(...)" ordenaria essas
+// LEXICOGRAFICAMENTE, incorreto para decimal (nunca é correto comparar
+// números como texto) e para datetime (dígitos fracionários de largura
+// variável do RFC3339Nano). Descer ORDER BY só para os tipos seguros
+// exigiria replicar, no adapter, a MESMA tabela de comparabilidade de
+// buildLess (codegen/lower/stmt.go) — adiado até haver medição real que
+// justifique (mesmo espírito de REQ-38.4 para "sum": aceitável entregar
+// in-memory primeiro, desde que o seam já permita descer depois). Como
+// consequência, a "regra de correção" do design ("Less sem OrderField ⇒
+// Skip/Take também não descem") vale trivialmente aqui: NENHUM dos três
+// desce, sempre.
+type Collection[T any] struct {
+	db      *sql.DB
+	dialect Dialect
+	table   string
+}
+
+// NewCollection cria (idempotente — CREATE TABLE IF NOT EXISTS) um
+// Collection[T] sobre a tabela table de db, via o DDL de
+// dialect.CreateCollectionTable — chamado pelo wiring gerado (cmd/
+// <service>/main.go) uma vez por Collection[T] que o módulo declara sobre
+// um Database real.
+func NewCollection[T any](ctx context.Context, db *sql.DB, dialect Dialect, table string) (*Collection[T], error) {
+	if dialect == nil {
+		return nil, fmt.Errorf("sqlruntime: dialect não pode ser nil")
+	}
+	c := &Collection[T]{db: db, dialect: dialect, table: table}
+	if _, err := db.ExecContext(ctx, dialect.CreateCollectionTable(table)); err != nil {
+		return nil, fmt.Errorf("sqlruntime: criar tabela %s: %w", table, err)
+	}
+	return c, nil
+}
+
+// Add implementa runtime.Collection.
+func (c *Collection[T]) Add(ctx context.Context, item T) error {
+	payload, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("sqlruntime: Collection.Add: %w", err)
+	}
+	q := fmt.Sprintf("INSERT INTO %s (id, payload) VALUES (%s, %s)",
+		c.table, c.dialect.Placeholder(1), c.dialect.Placeholder(2))
+	if _, err := c.db.ExecContext(ctx, q, runtime.UUID(), string(payload)); err != nil {
+		return fmt.Errorf("sqlruntime: Collection.Add: %w", err)
+	}
+	return nil
+}
+
+// Select implementa runtime.Collection — ver a doc do tipo sobre o que
+// desce para SQL (q.WhereEq) e o que sempre roda in-memory (o resto).
+func (c *Collection[T]) Select(ctx context.Context, q runtime.Query[T]) ([]T, error) {
+	items, err := c.fetch(ctx, q.WhereEq)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.SelectSlice(items, q)
+}
+
+// Count implementa runtime.Collection: quando q.Where é nil (conta tudo) ou
+// quando q.WhereEq está presente (REQ-38.1: o gerador só o preenche quando
+// captura EXATAMENTE a mesma restrição de q.Where, codegen/lower/
+// whereeq.go), a contagem inteira desce como "SELECT COUNT(*)" (mais um
+// WHERE quando há WhereEq) — nunca precisa buscar nenhuma linha. Qualquer
+// outro caso (uma closure Where "de verdade", sem WhereEq correspondente)
+// busca as linhas e conta via o predicado in-memory — nunca incorreto, só
+// mais lento (REQ-38.2).
+func (c *Collection[T]) Count(ctx context.Context, q runtime.Query[T]) (int64, error) {
+	if q.Where == nil || len(q.WhereEq) > 0 {
+		where, args := c.whereEqClause(q.WhereEq)
+		sqlQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s%s", c.table, where)
+		var n int64
+		if err := c.db.QueryRowContext(ctx, sqlQuery, args...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("sqlruntime: Collection.Count: %w", err)
+		}
+		return n, nil
+	}
+
+	items, err := c.fetch(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, item := range items {
+		ok, err := q.Where(item)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// fetch busca as linhas de c.table cujo payload casa whereEq (vazio = todas
+// as linhas), decodificadas de volta para T, na ordem de inserção (rowid
+// ascendente — a MESMA garantia de memoryCollection, "insertion order";
+// quando Select aplica um Less por cima via SelectSlice, esta ordem só
+// importa como o desempate natural de um sort ESTÁVEL).
+func (c *Collection[T]) fetch(ctx context.Context, whereEq []runtime.FieldEq) ([]T, error) {
+	where, args := c.whereEqClause(whereEq)
+	sqlQuery := fmt.Sprintf("SELECT payload FROM %s%s ORDER BY rowid", c.table, where)
+	rows, err := c.db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlruntime: Collection.Select: %w", err)
+	}
+	defer rows.Close()
+
+	var items []T
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("sqlruntime: Collection.Select: %w", err)
+		}
+		var item T
+		if err := json.Unmarshal([]byte(payload), &item); err != nil {
+			return nil, fmt.Errorf("sqlruntime: Collection.Select: decodificar payload: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlruntime: Collection.Select: %w", err)
+	}
+	return items, nil
+}
+
+// whereEqClause monta " WHERE json_extract(payload,'$.<Field>') = <placeholder>
+// AND ..." (string vazia quando whereEq está vazio) e os argumentos na MESMA
+// ordem — a única tradução SQL de WhereEq (REQ-38.1), sempre via
+// c.dialect.Placeholder (nunca "?"/"$N" cru — I7.0).
+func (c *Collection[T]) whereEqClause(whereEq []runtime.FieldEq) (string, []any) {
+	if len(whereEq) == 0 {
+		return "", nil
+	}
+	conds := make([]string, len(whereEq))
+	args := make([]any, len(whereEq))
+	for i, eq := range whereEq {
+		conds[i] = fmt.Sprintf("json_extract(payload,'$.%s') = %s", eq.Field, c.dialect.Placeholder(i+1))
+		args[i] = eq.Value
+	}
+	return " WHERE " + strings.Join(conds, " AND "), args
+}

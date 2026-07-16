@@ -42,13 +42,16 @@ type Collection[T any] interface {
 }
 
 // FieldEq is one "<Field> == <Value>" conjunct of the declarative subset of a
-// Query's filter (Query.WhereEq, below). It exists only for a future SQL
-// adapter (task I7) to translate into a parameterized "WHERE <Field> = ?" —
-// no code in this cycle constructs one yet (nothing generates WhereEq before
-// task I2), and SelectSlice (the in-memory interpreter) never reads it: see
-// the "Alternativas Rejeitadas" note on Query for why the two forms
-// (closure/descriptor) are kept independent instead of the descriptor being
-// derived from the closure at query time.
+// Query's filter (Query.WhereEq, below) — populated by the generator
+// (codegen/lower/whereeq.go, I7.1, REQ-38.1) whenever the whole "where"
+// clause reduces to an AND of simple field equalities against
+// item-independent values, and consumed by the sqlite adapter
+// (codegen/sqlrt/collection.go.txt) to build a parameterized
+// "WHERE json_extract(payload,'$.<Field>') = ?" that prefilters rows before
+// any in-memory processing. SelectSlice (the in-memory interpreter) never
+// reads it: see the "Alternativas Rejeitadas" note on Query for why the two
+// forms (closure/descriptor) are kept independent instead of the descriptor
+// being derived from the closure at query time.
 type FieldEq struct {
 	Field string
 	Value any

@@ -265,7 +265,7 @@ func TestStmt_List_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testList()", assign)
 
-	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }})`
+	want := `tmp1, err := tx.Select(ctx, runtime.Query[StatementEntry]{Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }, WhereEq: []runtime.FieldEq{{Field: "description", Value: TransactionDescription("Salário")}}})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
@@ -282,7 +282,7 @@ func TestStmt_Count_Synthetic_WithBinding_FiltersPerItem(t *testing.T) {
 
 	out := lowerInFunc(t, l, StmtContext{}, "func testCount()", assign)
 
-	want := `tmp1, err := tx.Count(ctx, runtime.Query[StatementEntry]{Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }})`
+	want := `tmp1, err := tx.Count(ctx, runtime.Query[StatementEntry]{Where: func(e StatementEntry) (bool, error) { return e.Description == TransactionDescription("Salário"), nil }, WhereEq: []runtime.FieldEq{{Field: "description", Value: TransactionDescription("Salário")}}})`
 	if !strings.Contains(out, want) {
 		t.Fatalf("esperava %q, got:\n%s", want, out)
 	}
