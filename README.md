@@ -82,6 +82,19 @@ Adapter, injeção de falha por step e testes baseados em propriedades.
 Ver `.claude/specs/codegen/{requirements,design,tasks}.md` para o ciclo
 completo (REQ-14..32, NFR-11..17).
 
+## Read Side (cláusulas de Query e Smart Partial Loading)
+
+As Queries geradas suportam as cláusulas SQL-like do spec §6.3
+(`where`/`orderBy`/`skip`/`take`/`as`, `join` mesmo-banco, o operador `in`) e
+os métodos de coleção do §20 (`distinct`/`sum`/`focus`), sobre um seam
+declarativo (`runtime.Query[T]`) que roda in-memory por padrão e desce para
+SQL parametrizado no adapter sqlite quando o módulo declara um `Database`
+real — pelo mesmo mecanismo de dialeto plugável (`Dialect`) que torna
+suportar um banco novo uma questão de implementar uma interface e registrar
+um provider, não editar SQL espalhado pelo adapter. Ver
+`.claude/specs/read-side/{requirements,design,tasks}.md` para o ciclo
+completo (REQ-33..40, NFR-18..20).
+
 ## Uso
 
 ### CLI
@@ -133,9 +146,10 @@ escrito em `out` e `err` é (ou envolve) `codegen.ErrHasDiagnostics`.
 
 ## Estado
 
-**Completo** — front-end e back-end. Todas as fases dos três planos
-(`.claude/specs/transpilador/tasks.md`, `.claude/specs/type-checking/tasks.md`,
-`.claude/specs/codegen/tasks.md`) implementadas.
+**Completo** — front-end, back-end e Read Side. Todas as fases dos quatro
+planos (`.claude/specs/transpilador/tasks.md`,
+`.claude/specs/type-checking/tasks.md`, `.claude/specs/codegen/tasks.md`,
+`.claude/specs/read-side/tasks.md`) implementadas.
 
 Front-end (`.claude/specs/transpilador/requirements.md` §5):
 
@@ -162,3 +176,18 @@ Back-end (`.claude/specs/codegen/requirements.md` §5):
    atrás de interfaces e ausentes quando não usadas.
 6. A CLI `dsc gen` gera um projeto válido e recusa (exit ≠ 0) programas com erros.
 7. `go build ./...` e `go test ./...` do compilador permanecem verdes.
+
+Read Side (`.claude/specs/read-side/requirements.md` §5):
+
+1. Os três exemplos-âncora do spec (`GetStatement`, `GetMyTickets`, a Policy
+   `RefundAllOnEventCancelled` de §7) geram Go que compila e se comporta como
+   o spec descreve, provados por golden + smoke + teste comportamental.
+2. A fixture canônica de §22.4 está des-adaptada e o teste gerado
+   correspondente roda verde.
+3. O caminho in-memory segue sem nenhuma dependência externa; o adapter
+   sqlite traduz `where`-igualdade, `orderBy`, `skip`/`take` e `count` para
+   SQL parametrizado, com testes pareados entre os dois backends.
+4. O adapter roda inteiro sobre o seam `Dialect`: nenhuma string SQL
+   específica de banco fora dos dialetos, provider num registro único.
+5. `go build ./...` / `go test ./...` do compilador verdes; wallet e shop sem
+   regressão.
