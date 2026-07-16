@@ -71,9 +71,9 @@ func (u *UnitOfWork) Run(ctx context.Context, fn func(tx runtime.Tx) error) erro
 	if err != nil {
 		return err
 	}
+	defer sqlTx.Rollback()
 	tx := &Tx{ctx: ctx, sqlTx: sqlTx, registry: u.registry, dialect: u.dialect}
 	if err := fn(tx); err != nil {
-		_ = sqlTx.Rollback()
 		return err
 	}
 	if err := sqlTx.Commit(); err != nil {

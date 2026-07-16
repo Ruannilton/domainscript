@@ -152,7 +152,7 @@ func TestSQLEventStoreRowLevelTenancy(t *testing.T) {
 func buildSQLRuntimeProjectFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	files := make(map[string][]byte)
-	files["go.mod"] = codegen.EmitGoMod(codegen.Options{ModulePath: "domainscript/generated"}, "", true, false, false)
+	files["go.mod"] = codegen.EmitGoMod(codegen.Options{ModulePath: "domainscript/generated"}, "", []string{"sqlite"}, false, false)
 
 	rtSrcs, err := rtsrc.Sources()
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -81,21 +82,25 @@ const (
 // EmitGoMod gera o conteúdo de go.mod do projeto gerado: "module <path>\n\ngo
 // <version>\n", SEM bloco require no caso comum — o núcleo depende só de
 // stdlib e do runtime vendorado (NFR-12), então não há nenhuma dependência
-// externa a declarar. sqlAdapter (G1, REQ-26.2/26.3) é true quando
-// programNeedsSQLAdapter (codegen.go) encontrou ao menos um Database
-// provider:"sqlite" no programa; grpcAdapter (H1, REQ-29.2) é true quando
+// externa a declarar. sqlProviderKeys (I7.0, REQ-40.2) é activeSQLProviders
+// (sql_wiring.go) — as chaves de sqlProviders efetivamente usadas pelo
+// programa (hoje só pode ser ["sqlite"] ou vazio, mas EmitGoMod nunca
+// hardcoda "sqlite": itera sqlProviderKeys e resolve CADA UM contra o
+// registro sqlProviders — um provider novo, registrado ali, aparece aqui sem
+// nenhuma mudança nesta função); grpcAdapter (H1, REQ-29.2) é true quando
 // programNeedsGRPC (codegen.go) encontrou ao menos uma "Interface GRPC": só
 // ENTÃO cada um acrescenta sua própria linha "require <módulo> <versão>" (as
 // únicas dependências externas que este gerador introduz, cada uma isolada e
-// opt-in — NFR-12); as duas podem estar presentes ao mesmo tempo (um
-// programa com Database sqlite E Interface GRPC), caso em que viram um único
-// bloco "require (...)" com as duas linhas, ordenadas por caminho de módulo
-// (determinismo, NFR-13). sqlAdapter também sobe o default de versão de Go
-// para sqliteMinGoVersion (o driver exige go >= 1.25) — grpcAdapter sozinho
-// NÃO precisa disso: grpcMinGoVersion (1.21) já é menor que o default "1.22"
-// abaixo. Um programa sem Database sqlite nem Interface GRPC continua
-// produzindo EXATAMENTE o go.mod de antes de G1/H1 (byte a byte) —
-// wallet/shop incluídos.
+// opt-in — NFR-12); podem estar presentes ao mesmo tempo (um programa com
+// Database sqlite E Interface GRPC), caso em que viram um único bloco
+// "require (...)" com as linhas, ordenadas por caminho de módulo
+// (determinismo, NFR-13). Cada provider ativo também sobe o default de
+// versão de Go para o MAIOR minGoVersion entre eles e otelAdapter (ver
+// maxGoVersion, abaixo) — grpcAdapter sozinho NÃO precisa disso:
+// grpcMinGoVersion (1.21) já é menor que o default "1.22" abaixo. Um
+// programa sem nenhum provider SQL, GRPC nem OTel continua produzindo
+// EXATAMENTE o go.mod de antes de G1/H1 (byte a byte) — wallet/shop
+// incluídos.
 //
 // O caminho do módulo é opts.ModulePath quando não-vazio; senão, é derivado
 // do nome-base de outDir (ex. "/tmp/out/wallet" -> "wallet") — a heurística
@@ -124,13 +129,13 @@ const (
 // encontrou ao menos um mod.ds com "Telemetry { ... }": acrescenta as 4
 // linhas "require" do adapter OTel (otel, otel/sdk, otel/trace, o exporter
 // OTLP/HTTP — ver a doc das consts acima) ao MESMO bloco "require (...)" que
-// sqlAdapter/grpcAdapter já usam, ordenadas por caminho de módulo junto com
-// as demais (determinismo, NFR-13), e sobe o default de versão de Go para
-// otelMinGoVersion quando nenhuma das outras duas já o fez (mesmo valor de
-// sqliteMinGoVersion — não há conflito a resolver). Um programa sem nenhum
-// dos três adapters continua produzindo EXATAMENTE o go.mod de antes de
-// G1/H1/H2 (byte a byte).
-func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter bool) []byte {
+// os providers SQL/grpcAdapter já usam, ordenadas por caminho de módulo
+// junto com as demais (determinismo, NFR-13), e sobe o default de versão de
+// Go para otelMinGoVersion quando nenhum provider SQL ativo já exigiu uma
+// versão maior (mesmo valor de sqliteMinGoVersion hoje — não há conflito a
+// resolver). Um programa sem nenhum dos três adapters continua produzindo
+// EXATAMENTE o go.mod de antes de G1/H1/H2 (byte a byte).
+func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapter, otelAdapter bool) []byte {
 	modulePath := opts.ModulePath
 	if modulePath == "" {
 		modulePath = moduleNameFromOutDir(outDir)
@@ -139,11 +144,13 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter
 	version := opts.GoVersion
 	if version == "" {
 		version = "1.22"
-		switch {
-		case sqlAdapter:
-			version = sqlProviders["sqlite"].minGoVersion
-		case otelAdapter:
-			version = otelMinGoVersion // == sqlProviders["sqlite"].minGoVersion hoje ("1.25"); ver a doc das consts
+		if otelAdapter {
+			version = maxGoVersion(version, otelMinGoVersion)
+		}
+		for _, key := range sqlProviderKeys {
+			if p, ok := sqlProviders[key]; ok {
+				version = maxGoVersion(version, p.minGoVersion)
+			}
 		}
 	}
 
@@ -159,9 +166,10 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter
 			fmt.Sprintf("%s %s", otelExporterModule, otelVersion),
 		)
 	}
-	if sqlAdapter {
-		sqlite := sqlProviders["sqlite"]
-		requires = append(requires, fmt.Sprintf("%s %s", sqlite.driverModule, sqlite.driverVersion))
+	for _, key := range sqlProviderKeys {
+		if p, ok := sqlProviders[key]; ok {
+			requires = append(requires, fmt.Sprintf("%s %s", p.driverModule, p.driverVersion))
+		}
 	}
 
 	if len(requires) == 0 {
@@ -178,6 +186,54 @@ func EmitGoMod(opts Options, outDir string, sqlAdapter, grpcAdapter, otelAdapter
 	}
 	b.WriteString(")\n")
 	return []byte(b.String())
+}
+
+// maxGoVersion devolve a maior entre duas versões Go na forma "X.Y" (ex.
+// "1.22", "1.25") — usada por EmitGoMod para escolher o default de
+// opts.GoVersion entre múltiplos adapters ativos (I7.0: mais de um provider
+// SQL registrado, cada um com seu próprio minGoVersion, mais otelAdapter).
+// Comparação NUMÉRICA de cada componente (não lexicográfica pura — "1.9" vs
+// "1.10" ordenaria errado como string) — nenhuma constante atual exercita
+// dois dígitos no minor, mas um provider futuro poderia. Uma versão que não
+// parseie como "X.Y" com os dois componentes inteiros é tratada como menor
+// (nunca vence a comparação) — nenhuma constante deste arquivo tem essa
+// forma, então esse ramo nunca é exercitado hoje.
+func maxGoVersion(a, b string) string {
+	pa, oka := parseGoVersion(a)
+	pb, okb := parseGoVersion(b)
+	switch {
+	case oka && okb:
+		if pa[0] != pb[0] {
+			if pa[0] > pb[0] {
+				return a
+			}
+			return b
+		}
+		if pa[1] >= pb[1] {
+			return a
+		}
+		return b
+	case oka:
+		return a
+	case okb:
+		return b
+	default:
+		return a
+	}
+}
+
+// parseGoVersion parseia "X.Y" em [X, Y]; ok=false para qualquer outra forma.
+func parseGoVersion(v string) ([2]int, bool) {
+	parts := strings.SplitN(v, ".", 2)
+	if len(parts) != 2 {
+		return [2]int{}, false
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return [2]int{}, false
+	}
+	return [2]int{major, minor}, true
 }
 
 // moduleNameFromOutDir deriva um nome de módulo Go do nome-base de outDir

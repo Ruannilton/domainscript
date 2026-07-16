@@ -42,6 +42,9 @@ type EventStore struct {
 // REQ-40.1) decide todo o SQL específico de banco — DDL e placeholders —
 // consumido daqui e de appendWithinTx/loadWithinQuerier.
 func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFactory, dialect Dialect) (*EventStore, error) {
+	if dialect == nil {
+		return nil, fmt.Errorf("sqlruntime: dialect não pode ser nil")
+	}
 	s := &EventStore{db: db, registry: registry, dialect: dialect}
 	if err := s.ensureSchema(ctx); err != nil {
 		return nil, err
@@ -84,8 +87,8 @@ func (s *EventStore) Append(ctx context.Context, aggregateID string, events []ru
 	if err != nil {
 		return fmt.Errorf("sqlruntime: Append: begin: %w", err)
 	}
+	defer tx.Rollback()
 	if err := appendWithinTx(ctx, tx, s.dialect, aggregateID, events); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {

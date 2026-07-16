@@ -49,24 +49,42 @@ func recognizedSQLProvider(provider string) (sqlProvider, bool) {
 	return p, ok
 }
 
+// activeSQLProviders devolve, em ordem alfabética (determinismo, NFR-13), as
+// chaves de sqlProviders efetivamente usadas por prog: cada Database, em
+// qualquer módulo, cujo Provider (case-insensitive) resolve via
+// recognizedSQLProvider — deduplicado (dois Database com o mesmo provider
+// contam uma vez só). EmitGoMod (project.go, REQ-40.2) consome isto para
+// exigir o driver/versão mínima de Go de CADA provider ativo — nunca
+// hardcoding "sqlite": um provider novo (uma entrada nova em sqlProviders)
+// passa a aparecer em go.mod automaticamente quando um programa o usa, sem
+// nenhuma mudança em EmitGoMod.
+func activeSQLProviders(prog *program.Program) []string {
+	seen := make(map[string]bool)
+	for _, mod := range prog.Modules {
+		for _, db := range mod.Databases {
+			if _, ok := recognizedSQLProvider(db.Provider); ok {
+				seen[strings.ToLower(db.Provider)] = true
+			}
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // programNeedsSQLAdapter devolve true se algum Database, em qualquer módulo
 // do programa, declara um provider reconhecido em sqlProviders (hoje só
 // "sqlite" — o único provider real que este gerador sabe montar,
 // program.Database.Provider, G1). Usado por Generate (codegen.go) para
-// decidir, uma única vez por projeto: (a) emitir sqlruntime/*.go
-// (codegen/sqlrt) e (b) acrescentar o require do driver ao go.mod
-// (EmitGoMod) — em QUALQUER outro caso (nenhum Database, ou só providers não
+// decidir, uma única vez por projeto, se emite sqlruntime/*.go (codegen/
+// sqlrt) — em QUALQUER outro caso (nenhum Database, ou só providers não
 // reconhecidos como "postgres") devolve false, e o projeto gerado permanece
 // exatamente como antes de G1 (NFR-12).
 func programNeedsSQLAdapter(prog *program.Program) bool {
-	for _, mod := range prog.Modules {
-		for _, db := range mod.Databases {
-			if _, ok := recognizedSQLProvider(db.Provider); ok {
-				return true
-			}
-		}
-	}
-	return false
+	return len(activeSQLProviders(prog)) > 0
 }
 
 // generateSQLRuntimeFiles copia sqlrt.Sources() (verbatim, mesmo padrão de

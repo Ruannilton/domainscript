@@ -63,16 +63,22 @@ func (u *UnitOfWork2PC) Run(ctx context.Context, dbNames []string, fn func(txs m
 			_ = sqlTxs[begunOrder[i]].Rollback()
 		}
 	}
+	// defer (não só as chamadas explícitas de antes): protege contra panic
+	// dentro de fn (a Fase 1 roda o corpo de um UseCase arbitrário) — sem
+	// isto, um panic vazaria toda *sql.Tx já aberta, retendo conexões/locks
+	// indefinidamente. Rollback() sobre uma *sql.Tx já comitada (o caminho de
+	// sucesso, Fase 2 abaixo) é um no-op seguro e documentado do
+	// database/sql — chamar rollbackAll() incondicionalmente aqui nunca
+	// desfaz um commit já efetivado.
+	defer rollbackAll()
 
 	for _, name := range dbNames {
 		store, ok := u.stores[name]
 		if !ok {
-			rollbackAll()
 			return fmt.Errorf("sqlruntime: UnitOfWork2PC.Run: nenhum EventStore configurado para o Database %q (bug de geração — G1 só deveria pedir 2PC entre Databases realmente conectados)", name)
 		}
 		sqlTx, err := store.db.BeginTx(ctx, nil)
 		if err != nil {
-			rollbackAll()
 			return fmt.Errorf("sqlruntime: UnitOfWork2PC.Run: prepare %q: begin: %w", name, err)
 		}
 		sqlTxs[name] = sqlTx
@@ -84,9 +90,8 @@ func (u *UnitOfWork2PC) Run(ctx context.Context, dbNames []string, fn func(txs m
 
 	// Fase 1 (prepare): fn executa os Appends de cada banco contra sua
 	// própria *sql.Tx ainda não comitada — qualquer erro aqui é um "prepare
-	// falhou", tratado com rollback de TODOS os bancos (ver a doc do tipo).
+	// falhou", tratado com rollback de TODOS os bancos (o defer acima).
 	if err := fn(txs); err != nil {
-		rollbackAll()
 		return err
 	}
 
