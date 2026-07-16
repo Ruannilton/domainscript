@@ -13,7 +13,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | transpilador (front-end, REQ-1..8) | `.claude/specs/transpilador/` | done | — |
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
-| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I6.2 |
+| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I7.0 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -36,17 +36,18 @@ que o back-end entrega — não são tasks pendentes desta spec.
 
 ## read-side — `.claude/specs/read-side/tasks.md`
 
-Marco I ("Read Side de Verdade"), REQ-33..40. Fases I0–I5 concluídas (seam no
+Marco I ("Read Side de Verdade"), REQ-33..40. Fases I0–I6 concluídas (seam no
 runtime, predicado falível, `orderBy`/`skip`/`take`, `load X(id).entries` +
-`as V`, operador `in`, `join` mesmo-banco — âncora 2 `GetMyTickets` verde:
-golden + determinismo + smoke + comportamental,
-`codegen/gentest_query_getmytickets_test.go`). `orderBy`/`skip`/`take`
-pós-join ficou fora do escopo de I5.1 (desvio registrado no `tasks.md`).
+`as V`, operador `in`, `join` mesmo-banco — âncora 2 `GetMyTickets` verde,
+`distinct`/`sum`/`focus` (§20) e âncora 3 — fixture Policy §7
+(`RefundAllOnEventCancelled`) des-adaptada para a forma canônica do spec
+(3 tickets, 2 orders, `soldTickets.distinct(t => t.orderId)`, `emitted count
+2`), `codegen/gentest_policy_test.go`). `orderBy`/`skip`/`take` pós-join
+(I5.1) e o VO wrapper `RefundReason` no lugar do `string` cru do spec (I6.2)
+ficaram fora do escopo — desvios registrados nos `tasks.md`.
 
 Pendente, na ordem do plano:
 
-- [ ] **I6.2** — Âncora 3 + des-adaptação: fixture da Policy §7 para Smart
-      Partial Loading (§20).
 - [ ] **I7.0** — Seam `Dialect` + registro único de provider (REQ-40).
 - [ ] **I7.1** — Contraparte de `Collection[T]` sobre tabela no adapter
       sqlite.
@@ -55,4 +56,7 @@ Pendente, na ordem do plano:
 
 ## Issues em aberto
 
-Ver `.claude/issues.md`. Nenhuma issue registrada até o momento.
+Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1): colisão potencial de
+`<tipo>Collection` var entre `EmitQueries` e `EmitPolicies` quando o mesmo
+tipo aparece num join de Query e num list/count de Policy do mesmo módulo —
+nenhum exemplo real exercita a combinação ainda.

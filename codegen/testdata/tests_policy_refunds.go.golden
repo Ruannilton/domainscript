@@ -7,8 +7,8 @@ import (
 	testing "testing"
 )
 
-// TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado prova o cenário "reembolsa cada ticket do evento cancelado" de Test RefundAllOnEventCancelled (§22.4, REQ-31).
-func TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado(t *testing.T) {
+// TestRefundAllOnEventCancelled_ReembolsoDeTodosOsPedidos prova o cenário "reembolso de todos os pedidos" de Test RefundAllOnEventCancelled (§22.4, REQ-31).
+func TestRefundAllOnEventCancelled_ReembolsoDeTodosOsPedidos(t *testing.T) {
 	ctx := context.Background()
 	ticketCollection = runtime.NewMemoryCollection[Ticket]()
 	item1 := Ticket{}
@@ -21,22 +21,15 @@ func TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado(t *testi
 	item2 := Ticket{}
 	item2.EventId = EventId("E1")
 	item2.Status = TicketStatusSold
-	item2.OrderId = OrderId("O2")
+	item2.OrderId = OrderId("O1")
 	if err := ticketCollection.Add(ctx, item2); err != nil {
 		t.Fatalf("given Ticket: %v", err)
 	}
 	item3 := Ticket{}
 	item3.EventId = EventId("E1")
 	item3.Status = TicketStatusSold
-	item3.OrderId = OrderId("O3")
+	item3.OrderId = OrderId("O2")
 	if err := ticketCollection.Add(ctx, item3); err != nil {
-		t.Fatalf("given Ticket: %v", err)
-	}
-	item4 := Ticket{}
-	item4.EventId = EventId("E2")
-	item4.Status = TicketStatusSold
-	item4.OrderId = OrderId("O4")
-	if err := ticketCollection.Add(ctx, item4); err != nil {
 		t.Fatalf("given Ticket: %v", err)
 	}
 	var published []runtime.Event
@@ -51,7 +44,7 @@ func TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado(t *testi
 	if err != nil {
 		t.Fatalf("esperava sucesso ao invocar RefundAllOnEventCancelled, erro inesperado: %v", err)
 	}
-	want1 := &RefundRequested{OrderId: OrderId("O1")}
+	want1 := &RefundRequested{OrderId: OrderId("O1"), Reason: RefundReason("Evento cancelado")}
 	found1 := false
 	for _, got := range published {
 		if reflect.DeepEqual(got, want1) {
@@ -61,7 +54,7 @@ func TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado(t *testi
 	if !found1 {
 		t.Fatalf("esperava emitted %+v entre os eventos publicados, got %+v", want1, published)
 	}
-	want2 := &RefundRequested{OrderId: OrderId("O2")}
+	want2 := &RefundRequested{OrderId: OrderId("O2"), Reason: RefundReason("Evento cancelado")}
 	found2 := false
 	for _, got := range published {
 		if reflect.DeepEqual(got, want2) {
@@ -71,19 +64,9 @@ func TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado(t *testi
 	if !found2 {
 		t.Fatalf("esperava emitted %+v entre os eventos publicados, got %+v", want2, published)
 	}
-	want3 := &RefundRequested{OrderId: OrderId("O3")}
-	found3 := false
-	for _, got := range published {
-		if reflect.DeepEqual(got, want3) {
-			found3 = true
-		}
-	}
-	if !found3 {
-		t.Fatalf("esperava emitted %+v entre os eventos publicados, got %+v", want3, published)
-	}
-	wantCount4 := 3
-	if len(published) != wantCount4 {
-		t.Fatalf("esperava %d evento(s) publicado(s), got %d: %+v", wantCount4, len(published), published)
+	wantCount3 := 2
+	if len(published) != wantCount3 {
+		t.Fatalf("esperava %d evento(s) publicado(s), got %d: %+v", wantCount3, len(published), published)
 	}
 }
 

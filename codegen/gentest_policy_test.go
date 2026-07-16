@@ -33,19 +33,27 @@ import (
 // (o wallet real só tem Deposit/Withdraw) — ver `.claude/specs/codegen/
 // design.md` §6, "Fixtures de exemplo não são fonte de verdade".
 //
-// --- Adaptação do exemplo canônico do spec (§22.4) ---
+// --- Fixture canônica do spec (§7, §22.4) — I6.2 des-adapta ---
 //
-// O exemplo do spec agrupa por orderId (3 tickets, 2 orders, 2
-// RefundRequested) — exige "distinct"/agrupamento (§20), que este codegen
-// NÃO implementa em lugar nenhum (confirmado: só citado como trabalho futuro
-// em codegen/lower/env.go/expr.go). Esta fixture dá a CADA ticket um orderId
-// DISTINTO — "para cada Ticket casado pelo where, emite um RefundRequested"
-// já produz, sem nenhuma lógica de dedup, um evento por ticket — e ajusta as
-// contagens do "then" de acordo (4 tickets, 3 casam com o Event cancelado
-// "E1", 1 não casa (\"E2\") — 3 RefundRequested, não 2). Um 2º scenario
-// ("nenhum ticket casa") prova a metade "vazia" do predicado: o Collection[T]
-// tem 1 item, mas de um evento diferente do cancelado — "emitted count 0"
-// confirma que o "where" de fato FILTRA (não é um passa-tudo).
+// Até I6.1, "distinct" não existia — a fixture desviava do spec dando a
+// CADA ticket um orderId DISTINTO (histórico preservado em
+// .claude/specs/codegen/tasks.md, nota da 6ª fatia de H4). I6.1 fechou
+// "col.distinct(x => x.k)" (§20) especificamente para este caso ("resultado
+// de list — a variável materializada — ex. "soldTickets.distinct(...)", a
+// forma da Policy §7", §design read-side 3.8) — esta task volta a fixture à
+// forma EXATA do spec: Policy §7 (soldTickets = list ... where ...; orderIds
+// = soldTickets.distinct(t => t.orderId); for orderId in orderIds { emit
+// RefundRequested(orderId: orderId, reason: "Evento cancelado") }) e o
+// cenário de §22.4 (3 tickets, 2 orders, "emitted count 2").
+//
+// Único desvio remanescente: o spec usa "reason: string" cru no literal do
+// Event RefundRequested (§22.4) — primitivo cru é proibido no Write Side
+// (REQ-5.1: campo de Event exige ValueObject/Enum, nunca primitivo nu),
+// então "reason" usa um VO wrapper novo, RefundReason(string), em vez do
+// primitivo. Um 2º scenario ("nenhum ticket casa"), fora do texto literal do
+// spec mas já presente antes desta task, prova a metade "vazia" do
+// predicado: o Collection[T] tem 1 item de um evento diferente do
+// cancelado — "emitted count 0" confirma que o "where" de fato FILTRA.
 const policyTestFixtureModDs = `Module Refunds { }
 `
 
@@ -59,6 +67,10 @@ ValueObject OrderId(string) {
 }
 
 ValueObject CancellationReason(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject RefundReason(string) {
     Valid { value.length() > 0 }
 }
 
@@ -80,32 +92,33 @@ Event EventCancelled {
 
 Event RefundRequested {
     orderId OrderId
+    reason  RefundReason
 }
 
 Policy RefundAllOnEventCancelled on EventCancelled {
-    delivery BestEffort
+    delivery AtLeastOnce
     execute {
-        matches = list Ticket t where t.eventId == event.id
-        for r in matches {
-            emit RefundRequested(orderId: r.orderId)
+        soldTickets = list Ticket t
+            where t.eventId == event.id and t.status == TicketStatus.Sold
+        orderIds = soldTickets.distinct(t => t.orderId)
+        for orderId in orderIds {
+            emit RefundRequested(orderId: orderId, reason: RefundReason("Evento cancelado"))
         }
     }
 }
 
 Test RefundAllOnEventCancelled {
-    scenario "reembolsa cada ticket do evento cancelado" {
+    scenario "reembolso de todos os pedidos" {
         given tickets [
             Ticket("T1") { eventId: EventId("E1"), status: TicketStatus.Sold, orderId: OrderId("O1") },
-            Ticket("T2") { eventId: EventId("E1"), status: TicketStatus.Sold, orderId: OrderId("O2") },
-            Ticket("T3") { eventId: EventId("E1"), status: TicketStatus.Sold, orderId: OrderId("O3") },
-            Ticket("T4") { eventId: EventId("E2"), status: TicketStatus.Sold, orderId: OrderId("O4") }
+            Ticket("T2") { eventId: EventId("E1"), status: TicketStatus.Sold, orderId: OrderId("O1") },
+            Ticket("T3") { eventId: EventId("E1"), status: TicketStatus.Sold, orderId: OrderId("O2") }
         ]
         when event EventCancelled(id: EventId("E1"), reason: CancellationReason("Chuva"))
         then {
-            emitted RefundRequested(orderId: OrderId("O1"))
-            emitted RefundRequested(orderId: OrderId("O2"))
-            emitted RefundRequested(orderId: OrderId("O3"))
-            emitted count 3
+            emitted RefundRequested(orderId: OrderId("O1"), reason: RefundReason("Evento cancelado"))
+            emitted RefundRequested(orderId: OrderId("O2"), reason: RefundReason("Evento cancelado"))
+            emitted count 2
         }
     }
 
@@ -179,7 +192,7 @@ func TestEmitPolicyTestsGolden(t *testing.T) {
 	got := string(emitPolicyTestFixture(t))
 	for _, want := range []string{
 		"package refunds",
-		"func TestRefundAllOnEventCancelled_ReembolsaCadaTicketDoEventoCancelado(t *testing.T)",
+		"func TestRefundAllOnEventCancelled_ReembolsoDeTodosOsPedidos(t *testing.T)",
 		"func TestRefundAllOnEventCancelled_NenhumTicketDoEventoCanceladoGeraZeroReembolsos(t *testing.T)",
 		"ctx := context.Background()",
 		"ticketCollection = runtime.NewMemoryCollection[Ticket]()",
@@ -196,14 +209,15 @@ func TestEmitPolicyTestsGolden(t *testing.T) {
 		"ev := EventCancelled{",
 		"err := RefundAllOnEventCancelled(ctx, &ev)",
 		"if err != nil {",
-		"want1 := &RefundRequested{",
+		"want1 := &RefundRequested{OrderId: OrderId(\"O1\"), Reason: RefundReason(\"Evento cancelado\")}",
 		"found1 := false",
 		"for _, got := range published {",
 		"if reflect.DeepEqual(got, want1) {",
 		"found1 = true",
 		"if !found1 {",
-		"wantCount4 := 3",
-		"if len(published) != wantCount4 {",
+		"want2 := &RefundRequested{OrderId: OrderId(\"O2\"), Reason: RefundReason(\"Evento cancelado\")}",
+		"wantCount3 := 2",
+		"if len(published) != wantCount3 {",
 		"wantCount1 := 0",
 	} {
 		if !strings.Contains(got, want) {
@@ -228,16 +242,19 @@ func TestEmitPolicyTestsSmokeCompile(t *testing.T) {
 	gentest.SmokeCompile(t, filesToMap(generatePolicyTestFixtureProject(t)))
 }
 
-// TestEmitPolicyTestsRunGreen prova o alvo de conclusão desta fatia de H4
-// (mesmo espírito de TestEmitSagaTestsRunGreen): roda `go test ./...` de
-// VERDADE sobre o projeto gerado — os 2 func TestRefundAllOnEventCancelled_*
-// gerados a partir do *.test.ds SÃO os testes que rodam aqui — a prova mais
-// direta possível de que Collection[T]/BuiltinLowerer (Parte A, camada 3),
-// o seam de Dispatcher de "emit" (Parte A) e o "then { emitted ... }" desta
-// fatia (Parte B) produzem Go que corretamente prova cada cenário: o
-// predicado "t.eventId == event.id" FILTRA de verdade (3 de 4 tickets no
-// 1º cenário, 0 de 1 no 2º) e cada RefundRequested publicado é observado
-// pelo coletor de teste.
+// TestEmitPolicyTestsRunGreen prova o alvo de conclusão desta fatia de H4,
+// agora sobre a fixture canônica des-adaptada por I6.2 (mesmo espírito de
+// TestEmitSagaTestsRunGreen): roda `go test ./...` de VERDADE sobre o
+// projeto gerado — os 2 func TestRefundAllOnEventCancelled_* gerados a
+// partir do *.test.ds SÃO os testes que rodam aqui — a prova mais direta
+// possível de que Collection[T]/BuiltinLowerer (Parte A, camada 3), o seam
+// de Dispatcher de "emit" (Parte A), "distinct" (I6.1) e o "then { emitted
+// ... }" desta fatia (Parte B) produzem Go que corretamente prova cada
+// cenário: o predicado "t.eventId == event.id and t.status ==
+// TicketStatus.Sold" filtra de verdade, "soldTickets.distinct(t =>
+// t.orderId)" agrupa os 3 tickets do 1º cenário (2 sob "O1", 1 sob "O2") em
+// exatamente 2 orderId distintos — 2 RefundRequested, não 3 — e o 2º cenário
+// prova a metade vazia (0 de 1 ticket casa, 0 reembolsos).
 func TestEmitPolicyTestsRunGreen(t *testing.T) {
 	runGeneratedTests(t, filesToMap(generatePolicyTestFixtureProject(t)))
 }
