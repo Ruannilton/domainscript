@@ -156,7 +156,7 @@
   `id`).
   **Commit:** `feat(codegen): distinct, sum e focus (§20)`
 
-- [ ] **I6.2** Âncora 3 + des-adaptação: a fixture da Policy §7
+- [x] **I6.2** Âncora 3 + des-adaptação: a fixture da Policy §7
   (`RefundAllOnEventCancelled` com `list ... where` + `.distinct(t =>
   t.orderId)` + `for`/`emit`) na forma canônica; a fixture de §22.4 (H4,
   módulo Refunds) VOLTA ao spec — 3 tickets, 2 orders, `emitted count 2` —
@@ -168,6 +168,10 @@
   **Conclusão:** o teste gerado de §22.4 canônico roda verde sobre o projeto
   gerado inteiro; goldens/smoke/determinismo; wallet e shop sem regressão.
   **Commit:** `feat(codegen): Policy §7 canônica e fixtures de §22.4 des-adaptadas`
+  **Desvio remanescente:** `reason` de `RefundRequested` usa o VO wrapper
+  `RefundReason(string)` em vez do primitivo `string` cru do literal do spec
+  (§22.4) — primitivo nu é proibido no Write Side (REQ-5.1); documentado em
+  `codegen/gentest_policy_test.go` e `.claude/specs/codegen/tasks.md`.
 
 ### Fase I7 — Descida SQL (sqlite) sobre dialeto plugável
 

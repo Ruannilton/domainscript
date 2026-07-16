@@ -858,6 +858,14 @@
   Go de fato gerado, que o predicado por item filtra de verdade e que cada
   `RefundRequested` publicado é observado pelo coletor).
 
+  **Adaptação REMOVIDA em `.claude/specs/read-side/tasks.md` (I6.2):**
+  `distinct`/agrupamento fechou em I6.1 (§20, REQ-37.1) — a fixture voltou à
+  forma EXATA do spec (`soldTickets.distinct(t => t.orderId)`, 3 tickets, 2
+  orders, `emitted count 2`), removendo o "um `orderId` por ticket" acima.
+  Único desvio remanescente: `reason` de `RefundRequested` usa um VO wrapper
+  (`RefundReason(string)`) em vez do primitivo `string` cru do literal do
+  spec (§22.4) — primitivo nu é proibido no Write Side (REQ-5.1).
+
   **H4 está completo** — as sete formas de cenário do §22 (cruzando as 4
   famílias de alvo: Aggregate/UseCase/Policy-Query/Saga, mais mock/fail-step/
   property/Fixture) estão todas cobertas. Só falta H5 (fechamento).
