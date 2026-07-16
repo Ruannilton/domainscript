@@ -13,7 +13,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | transpilador (front-end, REQ-1..8) | `.claude/specs/transpilador/` | done | — |
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
-| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I7.0 |
+| read-side (REQ-33..40) | `.claude/specs/read-side/` | in-progress | I7.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -46,9 +46,21 @@ runtime, predicado falível, `orderBy`/`skip`/`take`, `load X(id).entries` +
 (I5.1) e o VO wrapper `RefundReason` no lugar do `string` cru do spec (I6.2)
 ficaram fora do escopo — desvios registrados nos `tasks.md`.
 
+Concluído: **I7.0** — seam `Dialect` (`codegen/sqlrt/dialect.go.txt`:
+`Placeholder`/`CreateEventsTable`/`CreateCollectionTable`/`LimitOffset`,
+`SQLiteDialect`), consumido por `eventstore.go.txt`/`uow.go.txt`/
+`twophase.go.txt` (nenhuma string SQL específica de banco fora do dialeto);
+registro único de provider (`sqlProviders`/`recognizedSQLProvider`,
+`codegen/sql_wiring.go`) substitui as três comparações duplicadas de
+`db.Provider == "sqlite"` (`programNeedsSQLAdapter`, `usecase2PCPlan` em
+`decl_usecase.go`, driver/versão em `EmitGoMod`); prova de plugabilidade em
+`codegen/sql_dialect_test.go` (`TestSQLEventStoreDialectPluggability`) — a
+mesma suíte comportamental roda contra `SQLiteDialect` (`?`) e um dialeto de
+teste posicional (`$N`, nunca registrado como provider real) sobre o mesmo
+driver sqlite.
+
 Pendente, na ordem do plano:
 
-- [ ] **I7.0** — Seam `Dialect` + registro único de provider (REQ-40).
 - [ ] **I7.1** — Contraparte de `Collection[T]` sobre tabela no adapter
       sqlite.
 - [ ] **I8.1** — Revisão contra a DoD (`.claude/specs/read-side/requirements.md` §5); atualizar

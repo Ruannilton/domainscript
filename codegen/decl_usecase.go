@@ -369,7 +369,10 @@ func usecase2PCPlan(decl *ast.UseCaseDecl, aggregates map[string]*ast.AggregateD
 	seen := make(map[string]bool, len(touched))
 	for _, agg := range touched {
 		db := prog.DatabaseOfAggregate(agg)
-		if db == nil || !db.SupportsXA || !strings.EqualFold(db.Provider, "sqlite") {
+		if db == nil || !db.SupportsXA {
+			return nil, false
+		}
+		if _, ok := recognizedSQLProvider(db.Provider); !ok {
 			return nil, false
 		}
 		seen[db.Name] = true

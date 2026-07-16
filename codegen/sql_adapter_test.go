@@ -372,11 +372,11 @@ func TestPerformDebitPersistsToRealSQLiteAndQueryReadsItBack(t *testing.T) {
 	defer db.Close()
 
 	ctx := context.Background()
-	store, err := sqlruntime.NewEventStore(ctx, db, EventRegistry())
+	store, err := sqlruntime.NewEventStore(ctx, db, EventRegistry(), sqlruntime.SQLiteDialect())
 	if err != nil {
 		t.Fatalf("NewEventStore: %v", err)
 	}
-	uow = sqlruntime.NewUnitOfWork(db, EventRegistry())
+	uow = sqlruntime.NewUnitOfWork(db, EventRegistry(), sqlruntime.SQLiteDialect())
 
 	callerCtx := runtime.WithCaller(ctx, behaviorCaller{id: "acc-1"})
 	cmd := Debit{AccountId: AccountId("acc-1"), Amount: EntryAmount(150)}
@@ -471,7 +471,7 @@ func openStores(t *testing.T) (mainStore, sideStore *sqlruntime.EventStore) {
 		t.Fatalf("Open(MainDb): %v", err)
 	}
 	t.Cleanup(func() { mainDB.Close() })
-	mainStore, err = sqlruntime.NewEventStore(ctx, mainDB, EventRegistry())
+	mainStore, err = sqlruntime.NewEventStore(ctx, mainDB, EventRegistry(), sqlruntime.SQLiteDialect())
 	if err != nil {
 		t.Fatalf("NewEventStore(MainDb): %v", err)
 	}
@@ -481,7 +481,7 @@ func openStores(t *testing.T) (mainStore, sideStore *sqlruntime.EventStore) {
 		t.Fatalf("Open(SideDb): %v", err)
 	}
 	t.Cleanup(func() { sideDB.Close() })
-	sideStore, err = sqlruntime.NewEventStore(ctx, sideDB, EventRegistry())
+	sideStore, err = sqlruntime.NewEventStore(ctx, sideDB, EventRegistry(), sqlruntime.SQLiteDialect())
 	if err != nil {
 		t.Fatalf("NewEventStore(SideDb): %v", err)
 	}

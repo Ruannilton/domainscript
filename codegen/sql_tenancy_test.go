@@ -65,7 +65,7 @@ func openTestStore(t *testing.T) (*sqlruntime.EventStore, *sql.DB) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	store, err := sqlruntime.NewEventStore(context.Background(), db, testRegistry())
+	store, err := sqlruntime.NewEventStore(context.Background(), db, testRegistry(), sqlruntime.SQLiteDialect())
 	if err != nil {
 		t.Fatalf("NewEventStore: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestSQLEventStoreRowLevelTenancy(t *testing.T) {
 func buildSQLRuntimeProjectFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	files := make(map[string][]byte)
-	files["go.mod"] = codegen.EmitGoMod(codegen.Options{ModulePath: "domainscript/generated"}, "", true, false, false)
+	files["go.mod"] = codegen.EmitGoMod(codegen.Options{ModulePath: "domainscript/generated"}, "", []string{"sqlite"}, false, false)
 
 	rtSrcs, err := rtsrc.Sources()
 	if err != nil {

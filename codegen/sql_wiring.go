@@ -12,23 +12,79 @@ import (
 	"domainscript/program"
 )
 
-// programNeedsSQLAdapter devolve true se algum Database, em qualquer módulo
-// do programa, declara provider "sqlite" (case-insensitive) — o único
-// provider real que este gerador sabe montar (program.Database.Provider,
-// G1). Usado por Generate (codegen.go) para decidir, uma única vez por
-// projeto: (a) emitir sqlruntime/*.go (codegen/sqlrt) e (b) acrescentar o
-// require do driver ao go.mod (EmitGoMod) — em QUALQUER outro caso (nenhum
-// Database, ou só providers não reconhecidos como "postgres") devolve false,
-// e o projeto gerado permanece exatamente como antes de G1 (NFR-12).
-func programNeedsSQLAdapter(prog *program.Program) bool {
+// sqlProvider é uma entrada do registro único de provider SQL real que este
+// gerador sabe montar (I7.0, REQ-40.2, §design read-side 3.9a): tudo que se
+// precisa saber sobre um banco para (a) exigi-lo em go.mod, (b) escolher a
+// versão mínima de Go e (c) instanciar o Dialect certo no wiring gerado.
+// Adicionar um banco novo é implementar seu Dialect (codegen/sqlrt) +
+// acrescentar uma entrada aqui — nenhuma outra mudança em lowering,
+// decl_*.go ou no runtime núcleo.
+type sqlProvider struct {
+	driverModule  string // caminho do módulo Go a exigir em go.mod (EmitGoMod)
+	driverVersion string
+	minGoVersion  string // versão mínima de Go que o driver exige (EmitGoMod)
+	dialectCtor   string // nome do construtor Dialect exportado por sqlruntime, ex. "SQLiteDialect"
+}
+
+// sqlProviders é o registro único de provider (REQ-40.2): o ÚNICO lugar do
+// gerador que associa um Database.Provider a um adapter real. Antes desta
+// task o mesmo reconhecimento ("sqlite", case-insensitive) estava repetido
+// em programNeedsSQLAdapter e em usecase2PCPlan (decl_usecase.go) — ambos
+// agora consultam recognizedSQLProvider.
+var sqlProviders = map[string]sqlProvider{
+	"sqlite": {
+		driverModule:  sqliteDriverModule,
+		driverVersion: sqliteDriverVersion,
+		minGoVersion:  sqliteMinGoVersion,
+		dialectCtor:   "SQLiteDialect",
+	},
+}
+
+// recognizedSQLProvider devolve a entrada do registro para provider
+// (case-insensitive) e ok=true quando é um adapter real que este gerador
+// sabe montar — a única comparação de string contra program.Database.Provider
+// em todo o gerador (REQ-40.2).
+func recognizedSQLProvider(provider string) (sqlProvider, bool) {
+	p, ok := sqlProviders[strings.ToLower(provider)]
+	return p, ok
+}
+
+// activeSQLProviders devolve, em ordem alfabética (determinismo, NFR-13), as
+// chaves de sqlProviders efetivamente usadas por prog: cada Database, em
+// qualquer módulo, cujo Provider (case-insensitive) resolve via
+// recognizedSQLProvider — deduplicado (dois Database com o mesmo provider
+// contam uma vez só). EmitGoMod (project.go, REQ-40.2) consome isto para
+// exigir o driver/versão mínima de Go de CADA provider ativo — nunca
+// hardcoding "sqlite": um provider novo (uma entrada nova em sqlProviders)
+// passa a aparecer em go.mod automaticamente quando um programa o usa, sem
+// nenhuma mudança em EmitGoMod.
+func activeSQLProviders(prog *program.Program) []string {
+	seen := make(map[string]bool)
 	for _, mod := range prog.Modules {
 		for _, db := range mod.Databases {
-			if strings.EqualFold(db.Provider, "sqlite") {
-				return true
+			if _, ok := recognizedSQLProvider(db.Provider); ok {
+				seen[strings.ToLower(db.Provider)] = true
 			}
 		}
 	}
-	return false
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// programNeedsSQLAdapter devolve true se algum Database, em qualquer módulo
+// do programa, declara um provider reconhecido em sqlProviders (hoje só
+// "sqlite" — o único provider real que este gerador sabe montar,
+// program.Database.Provider, G1). Usado por Generate (codegen.go) para
+// decidir, uma única vez por projeto, se emite sqlruntime/*.go (codegen/
+// sqlrt) — em QUALQUER outro caso (nenhum Database, ou só providers não
+// reconhecidos como "postgres") devolve false, e o projeto gerado permanece
+// exatamente como antes de G1 (NFR-12).
+func programNeedsSQLAdapter(prog *program.Program) bool {
+	return len(activeSQLProviders(prog)) > 0
 }
 
 // generateSQLRuntimeFiles copia sqlrt.Sources() (verbatim, mesmo padrão de
@@ -100,6 +156,11 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 		if db == nil {
 			return fmt.Errorf("Database %s não encontrado no módulo %s (bug de geração)", dbName, moduleName)
 		}
+		provider, ok := recognizedSQLProvider(db.Provider)
+		if !ok {
+			return fmt.Errorf("Database %s: provider %q não reconhecido (bug de geração — front-end já deveria ter barrado)", dbName, db.Provider)
+		}
+
 		varPrefix := strings.ToLower(dbName[:1]) + dbName[1:]
 		dbVar := varPrefix + "DB"
 		storeVar := varPrefix + "Store"
@@ -107,7 +168,7 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 
 		e.Line("%s, err := %s.Open(%s)", dbVar, sqlRuntimeAlias, strconv.Quote(db.DSN))
 		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
-		e.Line("%s, err := %s.NewEventStore(%s.Background(), %s, %s.EventRegistry())", storeVar, sqlRuntimeAlias, ctxAlias, dbVar, pkgAlias)
+		e.Line("%s, err := %s.NewEventStore(%s.Background(), %s, %s.EventRegistry(), %s.%s())", storeVar, sqlRuntimeAlias, ctxAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor)
 		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
 	}
 

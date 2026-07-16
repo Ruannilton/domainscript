@@ -33,13 +33,19 @@ type EventFactory = func() runtime.Event
 type EventStore struct {
 	db       *sql.DB
 	registry map[string]EventFactory
+	dialect  Dialect
 }
 
 // NewEventStore embrulha db (já aberto via Open) como um runtime.EventStore,
 // decodificando eventos via registry, e garante que a tabela "events" existe
-// (idempotente — seguro chamar a cada início de processo).
-func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFactory) (*EventStore, error) {
-	s := &EventStore{db: db, registry: registry}
+// (idempotente — seguro chamar a cada início de processo). dialect (I7.0,
+// REQ-40.1) decide todo o SQL específico de banco — DDL e placeholders —
+// consumido daqui e de appendWithinTx/loadWithinQuerier.
+func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFactory, dialect Dialect) (*EventStore, error) {
+	if dialect == nil {
+		return nil, fmt.Errorf("sqlruntime: dialect não pode ser nil")
+	}
+	s := &EventStore{db: db, registry: registry, dialect: dialect}
 	if err := s.ensureSchema(ctx); err != nil {
 		return nil, err
 	}
@@ -60,16 +66,7 @@ func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFac
 // SEMÂNTICA de isolamento, só a rotulagem; documentado como simplificação
 // desta task, não uma limitação de segurança.
 func (s *EventStore) ensureSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS events (
-	aggregate_id TEXT NOT NULL,
-	sequence     INTEGER NOT NULL,
-	event_type   TEXT NOT NULL,
-	payload      TEXT NOT NULL,
-	recorded_at  TIMESTAMP NOT NULL,
-	tenant_id    TEXT NOT NULL DEFAULT '',
-	PRIMARY KEY (aggregate_id, sequence)
-)`)
+	_, err := s.db.ExecContext(ctx, s.dialect.CreateEventsTable())
 	if err != nil {
 		return fmt.Errorf("sqlruntime: criar tabela events: %w", err)
 	}
@@ -90,8 +87,8 @@ func (s *EventStore) Append(ctx context.Context, aggregateID string, events []ru
 	if err != nil {
 		return fmt.Errorf("sqlruntime: Append: begin: %w", err)
 	}
-	if err := appendWithinTx(ctx, tx, aggregateID, events); err != nil {
-		_ = tx.Rollback()
+	defer tx.Rollback()
+	if err := appendWithinTx(ctx, tx, s.dialect, aggregateID, events); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -107,7 +104,7 @@ func (s *EventStore) Append(ctx context.Context, aggregateID string, events []ru
 // (G5, §13.2) devolve (nil, runtime.ErrNotFound) em vez de vazio-e-ok — ver
 // a doc de loadWithinQuerier/tenantVisible.
 func (s *EventStore) Load(ctx context.Context, aggregateID string) ([]runtime.Event, error) {
-	return loadWithinQuerier(ctx, s.db, s.registry, aggregateID)
+	return loadWithinQuerier(ctx, s.db, s.dialect, s.registry, aggregateID)
 }
 
 // tenantIDOf/tenantVisible espelham as funções homônimas não-exportadas do
@@ -145,10 +142,11 @@ func tenantVisible(ctx context.Context, tag string) bool {
 // gravada (lida abaixo via MAX(tenant_id), constante entre linhas do mesmo
 // aggregate_id), nunca a de ctx nessa chamada: um stream não muda de dono no
 // meio da vida, mesma regra de memoryEventStore.Append.
-func appendWithinTx(ctx context.Context, tx *sql.Tx, aggregateID string, events []runtime.Event) error {
+func appendWithinTx(ctx context.Context, tx *sql.Tx, dialect Dialect, aggregateID string, events []runtime.Event) error {
 	var next int64
 	var existingTenant sql.NullString
-	row := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0), MAX(tenant_id) FROM events WHERE aggregate_id = ?`, aggregateID)
+	nextSeqQuery := fmt.Sprintf(`SELECT COALESCE(MAX(sequence), 0), MAX(tenant_id) FROM events WHERE aggregate_id = %s`, dialect.Placeholder(1))
+	row := tx.QueryRowContext(ctx, nextSeqQuery, aggregateID)
 	if err := row.Scan(&next, &existingTenant); err != nil {
 		return fmt.Errorf("sqlruntime: Append: próxima sequência: %w", err)
 	}
@@ -156,6 +154,12 @@ func appendWithinTx(ctx context.Context, tx *sql.Tx, aggregateID string, events 
 	if next == 0 {
 		tenantID = tenantIDOf(ctx)
 	}
+
+	insertQuery := fmt.Sprintf(
+		`INSERT INTO events (aggregate_id, sequence, event_type, payload, recorded_at, tenant_id) VALUES (%s, %s, %s, %s, %s, %s)`,
+		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3),
+		dialect.Placeholder(4), dialect.Placeholder(5), dialect.Placeholder(6),
+	)
 
 	now := time.Now().UTC()
 	for _, ev := range events {
@@ -165,8 +169,7 @@ func appendWithinTx(ctx context.Context, tx *sql.Tx, aggregateID string, events 
 		if err != nil {
 			return fmt.Errorf("sqlruntime: Append: encode %s: %w", ev.EventType(), err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO events (aggregate_id, sequence, event_type, payload, recorded_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		if _, err := tx.ExecContext(ctx, insertQuery,
 			aggregateID, next, ev.EventType(), string(payload), now, tenantID,
 		); err != nil {
 			return fmt.Errorf("sqlruntime: Append: insert %s: %w", ev.EventType(), err)
@@ -195,10 +198,12 @@ type querier interface {
 // do stream (mesmo raciocínio do memoryEventStore.Load: nunca vazio-e-ok
 // para um stream que EXISTE mas pertence a outro tenant — ver a doc do tipo
 // EventStore em rtsrc/eventstore.go.txt).
-func loadWithinQuerier(ctx context.Context, q querier, registry map[string]EventFactory, aggregateID string) ([]runtime.Event, error) {
-	rows, err := q.QueryContext(ctx,
-		`SELECT sequence, event_type, payload, recorded_at, tenant_id FROM events WHERE aggregate_id = ? ORDER BY sequence`,
-		aggregateID)
+func loadWithinQuerier(ctx context.Context, q querier, dialect Dialect, registry map[string]EventFactory, aggregateID string) ([]runtime.Event, error) {
+	selectQuery := fmt.Sprintf(
+		`SELECT sequence, event_type, payload, recorded_at, tenant_id FROM events WHERE aggregate_id = %s ORDER BY sequence`,
+		dialect.Placeholder(1),
+	)
+	rows, err := q.QueryContext(ctx, selectQuery, aggregateID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlruntime: Load: %w", err)
 	}
