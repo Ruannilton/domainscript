@@ -43,7 +43,7 @@
     de I7.0).
   - c. Teste: fixture com provider fake ⇒ require esperado; sem ⇒ inalterado
     (NFR-21).
-- [ ] **J0.3** Gate de cópia de fontes.
+- [x] **J0.3** Gate de cópia de fontes.
   - a. `generateCategoryRuntimeFiles(dir)` genérico (espelha
     `generateSQLRuntimeFiles`), chamado por `Generate` só quando a categoria
     tem provider ativo. (REQ-46.3, §design 2.3).
