@@ -2,178 +2,248 @@
 
 > Documento 3 de 3. Consome `design.md` (que consome `requirements.md`,
 > REQ-41..48/NFR-21..24, Marco **J**). Cada task cita o REQ que satisfaz
-> `(REQ-n)` e a seção do design `(§design x)`, é verticalmente fatiada
-> (adapter → registro → wiring → teste de UMA categoria de ponta a ponta) e
-> independentemente verificável — **uma PR por task concluída** (CLAUDE.md).
+> `(REQ-n)` e a seção do design `(§design x)`, é verticalmente fatiada e
+> independentemente verificável. **Uma PR por task de nível 2** (ex. J1.1);
+> subtasks (J1.1.a) são passos internos da mesma PR, não PRs separadas.
 
 ## Como ler este plano
 
-- `[ ]` pendente, `[x]` concluída. Ordem respeita dependências (ver o mapa no
-  fim). Cada categoria é um vertical slice fechado: dá para parar depois de
-  qualquer Jn com o repositório verde e um provider real a mais.
-- **Teste por task:** golden + smoke-compile + unit de dialeto/serialização
-  (sem infra) são a Definition of Done de cada task (NFR-17/24). O teste de
-  integração (build tag `integration`) entra junto mas **pulado** por default.
-- **NFR-21 em toda task:** o exemplo sem o provider tem que continuar
-  byte-idêntico — todo slice inclui a asserção "categoria não declarada ⇒ nada
-  em go.mod, nada copiado".
+- `[ ]` pendente, `[x]` concluída. Ordem respeita dependências (mapa no fim).
+- **Granularidade:** cada task de nível 2 é uma unidade de PR pequena e
+  fechada; as subtasks `.a/.b/.c` são os passos ordenados dentro dela (o que
+  escrever primeiro, o que testar), pensados para serem commit-áveis em
+  sequência se preferir, mas entregues numa PR só.
+- **DoD de toda subtask:** golden + smoke-compile + unit sem infra (NFR-17/24).
+  Integração (`//go:build integration`) entra junto, **pulada** por default.
+- **NFR-21 em toda task:** o mesmo programa sem o provider ⇒ nada em go.mod,
+  nada copiado, bytes idênticos ao de hoje — asserção explícita em cada slice.
+- **Riscos R1–R7** (§design 7) estão distribuídos como subtasks marcadas
+  `(R#)` — são pré-condições auditadas no código, não descobertas em runtime.
 
 ## Marco J — Providers Reais de Infraestrutura
 
 ### Fase J0 — Registro de provider por categoria (peça transversal, REQ-46)
 
-- [ ] **J0.1** `codegen/provider_registry.go` (novo): tipo `providerDep`
-  `{module, version, minGo, adapterDir, ctor}` e os mapas vazios-por-enquanto
-  `channelProviders`/`cacheProviders`/`rateLimitProviders`/`fileProviders`;
-  `activeProviderDeps(prog) []providerDep` que varre o programa e devolve as
-  deps ativas dedup+ordenadas (NFR-23) — espelhando `activeSQLProviders`.
-  (REQ-46.1, §design 2.1). Teste: registro vazio ⇒ `activeProviderDeps` vazio
-  ⇒ go.mod sem deps (NFR-21).
-- [ ] **J0.2** `EmitGoMod` (`codegen/project.go`) passa a exigir cada
-  `providerDep` ativa de todas as categorias, além de `activeSQLProviders`;
-  `go` diretiva sobe para `maxGoVersion` de todos os providers ativos (reusa o
-  helper de I7.0). (REQ-46.2, §design 2.2). Teste: fixture com um provider fake
-  registrado ⇒ require esperado, ordenado; sem ⇒ inalterado.
-- [ ] **J0.3** Gate de cópia de fontes: `generateCategoryRuntimeFiles(dir)`
-  genérico (espelha `generateSQLRuntimeFiles`) chamado por `Generate` só quando
-  a categoria tem provider ativo. (REQ-46.3, §design 2.3). Teste: sem provider
-  ativo ⇒ nenhum dir copiado; projeto byte-idêntico ao atual (NFR-21/23).
+- [ ] **J0.1** Tipo e mapas do registro.
+  - a. `codegen/provider_registry.go` (novo): tipo `providerDep {module,
+    version, minGo, adapterDir, ctor}` + mapas vazios `channelProviders`/
+    `cacheProviders`/`rateLimitProviders`/`fileProviders`. (REQ-46.1, §design
+    2.1).
+  - b. `activeProviderDeps(prog) []providerDep`: varre o programa por categoria
+    e coleta as deps ativas. (REQ-46.1).
+  - c. **(R5)** Dedup por `module` (um `require`) **e** por `adapterDir` (uma
+    cópia de fontes), mesmo provider aparecendo em 2 categorias (redis em
+    Cache+RateLimit). Ordenação estável (NFR-23).
+  - d. Teste: registro vazio ⇒ `activeProviderDeps` vazio; dois mapas com o
+    MESMO módulo/dir ⇒ uma entrada só.
+- [ ] **J0.2** `EmitGoMod` consome o registro.
+  - a. `EmitGoMod` (`project.go`) itera `activeProviderDeps` além de
+    `activeSQLProviders`; `require` ordenado por módulo. (REQ-46.2, §design 2.2).
+  - b. `go` diretiva sobe para `maxGoVersion` de todos os ativos (reusa helper
+    de I7.0).
+  - c. Teste: fixture com provider fake ⇒ require esperado; sem ⇒ inalterado
+    (NFR-21).
+- [ ] **J0.3** Gate de cópia de fontes.
+  - a. `generateCategoryRuntimeFiles(dir)` genérico (espelha
+    `generateSQLRuntimeFiles`), chamado por `Generate` só quando a categoria
+    tem provider ativo. (REQ-46.3, §design 2.3).
+  - b. Teste: sem provider ⇒ nenhum dir copiado; projeto byte-idêntico ao atual
+    (NFR-21/23).
 
 ### Fase J1 — Postgres como Database provider real (REQ-41)
 
-- [ ] **J1.1** `PostgresDialect` em `codegen/sqlrt` (`dialect_postgres.go.txt`
-  ou struct em `dialect.go.txt`): `Placeholder` `$N`, `LimitOffset` `LIMIT/
-  OFFSET`, DDL `events`/collection com `text`/`jsonb`, `WhereEq` via
-  `payload->>'campo' = $N`. (REQ-41.1/41.4, §design 3.1). Teste: unit do dialeto
-  (strings SQL esperadas) reusando o padrão de `sql_dialect_test.go`.
-- [ ] **J1.2** `open_postgres.go.txt`: `Open(dsn) (*sql.DB, error)` via
-  `sql.Open("pgx", dsn)` + `PingContext` (fail-closed). Entrada
-  `sqlProviders["postgres"]` (pgx module/versão/minGo/`"PostgresDialect"`).
-  (REQ-41.2/41.3/41.5, §design 3.1). Teste: `activeSQLProviders` reconhece
-  postgres; `EmitGoMod` exige pgx; sem postgres ⇒ sem pgx (NFR-21).
-- [ ] **J1.3** Golden + smoke: fixture single-module com `provider: "postgres"`
-  gera, o projeto com `sqlruntime` presente builda + `go vet`a (REQ-41,
-  NFR-17). Teste de integração `//go:build integration` guardado por `PG_URL`:
-  persistir+reler um Aggregate no postgres == in-memory (NFR-22/24).
+- [ ] **J1.1** `PostgresDialect` (só strings SQL, sem driver ainda).
+  - a. `dialect_postgres.go.txt` (ou struct em `dialect.go.txt`): `Placeholder`
+    `$N`, `LimitOffset` `LIMIT/OFFSET`. (REQ-41.1, §design 3.1).
+  - b. DDL `events`/collection com `text`/`jsonb`; `WhereEq` via
+    `payload->>'campo' = $N`. (REQ-41.4).
+  - c. Teste unit do dialeto (strings esperadas), reusando o padrão de
+    `sql_dialect_test.go` (o dialeto `$1` sobre sqlite já existe lá).
+- [ ] **J1.2** Driver + registro + go.mod.
+  - a. `open_postgres.go.txt`: `Open(dsn) (*sql.DB, error)` via
+    `sql.Open("pgx", dsn)`. (REQ-41.3).
+  - b. **(R1-parte)** `PingContext` com `context.WithTimeout` curto
+    (fail-closed, nunca `Background()`). (REQ-47.2, §design 3.1).
+  - c. Entrada `sqlProviders["postgres"]` (pgx module/versão/minGo/
+    `"PostgresDialect"`). (REQ-41.2).
+  - d. Teste: `activeSQLProviders` reconhece postgres; `EmitGoMod` exige pgx;
+    sem postgres ⇒ sem pgx (NFR-21).
+- [ ] **J1.3** **(R1)** Wiring lê conexão por `env(...)`, não por `db.DSN`.
+  - a. O wiring de provider real (`emitXADatabaseWiring` e/ou o caminho
+    single-DB) passa a lowerizar `connection: env("X")` de `db.Decl.Entries`
+    via `decl_io.go:envCallGo` — **nunca** `strconv.Quote(db.DSN)` (que é `""`
+    para env). (§design 3.1, R1).
+  - b. Teste: fixture postgres com `connection: env("PG_URL")` ⇒ wiring emite
+    `os.Getenv("PG_URL")`, não string vazia.
+- [ ] **J1.4** Golden + smoke + integração.
+  - a. Fixture single-module `provider: "postgres"` gera; projeto builda + `go
+    vet`a sobre bytes em disco (NFR-17).
+  - b. Integração `//go:build integration` guardada por `PG_URL`:
+    persistir+reler um Aggregate no postgres == in-memory (NFR-22/24).
 
-### Fase J2 — Outbox durável (REQ-42) — depende de J1 (usa o Dialect SQL)
+### Fase J2 — Outbox durável (REQ-42) — depende de J1
 
-- [ ] **J2.1** DDL + SQL da tabela `outbox` como métodos do `Dialect`
-  (`InsertOutbox`/`ScanUndelivered`/`MarkDelivered`), implementados em
-  Sqlite e PostgresDialect. (REQ-42.4, §design 3.2). Teste: unit dos dois
-  dialetos.
-- [ ] **J2.2** `DurableOutbox` em `rtsrc/outbox.go.txt` (ao lado de
-  `memoryOutbox`, MESMA interface `Outbox`): enqueue dentro da tx do UnitOfWork
-  SQL (atômico store+outbox), relay `Start(ctx)` com backoff que varre não
-  entregues, chama handler, marca entregue; falha ⇒ re-tenta (at-least-once).
-  (REQ-42.1/42.2/42.3, §design 3.2). Teste: unit do relay com um `*sql.DB`
-  sqlite em memória (`:memory:` — sem infra externa), incl. crash simulado
-  (não marca ⇒ re-entrega).
-- [ ] **J2.3** Seleção do Outbox no wiring: `NewDurableOutbox(db, dialect,
-  dispatcher)` quando o módulo tem Database real, senão `NewOutbox(dispatcher)`
-  de hoje (REQ-42.5). `Start(ctx)` do relay no `main.go` gerado. Golden +
-  smoke; sem Database real ⇒ wiring byte-idêntico ao de hoje (NFR-21/23).
+- [ ] **J2.1** **(R4)** Estender o seam `runtime.Tx` para o enqueue atômico.
+  - a. Método novo no seam `runtime.Tx` (ex. `EnqueueOutbox(events []Event)
+    error`); `memoryTx` recebe no-op/stub documentado (sem outbox durável
+    in-memory). (§design 3.2, R4).
+  - b. `sqlrt.Tx.EnqueueOutbox` implementa sobre o `*sql.Tx` em mãos (mesma tx
+    do `Append`). (REQ-42.1).
+  - c. Teste: um `Run(fn)` que faz `Append`+`EnqueueOutbox` grava as duas
+    tabelas **ou nenhuma** (rollback simulado) — atomicidade.
+- [ ] **J2.2** DDL + SQL da tabela `outbox` no `Dialect`.
+  - a. `InsertOutbox`/`ScanUndelivered`/`MarkDelivered` como métodos do
+    `Dialect`, em Sqlite e PostgresDialect. (REQ-42.4).
+  - b. **(FIFO)** `ScanUndelivered` sempre com `ORDER BY id`; postgres com `FOR
+    UPDATE SKIP LOCKED`, sqlite com `LIMIT` simples. (§design 3.2).
+  - c. Teste unit dos dois dialetos (strings esperadas).
+- [ ] **J2.3** `DurableOutbox` + relay.
+  - a. `DurableOutbox` em `rtsrc/outbox.go.txt` (ao lado de `memoryOutbox`,
+    MESMA interface `Outbox`): relay `Start(ctx)` com backoff, entrega, marca;
+    falha ⇒ re-tenta (at-least-once). (REQ-42.2/42.3, §design 3.2).
+  - b. Teste unit do relay com `*sql.DB` sqlite `:memory:` (sem infra), incl.
+    crash simulado (não marca ⇒ re-entrega).
+- [ ] **J2.4** Seleção + wiring.
+  - a. `NewDurableOutbox(db, dialect, dispatcher)` quando o módulo tem Database
+    real, senão `NewOutbox(dispatcher)` de hoje; `Start(ctx)` no `main.go`.
+    (REQ-42.5).
+  - b. Golden + smoke; sem Database real ⇒ wiring byte-idêntico (NFR-21/23).
 
 ### Fase J3 — RabbitMQ como transporte de canal cross-process (REQ-43)
 
-- [ ] **J3.1** `codegen/amqprt/` (novo, espelha `sqlrt/`): `rabbitmq.go.txt`
-  com `rabbitmqChannel` implementando `ChannelTransport` (`Subscribe`/`Publish`,
-  exchange topic, routing/consumer key de `EventType`+orderBy, prefetch =
-  concurrency, ack/nack). `embed.go`/`Sources()`. Entrada
-  `channelProviders["rabbitmq"]` (amqp091-go). (REQ-43.1/43.3/43.4, §design 3.3).
-  Teste: unit do envelope (serialize→deserialize via EventRegistry), sem infra.
-- [ ] **J3.2** `channel.go`: `channelProviderKind(ch)` consulta
-  `channelProviders`; produtor (`generateCmdMainFile`) e consumidor
-  (`emitPolicyWireFunc`) trocam `NewQueueChannel` por `NewRabbitMQChannel(url,
-  cfg, keyFunc)` quando `provider: "rabbitmq"`; `via: queue` sem provider ⇒
-  in-memory; `grpc/http/stream` ⇒ erro de sempre. (REQ-43.2/43.5, §design 3.3).
-  Golden + smoke sobre fixture multi-service com o canal rabbitmq.
-- [ ] **J3.3** Integração `//go:build integration` guardada por `AMQP_URL`:
-  publicar num service e consumir noutro processo == entrega in-process
-  (paridade cross-process, NFR-22/24).
+- [ ] **J3.1** Adapter `amqprt` + envelope.
+  - a. `codegen/amqprt/` (novo, espelha `sqlrt/`): `rabbitmq.go.txt` com
+    `rabbitmqChannel` implementando `ChannelTransport` (`Subscribe`/`Publish`,
+    exchange topic, prefetch = concurrency). `embed.go`/`Sources()`. (REQ-43.1).
+  - b. Envelope JSON `{eventType, payload}`; consumidor reconstrói via
+    `EventRegistry` do módulo. (§design 3.3).
+  - c. Entrada `channelProviders["rabbitmq"]` (amqp091-go).
+  - d. Teste unit do envelope (serialize→deserialize round-trip), sem infra.
+- [ ] **J3.2** **(R6)** Ordenação + poison pill.
+  - a. Routing/consumer key de `EventType`+`orderBy`; ordenação **best-effort
+    por chave** (single active consumer por partição), documentada como paridade
+    aceitável com o in-memory (não ordem total). (REQ-43.3, R6).
+  - b. `ack` no sucesso; falha ⇒ `nack requeue=false` → DLX+retry-queue(TTL);
+    esgotado `circuitBreaker.threshold` ⇒ DLQ final. (REQ-43.4, §design 3.3).
+  - c. Teste unit da montagem de exchange/DLX/binding.
+- [ ] **J3.3** Seleção + wiring + integração.
+  - a. `channel.go`: `channelProvider(ch)` lê `provider` de `ch.Decl.Entries`
+    (R2); produtor/consumidor trocam `NewQueueChannel` por
+    `NewRabbitMQChannel(url, cfg, keyFunc)` quando `"rabbitmq"`; sem provider ⇒
+    in-memory; grpc/http/stream ⇒ erro de sempre. (REQ-43.2/43.5, R2).
+  - b. **(R1)** URL de `connection: env(...)` via `envCallGo`.
+  - c. Golden + smoke sobre fixture multi-service; integração `//go:build
+    integration` guardada por `AMQP_URL` (publicar→consumir cross-process ==
+    in-process, NFR-22/24).
 
 ### Fase J4 — Redis como backend de Cache e RateLimit (REQ-44)
 
-- [ ] **J4.1** `codegen/redisrt/` (novo): `cache.go.txt` com `redisQueryCache`
-  implementando `QueryCache` (GET/SETEX, TTL, negativo, fail-open, invalidação
-  por geração-no-prefixo). Entrada `cacheProviders["redis"]` (go-redis/v9).
-  (REQ-44.1/44.5, §design 3.4). Teste: unit com um fake/miniredis? — não;
-  unit da montagem de chave/serialização + fail-open (erro ⇒ hit=false) por
-  injeção de um client fake. Integração `REDIS_URL`.
-- [ ] **J4.2** `redisrt/ratelimit.go.txt`: `redisLimiter` implementando
-  `Limiter` com script Lua atômico (token_bucket/sliding/fixed). Entrada
-  `rateLimitProviders["redis"]`. `CheckRateLimits` reusado inalterado.
-  (REQ-44.2/44.3, §design 3.4). Teste: unit do script/chave; integração
-  `REDIS_URL` (cota cross-"réplica" == in-memory numa réplica).
-- [ ] **J4.3** Seleção no wiring: `decl_query_cache.go`/`ratelimit.go` trocam
-  o construtor in-memory pelo redis quando `Cache{backend:redis}`/`RateLimit
-  {backend:redis}`; URL de `env(...)`. (REQ-44.4). Golden + smoke; sem
-  `backend: redis` ⇒ byte-idêntico (NFR-21/23).
+- [ ] **J4.1** `redisQueryCache` (Cache §15).
+  - a. `codegen/redisrt/cache.go.txt`: implementa `QueryCache` (GET/SETEX, TTL,
+    negativo, fail-open). Entrada `cacheProviders["redis"]` (go-redis/v9).
+    (REQ-44.1/44.5, §design 3.4).
+  - b. Invalidação por geração-no-prefixo: chaves de dados COM TTL, chave de
+    geração `<ns>:gen` **sem** expiração. (§design 3.4).
+  - c. Teste unit: montagem de chave/serialização + fail-open (erro ⇒
+    hit=false) por client fake injetado.
+- [ ] **J4.2** `redisLimiter` (RateLimit §16).
+  - a. `redisrt/ratelimit.go.txt`: implementa `Limiter` via script Lua atômico
+    (token_bucket/sliding/fixed). Entrada `rateLimitProviders["redis"]`.
+    `CheckRateLimits` reusado inalterado. (REQ-44.2/44.3).
+  - b. Teste unit do script/chave; integração `REDIS_URL`.
+- [ ] **J4.3** **(R2/R3)** Seleção + wiring.
+  - a. `decl_query_cache.go`/`ratelimit.go`: trocam construtor in-memory pelo
+    redis quando `Cache{backend:redis}`/`RateLimit{backend:redis}` (lidos dos
+    ConfigBlocks de módulo); URL de `env(...)`. (REQ-44.4, R1).
+  - b. **(R3)** Teste de fixture confirma que `url:/connection: env(...)` nos
+    blocos `Cache{}`/`RateLimit{}` chega em `Decl.Entries` (se não chegar:
+    único ponto que tocaria o front-end ⇒ registrar desvio).
+  - c. Golden + smoke; sem `backend: redis` ⇒ byte-idêntico (NFR-21/23).
 
 ### Fase J5 — S3 como FileStorage provider real (REQ-45)
 
-- [ ] **J5.1** `codegen/s3rt/` (novo): `filestorage.go.txt` com `s3FileStorage`
-  implementando `FileStorage` (`Store`→PutObject key UUID + metadata,
-  `Load`→GetObject, `SignedURL`→presign GET real, `Delete`→DeleteObject).
-  Entrada `fileProviders["s3"]` (aws-sdk-go-v2 config/s3/presign). (REQ-45.1/
-  45.2, §design 3.5). Teste: unit da montagem de key/metadata/layout, sem
-  infra.
-- [ ] **J5.2** Seleção no wiring: `decl_filestorage.go` troca
-  `NewMemoryFileStorage` por `NewS3FileStorage(bucket, region)` quando
-  `FileStorage{provider:"s3"}`; bucket/região de `env(...)`, credenciais pela
-  cadeia AWS padrão. (REQ-45.4, §design 3.5/3.6). `FileStream` fica como desvio
-  documentado (lowering não emite, REQ-45.3). Golden + smoke; sem s3 ⇒
-  byte-idêntico. Integração `//go:build integration` guardada por `S3_BUCKET`
-  (put+get+presign+delete == in-memory, NFR-22/24).
+- [ ] **J5.1** `s3FileStorage`.
+  - a. `codegen/s3rt/filestorage.go.txt`: implementa `FileStorage`
+    (`Store`→PutObject key UUID + metadata, `Load`→GetObject,
+    `SignedURL`→presign GET real, `Delete`→DeleteObject). Entrada
+    `fileProviders["s3"]` (aws-sdk-go-v2 config/s3/presign). (REQ-45.1/45.2,
+    §design 3.5).
+  - b. `FileStream` fica como desvio documentado (lowering não emite hoje,
+    REQ-45.3).
+  - c. Teste unit da montagem de key/metadata/layout, sem infra.
+- [ ] **J5.2** **(R2)** Seleção + wiring.
+  - a. `decl_filestorage.go`: `fileStorageProvider(fs)` lê `provider` de
+    `fs.Decl.Entries` (R2); troca `NewMemoryFileStorage` por
+    `NewS3FileStorage(bucket, region)` quando `"s3"`; bucket/região de
+    `env(...)`, credenciais pela cadeia AWS padrão. (REQ-45.4, R1/R2).
+  - b. Golden + smoke; sem s3 ⇒ byte-idêntico. Integração `//go:build
+    integration` guardada por `S3_BUCKET` (put+get+presign+delete == in-memory,
+    NFR-22/24).
 
-### Fase J6 — Fixture-âncora, config/fail-closed e determinismo (REQ-47, REQ-48)
+### Fase J6 — Fixture-âncora, fail-closed e determinismo (REQ-47, REQ-48)
 
-- [ ] **J6.1** Fixture-âncora multi-service (§1.4 requirements): postgres +
-  canal rabbitmq + cache/ratelimit redis + filestorage s3 + Policy AtLeastOnce
-  sobre o Outbox durável, tudo com `connection/env(...)`. Gera, builda, `go
-  vet`a com os cinco adapters presentes (golden + smoke, REQ-48.1). Wiring
-  abre cada conexão com fail-closed (`log.Fatal`) e `defer Close()` (REQ-47).
-- [ ] **J6.2** Teste de determinismo (NFR-23): regenerar a fixture-âncora duas
-  vezes ⇒ bytes idênticos (go.mod, imports, fontes de adapter, main.go) — por
-  analogia a `TestSharedCollectionTypeDeterministic`. Teste "categoria não
-  declarada ⇒ nada" consolidado (NFR-21).
+- [ ] **J6.1** **(R7)** Fixture-âncora multi-service.
+  - a. Postgres + canal rabbitmq + cache/ratelimit redis + filestorage s3 +
+    Policy AtLeastOnce sobre o Outbox durável, tudo com `connection: env(...)`.
+    (§1.4 requirements).
+  - b. **(R7)** Estruturar cada módulo para NÃO combinar UseCase + Policy no
+    mesmo módulo (evita ISSUE-7, alheia a este ciclo — cada módulo é de UseCase
+    OU de Policy, como shop).
+  - c. Gera, builda, `go vet`a com os cinco adapters presentes (golden + smoke,
+    REQ-48.1).
+- [ ] **J6.2** **(R1)** Wiring multi-recurso fail-closed com `run() error`.
+  - a. O `main.go`-âncora gera o corpo num `func run() error` (cada passo
+    `return err`, `defer Close()` no unwind, `main()` faz o `log.Fatal` único) —
+    não vaza recurso já aberto se o próximo falhar. (REQ-47.2/47.3, §design 3.6).
+  - b. Teste: smoke confirma a forma `run() error` + `defer Close()` por
+    recurso.
+- [ ] **J6.3** Determinismo + NFR-21 consolidado.
+  - a. Regenerar a fixture-âncora 2x ⇒ bytes idênticos (go.mod, imports, fontes
+    de adapter, main.go) — por analogia a
+    `TestSharedCollectionTypeDeterministic`. (NFR-23).
+  - b. Teste "categoria não declarada ⇒ nada em go.mod, nada copiado" (NFR-21).
 
 ### Fase J7 — Fechamento do ciclo (REQ-48.4, DoD)
 
-- [ ] **J7.1** Revisão contra a DoD (requirements §5): os cinco providers reais
-  e opt-in, go.mod exato, wallet/shop sem regressão (NFR-19), três camadas de
-  teste no lugar (integração pulada sem infra, NFR-24). Atualizar a doc dos
-  exemplos que marcavam esses providers como decorativos (ex.
-  `docs/examples/pizzeria` README — postgres/rabbitmq deixam de ser "só
-  rótulo"). Atualizar `.claude/specs/codegen/gaps.md` (G-4 parcialmente fechado
-  — cinco categorias do recorte), `.claude/issues.md` (ISSUE-3 idem, com o
-  restante de G-4 ainda aberto), `.claude/state.md`, `README.md`/`CLAUDE.md`.
-  **Marco J — Providers Reais — fechado (recorte de 5).**
+- [ ] **J7.1** Revisão contra a DoD + atualização de docs.
+  - a. Conferir DoD (requirements §5): cinco providers reais e opt-in, go.mod
+    exato, wallet/shop sem regressão (NFR-19), três camadas de teste
+    (integração pulada sem infra, NFR-24).
+  - b. Atualizar a doc dos exemplos que marcavam esses providers como
+    decorativos (`docs/examples/pizzeria` README — postgres/rabbitmq deixam de
+    ser "só rótulo").
+  - c. Atualizar `.claude/specs/codegen/gaps.md` (G-4 parcialmente fechado — 5
+    categorias), `.claude/issues.md` (ISSUE-3 idem, restante de G-4 aberto),
+    `.claude/state.md`, `README.md`/`CLAUDE.md`.
+  - **Marco J — Providers Reais — fechado (recorte de 5).**
 
 ## Mapa de Dependências
 
 ```
-J0 (registro transversal) ──┬─▶ J1 (postgres) ──▶ J2 (outbox durável, usa Dialect+uow SQL)
+J0 (registro transversal) ──┬─▶ J1 (postgres) ──▶ J2 (outbox durável, usa Dialect+Tx SQL)
                             ├─▶ J3 (rabbitmq)
                             ├─▶ J4 (redis cache/ratelimit)
                             └─▶ J5 (s3)
-J1..J5 ──▶ J6 (fixture-âncora + determinismo) ──▶ J7 (fechamento)
+J1..J5 ──▶ J6 (fixture-âncora + fail-closed + determinismo) ──▶ J7 (fechamento)
 ```
 
-J1–J5 são independentes entre si depois de J0 (podem ser feitas/PR-adas em
-qualquer ordem), exceto J2 que depende de J1 (o Outbox durável reusa o Dialect
-SQL e a tx do UnitOfWork SQL). J6 exige todas; J7 fecha.
+J1–J5 são independentes entre si depois de J0 (qualquer ordem / PRs paralelas),
+exceto **J2 depende de J1** (o Outbox durável reusa o Dialect SQL e a tx do
+UnitOfWork SQL — e a extensão do seam `Tx`, J2.1). J6 exige todas; J7 fecha.
+Dentro de cada Jn.x, as subtasks `.a/.b/.c` são ordenadas (implementar antes de
+testar; seam antes de wiring).
 
 ## Rastreabilidade REQ → Tasks
 
 | REQ | Tema | Tasks |
 |---|---|---|
-| REQ-41 | Postgres (Database) | J1.1, J1.2, J1.3 |
-| REQ-42 | Outbox durável | J2.1, J2.2, J2.3 |
+| REQ-41 | Postgres (Database) | J1.1, J1.2, J1.3, J1.4 |
+| REQ-42 | Outbox durável | J2.1, J2.2, J2.3, J2.4 |
 | REQ-43 | RabbitMQ (canal) | J3.1, J3.2, J3.3 |
 | REQ-44 | Redis (Cache+RateLimit) | J4.1, J4.2, J4.3 |
 | REQ-45 | S3 (FileStorage) | J5.1, J5.2 |
 | REQ-46 | Registro + go.mod opt-in | J0.1, J0.2, J0.3 |
-| REQ-47 | Config env + fail-closed + wiring | J1.2, J2.3, J3.2, J4.3, J5.2, J6.1 |
-| REQ-48 | Teste em 3 camadas | cada Jn.\* + J6, J7 |
+| REQ-47 | Config env + fail-closed + wiring | J1.2, J1.3, J2.4, J3.3, J4.3, J5.2, J6.1, J6.2 |
+| REQ-48 | Teste em 3 camadas | cada Jn.\* + J6.3, J7.1 |
 | NFR-21..24 | transversais | todas |
+| R1..R7 | riscos auditados (§design 7) | J1.3, J2.1, J3.2/3.3, J4.3, J5.2, J6.1/6.2, J0.1 |

@@ -135,7 +135,9 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   created_at, delivered_at NULL, attempts)`. Enfileirar acontece **dentro da
   mesma tx** que grava os eventos de negócio no EventStore SQL (o UnitOfWork
   SQL já abre/commita uma tx — o INSERT no outbox entra nela: atomicidade
-  store+outbox, REQ-42.1).
+  store+outbox, REQ-42.1). **Isso exige estender o seam `runtime.Tx`** (hoje só
+  `Append`/`Load`) com um `EnqueueOutbox` que o `sqlrt.Tx` implementa sobre seu
+  `*sql.Tx` — ver R4 em §7; é a primeira subtask de J2, antes do relay.
 - **`DurableOutbox`** (`outbox.go.txt`, ao lado de `memoryOutbox`, MESMA
   interface `Outbox`): um relay que, num loop com backoff, seleciona um lote de
   não entregues, chama o(s) handler(s) inscrito(s) por `event_type`, e num
@@ -146,11 +148,14 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   seleção do lote **não** pode ser um `SELECT ... WHERE delivered_at IS NULL`
   nu — duas réplicas rodando o relay pegariam as MESMAS linhas e entregariam
   em duplicidade sem necessidade. O `ScanUndelivered` do `Dialect` (abaixo)
-  seleciona com trava por linha: no Postgres, `SELECT ... FOR UPDATE SKIP
-  LOCKED LIMIT batch` (cada réplica leva um lote exclusivo, sem bloquear as
-  outras); no sqlite (single-writer, sem `SKIP LOCKED`) a trava de escrita do
-  próprio banco já serializa, então o `SELECT ... LIMIT batch` simples basta.
-  Como cada linha ainda pode ser entregue mais de uma vez em cenários de crash
+  seleciona com trava por linha, **sempre com `ORDER BY id` explícito** para
+  preservar a ordem FIFO de processamento (sem ele o banco devolve linhas em
+  ordem arbitrária, atrasando eventos antigos): no Postgres, `SELECT ... ORDER
+  BY id FOR UPDATE SKIP LOCKED LIMIT batch` (cada réplica leva um lote
+  exclusivo, sem bloquear as outras); no sqlite (single-writer, sem `SKIP
+  LOCKED`) a trava de escrita do próprio banco já serializa, então o `SELECT
+  ... ORDER BY id LIMIT batch` simples basta. Como cada linha ainda pode ser
+  entregue mais de uma vez em cenários de crash
   (at-least-once por design), o handler idempotente segue sendo a garantia
   final — `SKIP LOCKED` só elimina a duplicação *concorrente rotineira*, não a
   necessidade de idempotência.
@@ -158,9 +163,10 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   `NewDurableOutbox(db, dialect, dispatcher)` quando o módulo tem Database real
   (REQ-42.5). O `Subscribe` do código gerado é idêntico nos dois (REQ-42.3).
 - **SQL só no dialeto (REQ-42.4):** enqueue/scan/mark viram métodos do
-  `Dialect` (ex. `InsertOutbox`, `ScanUndelivered` — com `FOR UPDATE SKIP
-  LOCKED` no postgres, `LIMIT` simples no sqlite —, `MarkDelivered`) —
-  funciona sobre sqlite e postgres sem string fora do dialeto.
+  `Dialect` (ex. `InsertOutbox`, `ScanUndelivered` — `ORDER BY id` sempre, com
+  `FOR UPDATE SKIP LOCKED` no postgres e `LIMIT` simples no sqlite —,
+  `MarkDelivered`) — funciona sobre sqlite e postgres sem string fora do
+  dialeto.
 
 ### 3.3. RabbitMQ (REQ-43) — fecha a limitação single-process do Marco F
 
@@ -172,15 +178,22 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   declara queue durável + binding, consome com prefetch = `workers.concurrency`,
   e para cada mensagem chama o handler; `ack` no sucesso, `nack` na falha
   (REQ-43.4).
-- **Poison pill (falha permanente):** um `nack`+requeue incondicional vira um
-  loop imediato quando o erro é permanente (payload que não desserializa, bug
-  de lógica no handler) — sobrecarrega broker e consumidor sem nunca progredir.
-  A queue durável é declarada com uma **Dead Letter Exchange** e o consumidor
-  requeue só até um limite de tentativas (o `circuitBreaker.threshold`
-  declarado, ou um default); esgotado o limite, a mensagem é `nack`ada **sem
-  requeue** e cai na DLQ para inspeção manual, em vez de girar para sempre. A
-  contagem de tentativas viaja no header `x-death`/num header próprio do
-  envelope.
+- **Poison pill (falha permanente):** um `nack`+`requeue=true` incondicional
+  vira um loop imediato quando o erro é permanente (payload que não
+  desserializa, bug de lógica no handler) — sobrecarrega broker e consumidor
+  sem nunca progredir. **E `requeue=true` nativo NÃO altera os headers da
+  mensagem** (ela volta ao topo da fila intacta), então nem `x-death` nem um
+  contador próprio seriam incrementados por esse caminho. Por isso o controle
+  de tentativas usa um dos dois fluxos padrão do RabbitMQ: (a) `nack`
+  **`requeue=false`** para uma **DLX** ligada a uma *retry queue* com TTL, que
+  ao expirar reencaminha a mensagem de volta à fila principal — o broker
+  incrementa `x-death` a cada passagem, e o consumidor lê a contagem dali; ou
+  (b) o consumidor **republica manualmente** a mensagem com um header de
+  contador incrementado antes de dar `ack` na original. Decisão: fluxo (a)
+  (DLX+TTL, menos código no consumidor). Esgotado o limite de tentativas (o
+  `circuitBreaker.threshold` declarado, ou um default), a mensagem vai para a
+  **DLQ final** (`nack requeue=false` sem reencaminhamento) para inspeção
+  manual, em vez de girar para sempre.
 - **Envelope:** JSON `{eventType, payload}` — o mesmo shape que o Dispatcher
   já move em memória, serializado (o `Event` gerado já é JSON-serializável,
   convenção de E4.2). Deserialização no consumidor reconstrói via o
@@ -202,15 +215,17 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   `Get` devolve `hit=false` (REQ-44.1/5, o shape já previsto). `InvalidateAll`
   = `DEL` por prefixo de namespace (SCAN+DEL, ou um contador de geração no key
   prefix para evitar SCAN — decisão: **geração no prefixo**, O(1) e sem SCAN).
-  **Custo da geração-no-prefixo:** as chaves das gerações antigas não são
-  apagadas no `InvalidateAll` (só deixam de ser lidas) — ficam no Redis até
-  expirar. Para não virar bloat de memória, **toda** chave de cache é escrita
-  com TTL (o `ttl` declarado no bloco `cache {}`; nunca sem expiração), e a
-  geração (um inteiro sob `<queryNamespace>:gen`) também expira/reinicia com
-  folga — o pior caso é uma geração de chaves órfãs vivendo no máximo um `ttl`,
-  não acumulando indefinidamente. Se um dia um `cache {}` sem `ttl` for
-  permitido, este adapter impõe um TTL-teto default em vez de gravar sem
-  expiração.
+  **Custo da geração-no-prefixo:** as chaves de *dados* das gerações antigas
+  não são apagadas no `InvalidateAll` (só deixam de ser lidas) — ficam no Redis
+  até expirar. Para não virar bloat de memória, **toda chave de dados** é
+  escrita com TTL (o `ttl` declarado no bloco `cache {}`; nunca sem expiração —
+  se um dia um `cache {}` sem `ttl` for permitido, este adapter impõe um
+  TTL-teto default). **A chave de geração** (um inteiro sob
+  `<queryNamespace>:gen`), ao contrário, **NÃO expira**: é uma única chave por
+  namespace (cardinalidade mínima, zero risco de bloat), e se ela expirasse o
+  contador reiniciaria — invalidando *acidentalmente* todo o cache ativo
+  daquela Query (as chaves de dados vivas passariam a ter um prefixo de geração
+  incompatível). Persistente por design, portanto.
   Coalescing continua local por processo (o seam já o faz); cross-réplica não é
   exigido para stampede (§15 não pede).
 - **`redisrt/ratelimit.go.txt`:** `redisLimiter` implementa `Limiter` com
@@ -321,3 +336,74 @@ Três camadas, por provider:
 Determinismo (NFR-23): regenerar a fixture-âncora duas vezes ⇒ bytes idênticos
 (go.mod, imports, fontes de adapter, main.go) — um teste dedicado por analogia
 a `TestSharedCollectionTypeDeterministic`.
+
+## 7. Riscos e pré-condições de implementação (auditados no código antes de fatiar)
+
+Levantados cruzando o design com o código real (`program/graph.go`,
+`codegen/*.go`, `codegen/sqlrt/*`) — cada um vira uma subtask explícita em
+`tasks.md` para não ser descoberto no meio da implementação:
+
+- **R1 — `Database.DSN` é `""` quando a conexão é `env(...)`.**
+  `program.Database.DSN` só carrega literais estáticos (doc do próprio campo);
+  `emitXADatabaseWiring` (`sql_wiring.go`) faz `strconv.Quote(db.DSN)`. Para
+  Postgres com `connection: env("PG_URL")` isso emitiria uma **string vazia**.
+  O wiring de provider real tem que **lowerizar `env(...)` a partir do
+  `Decl.Entries`** (não usar `db.DSN`). Já existe o helper de forma:
+  `decl_io.go:envCallGo`/`envCallKey` produz `os.Getenv("X")` — reusar. Sem
+  isso, todo provider com conexão por env sobe com string vazia (falha só em
+  runtime). **Pré-condição transversal de J1/J3/J4/J5.**
+
+- **R2 — `Channel` e `FileStorage` não têm `Provider`/`Connection` no modelo.**
+  `program.Channel` só tem `From/To/Via/Decl`; `program.FileStorage` só tem
+  `Name/Module/Decl`. O provider (`"rabbitmq"`/`"s3"`) e a `connection`/bucket
+  vivem em `Decl.Entries` — acessíveis (é o que `channelOrderByField` já faz),
+  mas **não** como campo tipado. Decisão: ler de `Decl.Entries` via helpers
+  novos (`channelProvider(ch)`, `fileStorageProvider(fs)`), sem tocar o
+  front-end (config é free-form, nunca validada contra enum — mesma postura de
+  `Database.Provider`). **Nenhuma mudança de front-end** (mantém o escopo).
+
+- **R3 — Config `env(...)` em Cache/RateLimit/FileStorage: bloco aceita a
+  chave?** Os blocos de módulo são `*ast.ConfigBlock` free-form
+  (`moduleRateLimitBlock` lê `b.Kind == "RateLimit"`; o `Cache{}` de módulo já
+  é lido para o fallback de ttl em `decl_query.go`). Uma `url:`/`connection:
+  env(...)` a mais nesses blocos é só mais uma entry — o parser a aceita (config
+  é genérica). **Pré-condição:** confirmar num teste de fixture que a entry
+  chega em `Decl.Entries` (deve chegar); se não chegar, é o ÚNICO ponto que
+  tocaria o front-end e vira desvio registrado. Subtask de verificação em J4/J5.
+
+- **R4 — Atomicidade store+outbox exige estender o seam `runtime.Tx`.** O
+  `sqlrt.UnitOfWork.Run(ctx, fn)` (`sqlrt/uow.go.txt`) abre um `*sql.Tx` real e
+  passa um `runtime.Tx` cujo contrato hoje é só `Append`/`Load` — **não** há
+  como um outbox INSERT entrar na MESMA tx pela interface atual. Fechar REQ-42.1
+  exige um método novo no seam `runtime.Tx` (ex. `EnqueueOutbox(events
+  []Event)`) implementado pelo `sqlrt.Tx` (que tem o `*sql.Tx` em mãos) e
+  chamado pelo caminho de commit da uow, dentro do `fn`. O `memoryTx` recebe um
+  no-op/stub (sem outbox durável in-memory). **Subtask dedicada em J2, antes do
+  relay** — é a peça que garante "atômico com a tx de negócio", não um detalhe.
+
+- **R5 — Registro compartilhado entre categorias (redis em Cache e RateLimit).**
+  `cacheProviders["redis"]` e `rateLimitProviders["redis"]` apontam para o
+  MESMO módulo (`go-redis/v9`) e o MESMO `adapterDir` (`redisruntime`).
+  `activeProviderDeps` tem que **deduplicar por módulo** (um require só) **e por
+  adapterDir** (copiar as fontes uma vez), mesmo o provider aparecendo em duas
+  categorias. Subtask de dedup explícita em J0, com fixture que usa redis nas
+  duas pontas.
+
+- **R6 — Ordenação por chave no RabbitMQ vs. `QueueChannel` in-memory (NFR-22).**
+  O `QueueChannel` in-memory ordena estritamente **por chave de partição**; com
+  RabbitMQ, prefetch>1 e múltiplos consumidores quebram a ordem por chave. Para
+  manter paridade (NFR-22), o consumidor usa *single active consumer* por
+  partição **ou** o design aceita explicitamente "ordem best-effort por chave"
+  (REQ-43.3 já diz "best-effort") — o teste de integração compara com essa
+  régua, não com ordem total. Decisão registrada: **best-effort por chave**, o
+  mesmo contrato que o spec §11 dá; ordenação total não é prometida por nenhum
+  dos dois lados.
+
+- **R7 — Fixture-âncora precisa combinar UseCase + Policy no mesmo módulo?**
+  ISSUE-7 (`.claude/issues.md`) já mostrou que um módulo com UseCase E Policy
+  colide no wiring (`Wire` duplicado). A fixture-âncora deste ciclo deve
+  **evitar** essa combinação por módulo (senão o `dsc gen` falha por um motivo
+  alheio a este ciclo) — ou ISSUE-7 vira pré-requisito. Decisão: estruturar a
+  fixture para NÃO acionar ISSUE-7 (cada módulo é ou de UseCase ou de Policy,
+  como shop já faz), mantendo este ciclo independente. Subtask de validação em
+  J6.1.
