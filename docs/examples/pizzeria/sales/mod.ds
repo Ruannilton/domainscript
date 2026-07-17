@@ -1,0 +1,26 @@
+// mod.ds — infraestrutura do módulo Sales.
+// Banco relacional (Postgres, decorativo — só "sqlite" liga um driver real,
+// ver README) com isolamento multi-tenant por linha: a estratégia pedida no
+// desafio era schema_per_tenant, mas o back-end só tem implementação real
+// para row_level (ver README, "Adaptações"). Idempotência/Cache/RateLimit
+// entram aqui como defaults do módulo; PlaceOrder e GetAvailableMenu os
+// refinam por construto (application.ds / read.ds).
+Module Sales {
+    Database MainDb {
+        provider: "postgres"
+        manages: [MenuItem, Order]
+        tenancy: { strategy: row_level, column: "tenant_id" }
+    }
+
+    Idempotency {
+        storage: same
+    }
+
+    Cache {
+        backend: memory
+    }
+
+    RateLimit {
+        backend: memory
+    }
+}

@@ -7,6 +7,7 @@ Cada exemplo é um projeto válido — `dsc` o valida sem erros nem avisos.
 |---------|-----------------|
 | [`wallet/`](./wallet) | Um módulo de domínio completo: ValueObjects, Enum, Aggregate EventSourced, Commands, UseCases, Read Side (View/Query), interface HTTP e testes nativos. |
 | [`shop/`](./shop) | Um projeto multi-módulo: dois módulos em services distintos, ligados por um canal na topologia. Foca nas regras arquiteturais *cross-file* — PublicEvent, Policy cross-service e canal obrigatório. |
+| [`pizzeria/`](./pizzeria) | Um SaaS multi-tenant com dois módulos (Sales, Kitchen) coreografados por eventos públicos. Foca nas diretivas v6.0 que os outros exemplos não cobrem — `tenant { from: subdomain }`, `tenancy: row_level`, `Idempotency`/`Cache` de módulo, `cache`/`idempotency` por construto, `visibility` de View — e no padrão Snapshot (dependência temporal). |
 
 ## Como validar
 

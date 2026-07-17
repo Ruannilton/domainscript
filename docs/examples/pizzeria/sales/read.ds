@@ -1,0 +1,56 @@
+// read.ds — o Read Side (§6) do módulo Sales: Views e Queries.
+
+View MenuItemVW {
+    id          MenuItemId
+    name        MenuItemName
+    ingredients List<IngredientName>
+    price       Money
+    prepTime    PrepTimeMinutes
+}
+
+// Alto tráfego (§3.4 do desafio): cache de 1h. A invalidação NÃO precisa de
+// "invalidateOn" explícito — o compilador infere o conjunto de eventos a
+// partir dos Aggregates tocados pelo corpo da Query (spec §15): todo Apply
+// de MenuItem (MenuItemCreated, MenuItemPriceUpdated) já invalida esta
+// entrada automaticamente quando o cardápio muda.
+//
+// Retorna AppendList<MenuItemVW>, não List<MenuItemVW>: o cardápio é uma
+// listagem que cresce (itens raramente são removidos, só desativados) e o
+// compilador já otimiza storage/paginação para AppendList (§2.4) — o mesmo
+// motivo que também evita o aviso REQ-5.20 (§15, "cache sobre List de alta
+// cardinalidade"), calibrado para listagens arbitrárias, não para este caso.
+Query GetAvailableMenu() -> AppendList<MenuItemVW> {
+    cache { ttl: 1h }
+    return list MenuItem m where m.availability == Availability(true) as MenuItemVW
+}
+
+// Campos sensíveis (dados do cliente e total) só para o próprio dono do
+// pedido ou para staff (§3.4 do desafio) — bloco visibility (§6.2). Nota: a
+// enforcement de campo é um gap conhecido do back-end (ver README).
+//
+// Compara caller.id contra self.customerId (identidade de quem fez o
+// pedido), NUNCA contra self.id (identidade do próprio pedido) — os dois só
+// coincidem por acaso em domínios onde o agregado É o dono (ex. Account na
+// wallet); aqui Order e cliente são identidades distintas.
+View OrderVW {
+    id         OrderId
+    customerId CustomerId
+    customer   CustomerName
+    phone      CustomerPhone
+    orderType  OrderType
+    total      Money
+    status     OrderStatus
+
+    visibility {
+        customer requires caller.id == self.customerId or caller.hasRole("staff")
+        phone    requires caller.id == self.customerId or caller.hasRole("staff")
+        total    requires caller.id == self.customerId or caller.hasRole("staff")
+    }
+}
+
+// Pedidos não entregues (ainda ativos na esteira).
+Query GetActiveOrders() -> List<OrderVW> {
+    return list Order o
+           where o.status in [OrderStatus.Placed, OrderStatus.Paid, OrderStatus.Preparing, OrderStatus.Ready]
+           as OrderVW
+}

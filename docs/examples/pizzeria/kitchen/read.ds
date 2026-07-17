@@ -1,0 +1,20 @@
+// read.ds — o Read Side (§6) do módulo Kitchen: o painel do KDS.
+
+View KitchenTicketVW {
+    id        TicketId
+    orderRef  ExternalOrderRef
+    items     List<TicketItem>
+    status    TicketStatus
+    cookId    CookId
+    createdAt CreatedAt
+    startedAt StartedAt
+}
+
+// Painel KDS (§4.3 do desafio): tickets Pending ou Preparing, FIFO — o mais
+// antigo primeiro.
+Query GetBoardTickets() -> List<KitchenTicketVW> {
+    return list KitchenTicket t
+           where t.status in [TicketStatus.Pending, TicketStatus.Preparing]
+           orderBy t.createdAt ascending
+           as KitchenTicketVW
+}

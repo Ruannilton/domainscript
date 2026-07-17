@@ -1,0 +1,109 @@
+// application.ds — a camada de aplicação (§5) do módulo Sales.
+// Commands descrevem a intenção; UseCases carregam o Aggregate e despacham
+// o(s) Handle(s), sempre dentro da mesma unidade de trabalho.
+
+// Requisição de item — a forma de ENTRADA de PlaceOrder, antes do snapshot.
+// Não confundir com OrderLineSnapshot (domain.ds): esta não carrega preço.
+ValueObject OrderItemRequest {
+    menuItemId MenuItemId
+    quantity   Quantity
+
+    Valid { ok }
+}
+
+// --- Catálogo ---
+
+// O Command tem o mesmo nome do Handle que aciona (Aggregate.Create); o
+// UseCase leva o nome descritivo exposto na interface (mesma convenção da
+// wallet: Command Deposit -> UseCase PerformDeposit).
+Command Create {
+    id          ref MenuItem
+    name        MenuItemName
+    ingredients List<IngredientName>
+    price       Money
+    prepTime    PrepTimeMinutes
+}
+
+UseCase CreateMenuItem handles Create {
+    execute {
+        item = load MenuItem(cmd.id)
+        item.Create(cmd.name, cmd.ingredients, cmd.price, cmd.prepTime)
+    }
+}
+
+Command UpdatePrice {
+    id    ref MenuItem
+    price Money
+}
+
+UseCase UpdateMenuItemPrice handles UpdatePrice {
+    execute {
+        item = load MenuItem(cmd.id)
+        ensure item exists else MenuItemNotFound
+        item.UpdatePrice(cmd.price)
+    }
+}
+
+// --- Pedidos ---
+
+Command Place {
+    id         ref Order
+    customerId CustomerId
+    customer   CustomerName
+    phone      CustomerPhone
+    orderType  OrderType
+    items      List<OrderItemRequest>
+}
+
+// Idempotência com janela de 1h (§3.3 do desafio): dois cliques do cliente
+// no mesmo pedido, com a mesma Idempotency-Key, não geram cobrança em
+// duplicidade (spec §14 — a chave é implícita, nunca declarada aqui).
+UseCase PlaceOrder handles Place {
+    idempotency { required: true, window: 1h }
+    timeout 5s
+    execute {
+        ensure cmd.items.length() > 0 else EmptyOrderError
+
+        lines = []
+        total = Money(0, "BRL")
+        for req in cmd.items {
+            menuItem = load MenuItem(req.menuItemId)
+            ensure menuItem exists else MenuItemNotFound
+            ensure menuItem.state.availability == Availability(true) else MenuItemUnavailable
+
+            // Snapshot: copia nome/preço do cardápio AGORA — o pedido nunca
+            // mais volta a consultar o MenuItem para saber quanto cobrou.
+            lines.add(OrderLineSnapshot(
+                menuItemId: menuItem.state.id,
+                name: menuItem.state.name,
+                quantity: req.quantity,
+                unitPrice: menuItem.state.price
+            ))
+
+            // Soma por adição repetida (Money só define "+" entre Money — ver
+            // domain.ds) em vez de "preço * quantidade".
+            for i in 1..req.quantity.value {
+                total = total + menuItem.state.price
+            }
+        }
+
+        order = load Order(cmd.id)
+        order.Place(cmd.customerId, cmd.customer, cmd.phone, cmd.orderType, lines, total)
+    }
+}
+
+Command ConfirmPayment {
+    id ref Order
+}
+
+// Altera o status para pago e notifica o resto da empresa (§3.3 do desafio):
+// a notificação É o PublicEvent OrderPaid emitido por Order.ConfirmPayment
+// (domain.ds) — a Kitchen reage a ele em seu próprio módulo (policy.ds lá).
+UseCase ConfirmOrderPayment handles ConfirmPayment {
+    execute {
+        order = load Order(cmd.id)
+        ensure order exists else OrderNotFound
+        order.ConfirmPayment()
+        order.StartPreparing()
+    }
+}

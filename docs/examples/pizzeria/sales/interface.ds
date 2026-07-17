@@ -1,0 +1,39 @@
+// interface.ds — a borda HTTP do módulo Sales (§10). Versionada (v1),
+// basePath "/api", tenant resolvido por subdomínio (ex. pizzaria1.meuapp.com,
+// §5/§13 do desafio) e rate limits por rota (§5 do desafio). Toda operação
+// precisa estar exposta aqui, senão o compilador avisa (REQ-5.23).
+Interface HTTP {
+    basePath: "/api"
+
+    versioning {
+        strategy: path
+        current: v1
+        supported: [v1]
+    }
+
+    tenant {
+        from: subdomain
+    }
+
+    // Global por IP: 60/min (§5 do desafio).
+    rateLimit {
+        perIp: 60/min
+    }
+
+    // Cardápio público: 200/min por IP (mais permissivo que o global, já que
+    // é a rota de maior tráfego, §3.4/§5 do desafio).
+    GET "/menu" -> GetAvailableMenu {
+        rateLimit { perIp: 200/min }
+    }
+
+    // Criação de pedidos: 5/min por usuário (proteção contra spam, §5).
+    POST "/orders" -> PlaceOrder {
+        rateLimit { perUser: 5/min }
+    }
+
+    GET "/orders" -> GetActiveOrders
+
+    POST  "/admin/menu"            -> CreateMenuItem
+    PATCH "/admin/menu/{id}/price" -> UpdateMenuItemPrice
+    POST  "/admin/orders/{id}/pay" -> ConfirmOrderPayment
+}
