@@ -17,8 +17,13 @@ compilable Go project (`driver.GenerateProject` / `dsc gen`). A fourth plan,
 bodies generate `where`/`orderBy`/`skip`/`take`/`as`/`join`/`in` and
 `distinct`/`sum`/`focus` over an in-memory seam (`runtime.Query[T]`) that
 descends to parametrized SQL on the sqlite adapter through a pluggable
-`Dialect`. Four spec sets are the source of truth and are written in
-Portuguese:
+`Dialect`. A fifth plan, `.claude/specs/infra-providers/` — real
+infrastructure providers (REQ-41..48, Marco J) — is **in progress /
+not started** (no task begun): it closes gap G-4 / ISSUE-3 for a deliberate
+5-provider slice — Postgres (Database), a durable Outbox, RabbitMQ
+(cross-service channel), Redis (Cache + RateLimit) and S3 (FileStorage) — each
+opt-in behind the seam that already exists. Five spec sets are the source of
+truth and are written in Portuguese:
 
 - `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
   (REQ-1..8, NFR-1..7).
@@ -28,6 +33,8 @@ Portuguese:
   code generation (REQ-14..32, NFR-11..17).
 - `.claude/specs/read-side/{requirements,design,tasks}.md` — query clauses &
   Smart Partial Loading (REQ-33..40).
+- `.claude/specs/infra-providers/{requirements,design,tasks}.md` — real infra
+  providers, 5-provider slice of G-4 (REQ-41..48, NFR-21..24, Marco J).
 
 Work now is maintenance and extension, not greenfield. Still follow the spec
 flow: a task references the REQ it satisfies (`(REQ-n)`) and the design section
@@ -258,3 +265,12 @@ Read side (`.claude/specs/read-side/tasks.md`): I "Read Side de verdade"
 `distinct`/`sum`/`focus`, and the SQL/sqlite descent) — **also complete**;
 read side closes here. See `.claude/specs/codegen/gaps.md` for the gaps this
 cycle closed (G-1, G-2, G-8) and what remains open.
+
+Infra providers (`.claude/specs/infra-providers/tasks.md`): J "Providers Reais
+de Infraestrutura" — a 5-provider slice of gap G-4 / ISSUE-3: Postgres
+(Database), durable Outbox, RabbitMQ (cross-service channel), Redis (Cache +
+RateLimit), S3 (FileStorage), each opt-in behind the existing seam. J0 is the
+transversal provider registry; J1–J5 are independent per-provider vertical
+slices (J2 depends on J1); J6/J7 anchor+close. **Not started** — next task is
+J0.1. The rest of G-4 (other databases, gRPC channel, Dynamo idempotency,
+layered cache, GCS/Azure) stays explicitly out of this slice.
