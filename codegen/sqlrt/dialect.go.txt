@@ -21,6 +21,17 @@ type Dialect interface {
 	// sustenta um Collection[T] chamado name (REQ-38, adapter de I7.1) —
 	// parte do seam desde já para que I7.1 não precise reabrir a interface.
 	CreateCollectionTable(name string) string
+	// CreateOutboxTable devolve o DDL idempotente da tabela "outbox" (Marco
+	// J, REQ-42.1/42.4, §design infra-providers 3.2): o mecanismo de
+	// entrega durável at-least-once por trás de DurableOutbox
+	// (rtsrc/outbox.go.txt, task J2.3) — cada linha é um evento pendente de
+	// entrega, gravado atomicamente com os eventos de negócio (o INSERT
+	// entra na MESMA *sql.Tx de Tx.Append — ver Tx.EnqueueOutbox,
+	// uow.go.txt). "id" é uma chave técnica AUTO-INCREMENTADA pelo próprio
+	// banco (não um UUID): o relay entrega em ordem de "id" (FIFO, task
+	// J2.2, "ORDER BY id"), e só um contador monotônico de inserção garante
+	// essa ordem — um UUID não ordenaria por chegada.
+	CreateOutboxTable() string
 	// LimitOffset devolve a cláusula de paginação para limit/offset (LIMIT/
 	// OFFSET ANSI serve sqlite e postgres; o método existe para o banco que
 	// divergir).
@@ -74,6 +85,17 @@ func (sqliteDialect) CreateCollectionTable(name string) string {
 	payload TEXT NOT NULL,
 	PRIMARY KEY (id)
 )`, name)
+}
+
+func (sqliteDialect) CreateOutboxTable() string {
+	return `CREATE TABLE IF NOT EXISTS outbox (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	event_type   TEXT NOT NULL,
+	payload      TEXT NOT NULL,
+	created_at   TIMESTAMP NOT NULL,
+	delivered_at TIMESTAMP,
+	attempts     INTEGER NOT NULL DEFAULT 0
+)`
 }
 
 func (sqliteDialect) LimitOffset(limit, offset int) string {

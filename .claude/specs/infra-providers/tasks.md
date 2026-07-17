@@ -96,7 +96,7 @@
 
 ### Fase J2 — Outbox durável (REQ-42) — depende de J1
 
-- [ ] **J2.1** **(R4)** Estender o seam `runtime.Tx` para o enqueue atômico.
+- [x] **J2.1** **(R4)** Estender o seam `runtime.Tx` para o enqueue atômico.
   - a. Método novo no seam `runtime.Tx` (ex. `EnqueueOutbox(events []Event)
     error`); `memoryTx` recebe no-op/stub documentado (sem outbox durável
     in-memory). (§design 3.2, R4).
@@ -104,9 +104,20 @@
     do `Append`). (REQ-42.1).
   - c. Teste: um `Run(fn)` que faz `Append`+`EnqueueOutbox` grava as duas
     tabelas **ou nenhuma** (rollback simulado) — atomicidade.
-- [ ] **J2.2** DDL + SQL da tabela `outbox` no `Dialect`.
-  - a. `InsertOutbox`/`ScanUndelivered`/`MarkDelivered`/`PurgeDelivered` como
-    métodos do `Dialect`, em Sqlite e PostgresDialect. (REQ-42.4).
+  - **Desvio de escopo (necessário):** o teste de atomicidade (c) exige uma
+    tabela `outbox` de verdade — `CreateOutboxTable` (Dialect, Sqlite E
+    Postgres) e o INSERT (`enqueueOutboxWithinTx`) entraram aqui em vez de
+    esperar por J2.2, que fica só com o lado de leitura/consumo
+    (`ScanUndelivered`/`MarkDelivered`/`PurgeDelivered`). `EventStore.
+    ensureSchema` passou a criar "outbox" ao lado de "events" (mesmo dono de
+    schema, evita corrida de "tabela não existe" no primeiro
+    `EnqueueOutbox`). `id` é auto-incrementado pelo banco (`INTEGER PRIMARY
+    KEY AUTOINCREMENT`/`BIGSERIAL`), nunca um UUID — só um contador
+    monotônico de inserção garante `ORDER BY id` (FIFO, J2.2).
+- [ ] **J2.2** Leitura/consumo da tabela `outbox` no `Dialect`.
+  - a. `ScanUndelivered`/`MarkDelivered`/`PurgeDelivered` como métodos do
+    `Dialect`, em Sqlite e PostgresDialect (`CreateOutboxTable`/o INSERT já
+    saíram em J2.1). (REQ-42.4).
   - b. **(FIFO)** `ScanUndelivered` sempre com `ORDER BY id`; postgres com `FOR
     UPDATE SKIP LOCKED`, sqlite com `LIMIT` simples. (§design 3.2).
   - c. Teste unit dos dois dialetos (strings esperadas).

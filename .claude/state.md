@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -343,8 +343,41 @@ sucesso (`generateLedgerPostgresIntegrationProject`) e o `behavior_test.go`
 gerado passa por `go vet`/`go test` (skip) dentro do projeto Go de verdade
 escrito em disco — provando que o caminho compila e só falta infra viva
 para exercitar o corpo real do teste. Fecha a Fase J1 (REQ-41 completo:
-J1.1–J1.4). Próxima: **J2.1** (estender o seam `runtime.Tx` para o enqueue
-atômico do Outbox durável — Fase J2, depende de J1 ✓).
+J1.1–J1.4).
+
+Concluído: **J2.1** — `(R4)` o seam `runtime.Tx` (`codegen/rtsrc/uow.go.txt`)
+ganhou `EnqueueOutbox(events []Event) error` (REQ-42.1): `memoryTx`
+implementa como no-op documentado (nenhum outbox durável in-memory —
+`memoryOutbox`, `outbox.go.txt`, só encaminha ao Dispatcher); `sqlrt.Tx`
+(`codegen/sqlrt/uow.go.txt`) implementa sobre o `*sql.Tx` em mãos, a MESMA
+tx de `Append`, via `enqueueOutboxWithinTx` (novo, `eventstore.go.txt`, ao
+lado de `appendWithinTx`) — atomicidade store+outbox por construção
+(commit grava as duas tabelas, rollback desfaz as duas). `twophase.go.txt`
+herda o método de graça (reusa a MESMA struct `Tx`). **Desvio de escopo
+necessário** (documentado em `tasks.md`): o teste de atomicidade exige uma
+tabela `outbox` de verdade, então `Dialect.CreateOutboxTable()` (novo
+método na interface, Sqlite E Postgres) e o INSERT vieram para cá em vez de
+esperar por J2.2 — que fica só com o lado de leitura/consumo
+(`ScanUndelivered`/`MarkDelivered`/`PurgeDelivered`, FIFO+`SKIP LOCKED`).
+`id` da tabela outbox é auto-incrementado pelo próprio banco (`INTEGER
+PRIMARY KEY AUTOINCREMENT` no sqlite, `BIGSERIAL` no postgres) — nunca um
+UUID, já que só um contador monotônico de inserção garante a ordem FIFO que
+o relay (J2.3) vai exigir (`ORDER BY id`). `EventStore.ensureSchema` passou
+a criar "outbox" ao lado de "events" (mesmo dono de schema — evita uma
+corrida de "tabela não existe" se `EnqueueOutbox` for chamado antes de
+qualquer `DurableOutbox` ser construído, J2.3). Teste novo
+`codegen/sql_outbox_test.go` (`TestSQLOutboxAtomicity`, via
+`gentest.WriteFiles`/`RunTests` sobre sqlite real — a atomicidade é
+propriedade de `*sql.Tx`, a mesma para os dois dialetos): `Run` bem-sucedido
+grava 1 linha em `events` E 1 em `outbox`; `Run` que devolve erro não
+adiciona NENHUMA linha em NENHUMA das duas (rollback simulado). Sem
+regressão: `TestSQL*`/`TestPostgres*`/`TestWallet*`/`TestLedger*`
+(`codegen`, incl. o teste de integração Postgres sob `-tags=integration`,
+que segue compilando e pulando sem `PG_URL`) e `TestGenerate*` (`driver`)
+seguem verdes — a interface `Dialect` estendida não quebra nenhum
+consumidor existente. `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
+Próxima: **J2.2** (leitura/consumo da tabela outbox: `ScanUndelivered`/
+`MarkDelivered`/`PurgeDelivered`, FIFO+`SKIP LOCKED`).
 
 ## Issues em aberto
 
