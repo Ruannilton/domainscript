@@ -1,0 +1,137 @@
+// domain.ds — o núcleo de domínio (Write Side) do módulo Kitchen.
+// Kanban interno da cozinha (KDS): nenhum tipo aqui é compartilhado com
+// Sales por nome — cada bounded context tem seus próprios ValueObjects
+// (§6.1 do desafio), mesmo quando descrevem "a mesma" noção de pedido.
+
+// --- ValueObjects ---
+
+ValueObject TicketId(string) {
+    Valid { value.length() > 0 }
+}
+
+// A cópia local (anticorrupção) do OrderId de Sales — nunca o mesmo tipo,
+// nunca resolvido por nome cross-module (só PublicEvent atravessa módulos,
+// REQ-7.4). Ver policy.ds para a conversão na fronteira.
+ValueObject ExternalOrderRef(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject TicketItemName(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject TicketItemQuantity(integer) {
+    Valid { value > 0 }
+}
+
+ValueObject CookId(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject CreatedAt(datetime) {
+    Valid { ok }
+}
+
+ValueObject StartedAt(datetime) {
+    Valid { ok }
+}
+
+ValueObject TicketItem {
+    name     TicketItemName
+    quantity TicketItemQuantity
+
+    Valid { ok }
+}
+
+Enum TicketStatus : string {
+    Pending   = "PENDING"
+    Preparing = "PREPARING"
+    Done      = "DONE"
+}
+
+// --- Errors ---
+
+Error TicketNotFound         { message "Ticket não encontrado." }
+Error TicketAlreadyClaimed   { message "Ticket já está em preparo." }
+Error TicketNotInPreparation { message "Só um ticket em preparo pode ser finalizado." }
+
+// --- Events ---
+
+Event TicketCreated    { id TicketId, orderRef ExternalOrderRef }
+Event TicketItemAdded  { id TicketId, item TicketItem }
+Event TicketClaimed    { id TicketId, cookId CookId }
+
+// PublicEvent: o contrato compartilhado com o módulo Sales (§4.2). Ao
+// finalizar o ticket, a Kitchen avisa o resto do sistema; a Policy de Sales
+// (sales/policy.ds) reage liberando o pedido, sem a Kitchen jamais chamar
+// Sales diretamente.
+PublicEvent TicketFinished { orderRef ExternalOrderRef }
+
+// --- Aggregate ---
+// KitchenTicket: StateStored (§4.1 do desafio) — só o estado atual da
+// esteira importa, sem histórico de transições.
+Aggregate KitchenTicket {
+    strategy StateStored
+
+    state {
+        id        TicketId
+        orderRef  ExternalOrderRef
+        items     List<TicketItem>
+        status    TicketStatus
+        cookId    CookId
+        createdAt CreatedAt
+        startedAt StartedAt
+    }
+
+    // Create/AddItem só são disparados reativamente pela Policy que reage a
+    // OrderPaid (policy.ds) — não há Endpoint de criação manual (§4.2 do
+    // desafio). Claim/Finish exigem um cozinheiro autenticado.
+    access {
+        Create  requires caller.hasRole("system_sales")
+        AddItem requires caller.hasRole("system_sales")
+        Claim   requires caller.authenticated
+        Finish  requires caller.authenticated
+    }
+
+    Handle Create(orderRef ExternalOrderRef) {
+        emit TicketCreated(self.id, orderRef)
+    }
+
+    Apply TicketCreated {
+        state.id = event.id
+        state.orderRef = event.orderRef
+        state.status = TicketStatus.Pending
+        state.createdAt = CreatedAt(now())
+    }
+
+    Handle AddItem(item TicketItem) {
+        emit TicketItemAdded(self.id, item)
+    }
+
+    Apply TicketItemAdded {
+        state.items.add(event.item)
+    }
+
+    // Um ticket pendente pode ser assumido por um cozinheiro autenticado; não
+    // pode ser assumido se já estiver em preparo (§4.1 do desafio).
+    Handle Claim(cookId CookId) {
+        ensure state.status == TicketStatus.Pending else TicketAlreadyClaimed
+        emit TicketClaimed(self.id, cookId)
+    }
+
+    Apply TicketClaimed {
+        state.status = TicketStatus.Preparing
+        state.cookId = event.cookId
+        state.startedAt = StartedAt(now())
+    }
+
+    // Só tickets em preparo podem ser finalizados (§4.1 do desafio).
+    Handle Finish() {
+        ensure state.status == TicketStatus.Preparing else TicketNotInPreparation
+        emit TicketFinished(self.orderRef)
+    }
+
+    Apply TicketFinished {
+        state.status = TicketStatus.Done
+    }
+}

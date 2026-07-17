@@ -1,0 +1,11 @@
+// mod.ds — infraestrutura do módulo Kitchen.
+// Banco NoSQL (MongoDB, decorativo — só "sqlite" liga um driver real, ver
+// README) sem NENHUM vínculo com o banco de Sales (§4 do desafio): módulos
+// diferentes, bancos diferentes, isolamento de linha por tenant também aqui.
+Module Kitchen {
+    Database MainDb {
+        provider: "mongodb"
+        manages: [KitchenTicket]
+        tenancy: { strategy: row_level, column: "tenant_id" }
+    }
+}

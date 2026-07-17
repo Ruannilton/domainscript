@@ -1,0 +1,21 @@
+// policy.ds — a reação do módulo Sales (§7) ao mundo da Kitchen.
+// Ao finalizar um ticket, a Kitchen emite o PublicEvent TicketFinished
+// (kitchen/domain.ds) — Sales reage liberando o pedido correspondente para
+// Ready/Delivered (CompletePreparation, sales/domain.ds), sem NUNCA carregar
+// ou dar join num Aggregate da Kitchen (§6.1 do desafio: isolamento estrito
+// via evento público, coreografia).
+//
+// event.orderRef (ExternalOrderRef, tipo da Kitchen) é traduzido de volta
+// para OrderId (tipo de Sales) via "OrderId(event.orderRef)": construir um
+// ValueObject wrapper a partir de OUTRO ValueObject (não do primitivo cru)
+// é a mesma conversão de fronteira usada no sentido inverso pela Kitchen
+// (ver kitchen/policy.ds) — o par formam a camada anticorrupção entre os
+// dois bounded contexts.
+Policy MarkOrderReadyOnTicketFinished on TicketFinished {
+    delivery AtLeastOnce
+    execute {
+        order = load Order(OrderId(event.orderRef))
+        ensure order exists else Nop
+        order.CompletePreparation()
+    }
+}

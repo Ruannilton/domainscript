@@ -1,0 +1,30 @@
+// application.ds — a camada de aplicação (§5) do módulo Kitchen.
+// Só Claim e Finish têm Command/UseCase: a criação do ticket é inteiramente
+// reativa (policy.ds), sem Command de criação manual (§4.2 do desafio).
+// O Command tem o mesmo nome do Handle que aciona; o UseCase leva o nome
+// descritivo exposto na interface (mesma convenção da wallet).
+
+Command Claim {
+    id     ref KitchenTicket
+    cookId CookId
+}
+
+UseCase ClaimTicket handles Claim {
+    execute {
+        ticket = load KitchenTicket(cmd.id)
+        ensure ticket exists else TicketNotFound
+        ticket.Claim(cmd.cookId)
+    }
+}
+
+Command Finish {
+    id ref KitchenTicket
+}
+
+UseCase FinishTicket handles Finish {
+    execute {
+        ticket = load KitchenTicket(cmd.id)
+        ensure ticket exists else TicketNotFound
+        ticket.Finish()
+    }
+}

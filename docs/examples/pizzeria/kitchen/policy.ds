@@ -1,0 +1,24 @@
+// policy.ds — a reação do módulo Kitchen (§7) ao mundo de Sales.
+// Sempre que um pedido é pago em Sales, a Kitchen recebe (via mensagem
+// assíncrona AtLeastOnce, §4.2 do desafio) os dados e instancia um ticket
+// Pending — nunca lendo o banco de Sales, só o payload do PublicEvent
+// (isolamento estrito, §6.1 do desafio).
+//
+// event.id/event.lines[i].name/... são tipos de Sales (OrderId,
+// MenuItemName, Quantity); cada um é traduzido para o tipo PRÓPRIO da
+// Kitchen construindo o ValueObject local a partir do valor estrangeiro
+// (TicketId(event.id), TicketItemName(line.name), ...) — a mesma camada
+// anticorrupção usada no sentido inverso por sales/policy.ds.
+Policy CreateTicketOnOrderPaid on OrderPaid {
+    delivery AtLeastOnce
+    execute {
+        ticket = load KitchenTicket(TicketId(event.id))
+        ticket.Create(ExternalOrderRef(event.id))
+        for line in event.lines {
+            ticket.AddItem(TicketItem(
+                name: TicketItemName(line.name),
+                quantity: TicketItemQuantity(line.quantity)
+            ))
+        }
+    }
+}

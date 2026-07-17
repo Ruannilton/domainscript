@@ -1,0 +1,275 @@
+// domain.ds — o núcleo de domínio (Write Side) do módulo Sales.
+// A Regra de Ouro (§2.1): só ValueObjects e Enums — nunca primitivos direto.
+
+// --- ValueObjects: blocos atômicos, imutáveis e auto-validáveis (§2.2) ---
+
+ValueObject MenuItemId(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject MenuItemName(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject IngredientName(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject PrepTimeMinutes(integer) {
+    Valid { value > 0 }
+}
+
+// Disponibilidade do item no cardápio (ativo/inativo).
+ValueObject Availability(boolean) {
+    Valid { ok }
+}
+
+ValueObject OrderId(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject CustomerName(string) {
+    Valid { value.length() > 0 }
+}
+
+ValueObject CustomerPhone(string) {
+    Valid { value.length() > 0 }
+}
+
+// Composto (não wrapper) de propósito: o campo "value" nomeado deixa a
+// quantidade acessível por fora do VO (ex. para o range de um "for", como o
+// próprio spec faz em "for i in 1..batch.quantity", §3.3) sem violar o
+// encapsulamento que um wrapper puro impõe.
+ValueObject Quantity {
+    value integer
+    Valid { value > 0 }
+}
+
+// Dinheiro: valor e moeda juntos, com o operador de soma preservando a moeda
+// (§2.2, mesmo padrão do Money da wallet). Só "+" é usado neste exemplo — a
+// checagem de compatibilidade de operandos (REQ-13) exige os DOIS lados de um
+// operador aritmético do mesmo tipo nominal, então o subtotal por linha é
+// somado por adição repetida (application.ds) em vez de um "Money * Quantity"
+// (ver comentário lá).
+ValueObject Money {
+    amount   decimal
+    currency string
+
+    Valid { amount >= 0 }
+
+    Operator +(other Money) -> Money {
+        ensure currency == other.currency else CurrencyMismatch
+        return Money(amount: amount + other.amount, currency: currency)
+    }
+}
+
+// --- Enums: conjunto fechado de valores, permitido no Write Side (§2.3) ---
+
+Enum OrderType : string {
+    Delivery = "DELIVERY"
+    Local    = "LOCAL"
+}
+
+Enum OrderStatus : string {
+    Placed    = "PLACED"
+    Paid      = "PAID"
+    Preparing = "PREPARING"
+    Ready     = "READY"
+    Delivered = "DELIVERED"
+}
+
+// --- Padrão Snapshot (Dependência Temporal) ---
+// O pedido nunca referencia o cardápio ao vivo: no momento da compra, cada
+// linha copia nome, quantidade e preço unitário do MenuItem (application.ds,
+// PlaceOrder). Alterações futuras de preço/nome no cardápio não corrompem o
+// histórico financeiro já registrado no Order.
+ValueObject OrderLineSnapshot {
+    menuItemId MenuItemId
+    name       MenuItemName
+    quantity   Quantity
+    unitPrice  Money
+
+    Valid { ok }
+}
+
+// --- Errors de negócio (§4.1) ---
+
+Error MenuItemNotFound    { message "Item do cardápio não encontrado." }
+Error MenuItemUnavailable { message "Item do cardápio está indisponível." }
+Error CurrencyMismatch    { message "As moedas da operação não coincidem." }
+Error EmptyOrderError     { message "Um pedido não pode ser vazio." }
+Error OrderNotFound       { message "Pedido não encontrado." }
+Error InvalidOrderTransition {
+    message "Transição de status inválida para o pedido."
+}
+
+// --- Events: o que de fato aconteceu, no passado (§4.2) ---
+
+Event MenuItemCreated {
+    id       MenuItemId
+    name     MenuItemName
+    ingredients List<IngredientName>
+    price    Money
+    prepTime PrepTimeMinutes
+}
+
+Event MenuItemPriceUpdated { id MenuItemId, price Money }
+
+Event OrderPlaced {
+    id        OrderId
+    customer  CustomerName
+    phone     CustomerPhone
+    orderType OrderType
+    lines     List<OrderLineSnapshot>
+    total     Money
+}
+
+Event OrderPreparingStarted { id OrderId }
+Event OrderReady            { id OrderId }
+Event OrderDelivered        { id OrderId }
+
+// PublicEvent: o contrato compartilhado com o módulo Kitchen (§4.2, REQ-7.4).
+// É público porque a Policy CreateTicketOnOrderPaid (módulo Kitchen, outro
+// bounded context) reage a ele — nunca um Event privado (REQ-5.8). Carrega o
+// snapshot inteiro (não um "load" cruzado, ver README "Isolamento") para que
+// a cozinha monte o ticket sem tocar o banco de Sales.
+PublicEvent OrderPaid {
+    id    OrderId
+    lines List<OrderLineSnapshot>
+    total Money
+}
+
+// --- Aggregates: a fronteira de consistência (§4.5) ---
+
+// MenuItem: StateStored (REQ-19.5) — só o estado atual do cardápio importa,
+// sem histórico de transições (§3.1 do desafio).
+Aggregate MenuItem {
+    strategy StateStored
+
+    state {
+        id           MenuItemId
+        name         MenuItemName
+        ingredients  List<IngredientName>
+        price        Money
+        prepTime     PrepTimeMinutes
+        availability Availability
+    }
+
+    // Só store_manager cria itens ou atualiza preços (§3.1 do desafio).
+    access {
+        Create      requires caller.hasRole("store_manager")
+        UpdatePrice requires caller.hasRole("store_manager")
+    }
+
+    Handle Create(name MenuItemName, ingredients List<IngredientName>, price Money, prepTime PrepTimeMinutes) {
+        emit MenuItemCreated(self.id, name, ingredients, price, prepTime)
+    }
+
+    Apply MenuItemCreated {
+        state.id = event.id
+        state.name = event.name
+        state.ingredients = event.ingredients
+        state.price = event.price
+        state.prepTime = event.prepTime
+        state.availability = Availability(true)
+    }
+
+    // "O preço nunca pode ser negativo" já é a invariante do próprio Money
+    // (Valid { amount >= 0 }) — não precisa ser repetida aqui (§3.1).
+    Handle UpdatePrice(price Money) {
+        emit MenuItemPriceUpdated(self.id, price)
+    }
+
+    Apply MenuItemPriceUpdated {
+        state.price = event.price
+    }
+}
+
+// Order: EventSourced (REQ-19.4) — histórico imutável de transições
+// financeiras e de status (§3.2 do desafio). Máquina de estados: Placed ->
+// Paid -> Preparing -> Ready (Delivery) ou Delivered (Local), cada Handle
+// validando rigidamente a transição anterior (ensure ... else
+// InvalidOrderTransition) para que "Placed -> Preparing" direto seja
+// impossível.
+Aggregate Order {
+    strategy EventSourced
+
+    state {
+        id        OrderId
+        customer  CustomerName
+        phone     CustomerPhone
+        orderType OrderType
+        lines     List<OrderLineSnapshot>
+        total     Money
+        status    OrderStatus
+    }
+
+    access {
+        Place               requires caller.authenticated
+        ConfirmPayment      requires caller.hasRole("system_payment") or caller.hasRole("staff")
+        StartPreparing      requires caller.hasRole("system_payment") or caller.hasRole("staff")
+        CompletePreparation requires caller.hasRole("system_kitchen") or caller.hasRole("staff")
+    }
+
+    // Cliente autenticado faz o pedido (§3.2). "Não pode ser vazio" é
+    // reforçado aqui como invariante do próprio Aggregate, além da checagem
+    // já feita em PlaceOrder (application.ds) antes de carregar o cardápio.
+    Handle Place(customer CustomerName, phone CustomerPhone, orderType OrderType, lines List<OrderLineSnapshot>, total Money) {
+        ensure lines.length() > 0 else EmptyOrderError
+        emit OrderPlaced(self.id, customer, phone, orderType, lines, total)
+    }
+
+    Apply OrderPlaced {
+        state.id = event.id
+        state.customer = event.customer
+        state.phone = event.phone
+        state.orderType = event.orderType
+        state.lines = event.lines
+        state.total = event.total
+        state.status = OrderStatus.Placed
+    }
+
+    // system_payment ou staff marcam como pago (§3.2); notifica o resto da
+    // empresa via PublicEvent (a Kitchen instancia o ticket reagindo a ele).
+    Handle ConfirmPayment() {
+        ensure state.status == OrderStatus.Placed else InvalidOrderTransition
+        emit OrderPaid(self.id, self.lines, self.total)
+    }
+
+    Apply OrderPaid {
+        state.status = OrderStatus.Paid
+    }
+
+    // Uma vez pago, o pedido entra na fila de preparo — decisão interna de
+    // Sales, sem precisar de retorno da Kitchen (só o "prato pronto" no fim
+    // cruza a rede, ver policy.ds).
+    Handle StartPreparing() {
+        ensure state.status == OrderStatus.Paid else InvalidOrderTransition
+        emit OrderPreparingStarted(self.id)
+    }
+
+    Apply OrderPreparingStarted {
+        state.status = OrderStatus.Preparing
+    }
+
+    // system_kitchen "marca como preparado" (§3.2) — mas nunca chamando Sales
+    // direto (isolamento entre módulos, §6.1 do desafio): quem dispara este
+    // Handle é a Policy que reage ao PublicEvent TicketFinished da Kitchen
+    // (policy.ds). Ready para Delivery, Delivered para Local (match
+    // exaustivo, §3.2 da linguagem).
+    Handle CompletePreparation() {
+        ensure state.status == OrderStatus.Preparing else InvalidOrderTransition
+        match state.orderType {
+            OrderType.Delivery => emit OrderReady(self.id)
+            OrderType.Local    => emit OrderDelivered(self.id)
+        }
+    }
+
+    Apply OrderReady {
+        state.status = OrderStatus.Ready
+    }
+
+    Apply OrderDelivered {
+        state.status = OrderStatus.Delivered
+    }
+}

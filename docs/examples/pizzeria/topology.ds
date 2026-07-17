@@ -1,0 +1,34 @@
+// topology.ds — a topologia do sistema (§11): monólito único (PizzeriaMonolith)
+// rodando os dois módulos (Sales, Kitchen), que trocam mensagens de negócio por
+// uma fila assíncrona (RabbitMQ) em vez de acesso direto a banco — a fronteira
+// de bounded context é preservada mesmo dentro de um único deployment.
+Topology {
+    services {
+        PizzeriaMonolith { modules: [Sales, Kitchen] }
+    }
+
+    // Sales -> Kitchen: todo pedido pago vira um ticket na esteira (reação
+    // via PublicEvent OrderPaid). Kitchen -> Sales: todo ticket finalizado
+    // libera o pedido correspondente (reação via PublicEvent TicketFinished).
+    // Ambos os canais são "queue" (RabbitMQ) mesmo rodando no mesmo service —
+    // o spec permite canais explícitos dentro do mesmo monólito modular (§11)
+    // e é exatamente o que a especificação do desafio pede ("trocar mensagens
+    // de negócio através de uma fila assíncrona"). Canal de fila exige ordem
+    // total (orderBy), senão é aviso (REQ-5.16).
+    channels {
+        Sales -> Kitchen {
+            via: queue
+            provider: "rabbitmq"
+            connection: env("RABBITMQ_URL")
+            orderBy: id
+            workers { concurrency: 3, maxRate: 100, batchSize: 10 }
+        }
+        Kitchen -> Sales {
+            via: queue
+            provider: "rabbitmq"
+            connection: env("RABBITMQ_URL")
+            orderBy: orderRef
+            workers { concurrency: 3, maxRate: 100, batchSize: 10 }
+        }
+    }
+}
