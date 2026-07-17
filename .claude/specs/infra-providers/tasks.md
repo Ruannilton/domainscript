@@ -81,7 +81,7 @@
     `"PostgresDialect"`). (REQ-41.2).
   - d. Teste: `activeSQLProviders` reconhece postgres; `EmitGoMod` exige pgx;
     sem postgres ⇒ sem pgx (NFR-21).
-- [ ] **J1.3** **(R1)** Wiring lê conexão por `env(...)`, não por `db.DSN`.
+- [x] **J1.3** **(R1)** Wiring lê conexão por `env(...)`, não por `db.DSN`.
   - a. O wiring de provider real (`emitXADatabaseWiring` e/ou o caminho
     single-DB) passa a lowerizar `connection: env("X")` de `db.Decl.Entries`
     via `decl_io.go:envCallGo` — **nunca** `strconv.Quote(db.DSN)` (que é `""`

@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J1.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J1.4 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -276,10 +276,37 @@ invariante antigo. Corrigido:
   bug.
 `go build ./...`, `go vet ./...`, `gofmt -l .` limpos; `go test ./...`
 (suíte inteira, não só o escopo da task, por causa do ripple acima) verde.
-Próxima: **J1.3** — `(R1)` wiring lê conexão por `env(...)`, não por
-`db.DSN` (`emitXADatabaseWiring` hoje faz `strconv.Quote(db.DSN)`, que é
-`""` para `connection: env(...)`; precisa lowerizar via
-`decl_io.go:envCallGo`).
+
+Concluído: **J1.3** — `(R1)` `codegen/sql_wiring.go` ganhou
+`databaseConnectionGo(e, db)`, o único ponto que resolve a connection
+string de um `Database` real no wiring 2PC (`emitXADatabaseWiring`) — NUNCA
+mais `strconv.Quote(db.DSN)` direto (esse campo só é populado a partir do
+literal estático `"dsn:"`, `program/graph.go`, e fica `""` para
+`env(...)`). `databaseConnectionGo` lê a `Expr` crua de `db.Decl.Entries`
+(mesmo padrão de `telemetryEndpointGo`, `decl_telemetry.go`, reusando
+`findConfigEntryExpr`/`envCallKey`): a chave `"connection"` (spec §12, a
+forma canônica — `connection: env("DB_URL")`) tem prioridade; `"dsn"` é
+aceita como sinônimo histórico (o mesmo campo semântico, nome usado pela
+fixture sqlite `ledgerModDs`, `sql_adapter_test.go`, com um caminho de
+arquivo literal). Qualquer uma das duas resolve por FORMA — `env(KEY)` vira
+`os.Getenv(KEY)`, um literal STRING vira ele mesmo entre aspas Go — nunca
+mais um valor Go nativo silenciosamente vazio. Nenhuma das duas chaves
+presente cai no comportamento histórico (`strconv.Quote(db.DSN)` ==
+`""`), preservando o default de antes desta task. Teste novo
+`codegen/sql_wiring_connection_test.go` (`TestLedgerMainWiresConnectionFromEnv`):
+reusa a fixture Ledger (domínio/aplicação/read de `sql_adapter_test.go`)
+com um `mod.ds` alternativo — `provider: "postgres"` +
+`connection: env("LEDGER_MAIN_PG_URL")`/`env("LEDGER_SIDE_PG_URL")` em vez
+de `provider: "sqlite"` + `dsn: <caminho>` — e confirma que o `main.go`
+gerado chama `sqlruntime.OpenPostgres(os.Getenv("LEDGER_MAIN_PG_URL"))`,
+nunca `OpenPostgres("")`. Sem regressão: a fixture sqlite original
+(`dsn:` literal) continua produzindo a MESMA string quotada de antes —
+`TestLedgerMainWiresXADatabases`/`TestLedgerSmokeCompile`/
+`TestLedgerSingleDatabaseBehavior`/`TestLedgerTwoPCBehavior` e os testes
+J1.2 (`TestWallet*`, `TestActiveSQLProviders*`, `TestEmitGoMod*`) seguem
+verdes, assim como `TestGenerate*` (`driver`, wallet/shop e2e).
+`go build ./...`/`gofmt -l .`/`go vet ./...` limpos. Próxima: **J1.4**
+(golden + smoke + teste de integração opt-in guardado por `PG_URL`).
 
 ## Issues em aberto
 
