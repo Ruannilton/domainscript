@@ -112,7 +112,10 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   falam `*sql.DB`), então **nenhuma** mudança nos `*.go.txt` de store/uow além
   do dialeto.
 - **`open_postgres.go.txt`:** `Open(dsn) (*sql.DB, error)` que faz
-  `sql.Open("pgx", dsn)` + `PingContext` (fail-closed, REQ-47.2).
+  `sql.Open("pgx", dsn)` + `PingContext` (fail-closed, REQ-47.2). O ping usa um
+  `context.WithTimeout` curto (default 10s, decisão de design) — **nunca**
+  `context.Background()`: com o banco inalcançável (rede/firewall), o startup
+  falha oportunamente em vez de travar indefinidamente.
 - **`PostgresDialect`** (`dialect_postgres.go.txt` ou uma struct em
   `dialect.go.txt`): `Placeholder(n) = "$"+n`, `LimitOffset = "LIMIT %d OFFSET
   %d"`, DDL `events`/collection com tipos postgres (`text`, `jsonb`),
@@ -134,18 +137,30 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   SQL já abre/commita uma tx — o INSERT no outbox entra nela: atomicidade
   store+outbox, REQ-42.1).
 - **`DurableOutbox`** (`outbox.go.txt`, ao lado de `memoryOutbox`, MESMA
-  interface `Outbox`): um relay que, num loop com backoff, faz
-  `SELECT ... WHERE delivered_at IS NULL ORDER BY id LIMIT batch`, chama o(s)
-  handler(s) inscrito(s) por `event_type`, e num sucesso marca `delivered_at`;
-  numa falha incrementa `attempts` e re-tenta (at-least-once, REQ-42.2). O
-  relay roda como um Worker de serviço (mesma casa de `StartIdempotencyCleanup`,
-  G2) — um `Start(ctx)` no wiring de `main.go`.
+  interface `Outbox`): um relay que, num loop com backoff, seleciona um lote de
+  não entregues, chama o(s) handler(s) inscrito(s) por `event_type`, e num
+  sucesso marca `delivered_at`; numa falha incrementa `attempts` e re-tenta
+  (at-least-once, REQ-42.2). O relay roda como um Worker de serviço (mesma casa
+  de `StartIdempotencyCleanup`, G2) — um `Start(ctx)` no wiring de `main.go`.
+- **Lote exclusivo entre réplicas (múltiplas instâncias do mesmo service):** a
+  seleção do lote **não** pode ser um `SELECT ... WHERE delivered_at IS NULL`
+  nu — duas réplicas rodando o relay pegariam as MESMAS linhas e entregariam
+  em duplicidade sem necessidade. O `ScanUndelivered` do `Dialect` (abaixo)
+  seleciona com trava por linha: no Postgres, `SELECT ... FOR UPDATE SKIP
+  LOCKED LIMIT batch` (cada réplica leva um lote exclusivo, sem bloquear as
+  outras); no sqlite (single-writer, sem `SKIP LOCKED`) a trava de escrita do
+  próprio banco já serializa, então o `SELECT ... LIMIT batch` simples basta.
+  Como cada linha ainda pode ser entregue mais de uma vez em cenários de crash
+  (at-least-once por design), o handler idempotente segue sendo a garantia
+  final — `SKIP LOCKED` só elimina a duplicação *concorrente rotineira*, não a
+  necessidade de idempotência.
 - **Seleção:** `NewOutbox` vira `NewOutbox(dispatcher)` (memory, hoje) OU
   `NewDurableOutbox(db, dialect, dispatcher)` quando o módulo tem Database real
   (REQ-42.5). O `Subscribe` do código gerado é idêntico nos dois (REQ-42.3).
 - **SQL só no dialeto (REQ-42.4):** enqueue/scan/mark viram métodos do
-  `Dialect` (ex. `InsertOutbox`, `ScanUndelivered`, `MarkDelivered`) — funciona
-  sobre sqlite e postgres sem string fora do dialeto.
+  `Dialect` (ex. `InsertOutbox`, `ScanUndelivered` — com `FOR UPDATE SKIP
+  LOCKED` no postgres, `LIMIT` simples no sqlite —, `MarkDelivered`) —
+  funciona sobre sqlite e postgres sem string fora do dialeto.
 
 ### 3.3. RabbitMQ (REQ-43) — fecha a limitação single-process do Marco F
 
@@ -155,8 +170,17 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   key derivada de `EventType()` (+ chave de `orderBy` como parte da routing/
   consumer key para ordenação best-effort por partição, REQ-43.3). `Subscribe`
   declara queue durável + binding, consome com prefetch = `workers.concurrency`,
-  e para cada mensagem chama o handler; `ack` no sucesso, `nack`/requeue na
-  falha (REQ-43.4).
+  e para cada mensagem chama o handler; `ack` no sucesso, `nack` na falha
+  (REQ-43.4).
+- **Poison pill (falha permanente):** um `nack`+requeue incondicional vira um
+  loop imediato quando o erro é permanente (payload que não desserializa, bug
+  de lógica no handler) — sobrecarrega broker e consumidor sem nunca progredir.
+  A queue durável é declarada com uma **Dead Letter Exchange** e o consumidor
+  requeue só até um limite de tentativas (o `circuitBreaker.threshold`
+  declarado, ou um default); esgotado o limite, a mensagem é `nack`ada **sem
+  requeue** e cai na DLQ para inspeção manual, em vez de girar para sempre. A
+  contagem de tentativas viaja no header `x-death`/num header próprio do
+  envelope.
 - **Envelope:** JSON `{eventType, payload}` — o mesmo shape que o Dispatcher
   já move em memória, serializado (o `Event` gerado já é JSON-serializável,
   convenção de E4.2). Deserialização no consumidor reconstrói via o
@@ -178,6 +202,15 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   `Get` devolve `hit=false` (REQ-44.1/5, o shape já previsto). `InvalidateAll`
   = `DEL` por prefixo de namespace (SCAN+DEL, ou um contador de geração no key
   prefix para evitar SCAN — decisão: **geração no prefixo**, O(1) e sem SCAN).
+  **Custo da geração-no-prefixo:** as chaves das gerações antigas não são
+  apagadas no `InvalidateAll` (só deixam de ser lidas) — ficam no Redis até
+  expirar. Para não virar bloat de memória, **toda** chave de cache é escrita
+  com TTL (o `ttl` declarado no bloco `cache {}`; nunca sem expiração), e a
+  geração (um inteiro sob `<queryNamespace>:gen`) também expira/reinicia com
+  folga — o pior caso é uma geração de chaves órfãs vivendo no máximo um `ttl`,
+  não acumulando indefinidamente. Se um dia um `cache {}` sem `ttl` for
+  permitido, este adapter impõe um TTL-teto default em vez de gravar sem
+  expiração.
   Coalescing continua local por processo (o seam já o faz); cross-réplica não é
   exigido para stampede (§15 não pede).
 - **`redisrt/ratelimit.go.txt`:** `redisLimiter` implementa `Limiter` com
@@ -197,11 +230,15 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
 - **Driver:** `github.com/aws/aws-sdk-go-v2` (`config`, `service/s3`,
   `service/s3/presign`).
 - **`s3rt/filestorage.go.txt`:** `s3FileStorage` implementa `FileStorage`.
-  `Store(File) → FileRef`: `PutObject` com key determinística (ex.
-  `uuid`/hash-do-conteúdo — decisão: UUID v4 gerado, guardado no `FileRef.ID`),
-  metadados como object metadata. `Load(FileRef) → File`: `GetObject`.
-  `SignedURL(ref, ttl)`: presigned GET real (REQ-45.2). `Delete(ref)`:
-  `DeleteObject`.
+  `Store(File) → FileRef`: `PutObject` com key **única** (UUID v4 gerado por
+  `store`, guardado no `FileRef.ID` — cada `store` é um objeto novo, espelhando
+  o `memoryFileStorage`), metadados como object metadata. `Load(FileRef) →
+  File`: `GetObject`. `SignedURL(ref, ttl)`: presigned GET real (REQ-45.2).
+  `Delete(ref)`: `DeleteObject`. **Não** é uma key determinística por conteúdo:
+  desduplicação de arquivos idênticos (key = hash SHA-256 do conteúdo) seria
+  outra semântica — mudaria o comportamento observável vs. o in-memory
+  (NFR-22) e não é pedida pelo spec; fica fora do recorte. A palavra
+  "determinística" era imprecisa e foi corrigida para "única".
 - **Config:** bucket/região de `env(...)`; credenciais via cadeia padrão do
   AWS SDK (`config.LoadDefaultConfig`) — nunca hardcoded (REQ-47.1).
 - **FileStream (REQ-45.3):** só se `builtins.go` já emitir ops sobre
@@ -212,9 +249,22 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
 
 Padrão único: cada construtor de adapter recebe a URL/DSN como string, resolvida
 por `os.Getenv` no `main.go` gerado (o lowering de `env("X")` já produz
-`os.Getenv("X")`). O `main.go` abre a conexão e `log.Fatal` se falhar
-(fail-closed) — copiando o shape de `emitXADatabaseWiring`. `defer Close()` no
-shutdown onde o recurso tem Close (conn pool, canal AMQP).
+`os.Getenv("X")`). O startup abre cada conexão e **falha fechado** se qualquer
+uma falhar.
+
+**Padrão `run() error` em vez de `log.Fatal` direto (múltiplos recursos).** O
+sqlite de hoje (`emitXADatabaseWiring`) usa `log.Fatal` porque abre **um** só
+recurso — não há nada aberto antes que precise ser fechado. Com os cinco
+providers, o startup abre vários recursos em sequência (DB, canal AMQP, cliente
+Redis, cliente S3); um `log.Fatal` no meio chama `os.Exit(1)` e **pula todos os
+`defer Close()`** dos recursos já abertos, vazando conexões. Por isso o
+`main.go`-âncora gera o corpo num `func run() error` — cada passo faz `if err
+!= nil { return err }` (os `defer Close()` acima dele rodam no unwind), e o
+`main()` fica `if err := run(); err != nil { log.Fatal(err) }` (o `Fatal`
+único, depois que todo `defer` já executou). Fail-closed preservado
+(REQ-47.2), cleanup ordenado garantido (REQ-47.3). O caminho single-sqlite
+existente pode continuar como está (um recurso, sem `defer` anterior a
+proteger) — o padrão `run() error` entra no wiring novo multi-recurso.
 
 ## 4. Alternativas Rejeitadas
 

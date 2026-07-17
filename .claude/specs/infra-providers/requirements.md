@@ -252,7 +252,9 @@ domínio persistam fora do processo.
    (metadados no objeto, bytes no corpo).
 2. THE SYSTEM SHALL gerar URLs assinadas reais (presigned GET) com o TTL
    declarado, e `store` SHALL devolver um `FileRef` cujo `ID` localiza o objeto
-   no bucket (key determinística — decisão de design).
+   no bucket (key **única** por `store` — UUID v4, espelhando o
+   `memoryFileStorage`; desduplicação por hash de conteúdo é outra semântica,
+   fora do recorte — ver §design 3.5).
 3. THE SYSTEM SHALL suportar o caminho de `FileStream` (upload/download
    chunk-a-chunk) **na medida em que** `builtins.go` o exercite hoje (G1a cobre
    só `File`/`FileRef`); ampliar para `FileStream` só se o lowering já o
@@ -303,9 +305,13 @@ alcançável, para nunca rodar meio-configurado.
    RateLimit/FileStorage — forma de design), resolvido em runtime pela variável
    de ambiente — nunca credencial hardcoded no código gerado.
 2. THE SYSTEM SHALL, no `cmd/<service>/main.go`, abrir cada conexão real no
-   startup e **falhar o processo** (`log.Fatal`) se a conexão/ping falhar —
-   fail-closed, o mesmo padrão que `emitXADatabaseWiring` já usa para sqlite
-   (`if err != nil { log.Fatal(err) }`).
+   startup e **falhar o processo** se a conexão/ping falhar — fail-closed. Com
+   múltiplos recursos abertos em sequência, o wiring usa o padrão `func run()
+   error` (cada passo `return err`, `defer Close()` roda no unwind, `main()`
+   faz o `log.Fatal` único) para não vazar os recursos já abertos — nunca um
+   `log.Fatal` no meio que pule os `defer Close()` anteriores (ver §design
+   3.6). O ping de banco usa contexto com timeout curto, nunca
+   `context.Background()`.
 3. THE SYSTEM SHALL fechar os recursos (conexões, canais) ordenadamente no
    shutdown do serviço (defer/Close), sem vazar conexão — na medida do wiring
    de `main.go` gerado.
