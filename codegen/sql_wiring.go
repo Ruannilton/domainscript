@@ -7,9 +7,11 @@ import (
 	"strconv"
 	"strings"
 
+	"domainscript/ast"
 	"domainscript/codegen/emit"
 	"domainscript/codegen/sqlrt"
 	"domainscript/program"
+	"domainscript/token"
 )
 
 // sqlProvider é uma entrada do registro único de provider SQL real que este
@@ -190,7 +192,11 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 		storeVar := varPrefix + "Store"
 		storeVars[dbName] = storeVar
 
-		e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, strconv.Quote(db.DSN))
+		connGo, err := databaseConnectionGo(e, db)
+		if err != nil {
+			return fmt.Errorf("Database %s: %w", dbName, err)
+		}
+		e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, connGo)
 		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
 		e.Line("%s, err := %s.NewEventStore(%s.Background(), %s, %s.EventRegistry(), %s.%s())", storeVar, sqlRuntimeAlias, ctxAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor)
 		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
@@ -202,4 +208,45 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 	}
 	e.Line("}))")
 	return nil
+}
+
+// databaseConnectionGo traduz a connection string de db para uma expressão
+// Go (J1.3, R1, §design infra-providers 3.1): NUNCA usa
+// strconv.Quote(db.DSN) diretamente — esse campo só é populado a partir do
+// literal estático "dsn:" (program/graph.go) e fica "" para "env(...)", uma
+// forma que db.DSN não resolve (a mesma razão documentada no próprio
+// campo). Em vez disso lê a Expr crua de db.Decl.Entries (mesmo padrão de
+// telemetryEndpointGo, decl_telemetry.go, para "Telemetry.endpoint"): a
+// chave "connection" (spec §12, o nome canônico — ex. `connection:
+// env("DB_URL")`) tem prioridade; "dsn" é aceita como sinônimo histórico
+// (o mesmo campo semântico, nome mais antigo, ainda usado por fixtures
+// sqlite existentes com um caminho de arquivo literal, ex.
+// sql_adapter_test.go). Qualquer uma das duas resolve por FORMA: "env(KEY)"
+// vira "os.Getenv(KEY)" (envCallKey, decl_io.go); um literal STRING vira
+// ele mesmo, entre aspas Go — nunca um valor Go nativo diferente de string,
+// já que uma connection string sempre É texto. Nenhuma das duas chaves
+// presente cai no comportamento histórico (string vazia) — o mesmo default
+// de antes desta task para um Database sem "connection"/"dsn" declarado.
+func databaseConnectionGo(e *emit.Emitter, db *program.Database) (string, error) {
+	var entries []ast.ConfigEntry
+	if db.Decl != nil {
+		entries = db.Decl.Entries
+	}
+
+	expr, ok := findConfigEntryExpr(entries, "connection")
+	if !ok {
+		expr, ok = findConfigEntryExpr(entries, "dsn")
+	}
+	if !ok {
+		return strconv.Quote(db.DSN), nil
+	}
+
+	if key, isEnv := envCallKey(expr); isEnv {
+		osAlias := e.Import("os")
+		return fmt.Sprintf("%s.Getenv(%q)", osAlias, key), nil
+	}
+	if lit, isLit := expr.(*ast.Literal); isLit && lit.Kind == token.STRING {
+		return strconv.Quote(lit.Value), nil
+	}
+	return "", fmt.Errorf(`connection/dsn: forma não suportada (%T) — esperava env("VAR") ou um literal string`, expr)
 }
