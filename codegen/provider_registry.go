@@ -22,6 +22,19 @@ type providerDep struct {
 	ctor       string // construtor do adapter no pacote gerado (ex. "NewRabbitMQChannel")
 }
 
+// providerSources associa cada adapterDir a uma função de fontes (mesma forma
+// de sqlrt.Sources: devolve o conteúdo de cada arquivo .txt embutido, indexado
+// pelo nome final "arquivo.go") — usada por generateProviderRuntimeFiles
+// (J0.3, REQ-46.3, §design 2.3) para copiar as fontes de cada providerDep
+// ativa. Um registro À PARTE de channelProviders/cacheProviders/
+// rateLimitProviders/fileProviders (em vez de um campo em providerDep) porque
+// providerDep precisa continuar comparável (== e chave de map) para a dedup
+// de activeProviderDeps (R5) — um campo func quebraria isso. Vazio nesta task
+// (J0.3): cada categoria registra sua entrada aqui quando implementa seu
+// adapter real (J1..J5), sem exigir nenhuma mudança em
+// generateProviderRuntimeFiles nem em activeProviderDeps.
+var providerSources = map[string]func() (map[string][]byte, error){}
+
 // channelProviders/cacheProviders/rateLimitProviders/fileProviders são os
 // registros únicos de provider real por categoria (REQ-46.1, §design 2.1) —
 // mesma mecânica de sqlProviders, uma categoria por mapa porque cada uma

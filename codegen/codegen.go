@@ -109,6 +109,12 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		files = append(files, sqlFiles...)
 	}
 
+	providerFiles, err := generateProviderRuntimeFiles(activeProviders) // J0.3, REQ-46.3 — no-op hoje (providerSources vazio)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, providerFiles...)
+
 	if needsGRPC {
 		grpcFiles, err := generateGRPCRuntimeFiles()
 		if err != nil {

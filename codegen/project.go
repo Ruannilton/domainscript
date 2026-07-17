@@ -145,6 +145,14 @@ const (
 // (REQ-46.1: um provider novo aparece aqui só por entrar no registro da sua
 // categoria, sem nenhuma mudança nesta função). Vazio (o caso de hoje, antes
 // de J1..J5 popularem qualquer registro) não muda nada (NFR-21).
+//
+// Dedup por module (revisão da PR #13): duas categorias que usam o MESMO
+// provider real (ex. redis em Cache e em RateLimit) têm providerDep com o
+// MESMO module mas ctor diferente — activeProviderDeps (dedup por struct
+// inteira, R5) não as colapsa de propósito (cada categoria precisa do seu
+// ctor). Sem dedup aqui, as duas gerariam DUAS linhas "require" idênticas
+// para o mesmo módulo — inválido/redundante em go.mod. seenModules garante
+// uma linha "require" por module, mantendo a primeira versão encontrada.
 func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapter, otelAdapter bool, providerDeps []providerDep) []byte {
 	modulePath := opts.ModulePath
 	if modulePath == "" {
@@ -186,10 +194,12 @@ func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapte
 			requires = append(requires, fmt.Sprintf("%s %s", p.driverModule, p.driverVersion))
 		}
 	}
+	seenModules := make(map[string]bool)
 	for _, dep := range providerDeps {
-		if dep.module == "" {
+		if dep.module == "" || seenModules[dep.module] {
 			continue
 		}
+		seenModules[dep.module] = true
 		requires = append(requires, fmt.Sprintf("%s %s", dep.module, dep.version))
 	}
 

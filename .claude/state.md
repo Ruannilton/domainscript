@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J0.3 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -130,6 +130,34 @@ go.mod byte-idêntico ao de antes (NFR-21) — provado por
 dep fake. Sem regressão nos guardas SQL existentes (`TestLedgerGoMod...`,
 `TestWalletGoModStaysDependencyFreeAfterG1`) nem no smoke/comportamental do
 ledger. Próxima: **J0.3** (gate de cópia de fontes por categoria).
+
+Concluído: **J0.3** — `codegen/provider_runtime.go` (novo):
+`generateProviderRuntimeFiles(deps []providerDep) ([]File, error)`, a versão
+genérica de `generateSQLRuntimeFiles` (`sql_wiring.go`) para as categorias
+Canal/Cache/RateLimit/FileStorage (Database continua à parte, em
+`generateSQLRuntimeFiles`/`sqlProviders`). Para cada dep ativa, busca uma
+função de fontes em `providerSources` (novo mapa em
+`codegen/provider_registry.go`, chave `dep.adapterDir`) e copia cada arquivo
+devolvido para `<adapterDir>/<nome>`, ordenado por caminho (NFR-13). `providerDep`
+NÃO ganhou um campo `sources func(...)`: isso quebraria a comparabilidade
+(`==`/chave de map) que `activeProviderDeps` usa para a dedup por struct
+inteira (R5) — por isso `providerSources` é um registro à parte, indexado por
+`adapterDir`, populado por cada categoria quando implementa seu adapter real
+(J1..J5), sem exigir mudança em `generateProviderRuntimeFiles` nem em
+`activeProviderDeps`. Uma dep cujo `adapterDir` não está em `providerSources`
+é ignorada em silêncio (o caso de hoje: mapa vazio, nenhuma entrada de
+J1..J5 ainda). `Generate` (`codegen.go`) chama
+`generateProviderRuntimeFiles(activeProviders)` incondicionalmente, logo
+após o bloco de `generateSQLRuntimeFiles` — hoje é sempre um no-op porque
+`providerSources` está vazio. Testes em `codegen/provider_runtime_test.go`:
+registro vazio ⇒ nenhum arquivo mesmo com deps ativas declaradas (deps
+fake para amqp/redis); deps nil ⇒ nenhum arquivo; uma fonte fake registrada
+⇒ copia os arquivos ordenados por nome; `adapterDir` não registrado ⇒
+ignorado sem erro; erro de `sources()` ⇒ propagado (`errors.Is`). Sem
+regressão: `TestWallet*`/`TestLedger*` (`codegen`) e `TestGenerate*`
+(`driver`) continuam verdes, incluindo os guardas de determinismo/byte-
+identidade (NFR-13/21) — `providerSources` vazio não altera nenhum projeto
+gerado. Próxima: **J1.1** (dialeto Postgres, primeira subtask da Fase J1).
 
 ## Issues em aberto
 
