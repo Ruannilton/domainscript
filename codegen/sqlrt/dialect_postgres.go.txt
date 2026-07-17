@@ -103,6 +103,29 @@ func (postgresDialect) CreateOutboxTable() string {
 )`
 }
 
+// ScanUndelivered sobre Postgres acrescenta "FOR UPDATE SKIP LOCKED" ao
+// SELECT (REQ-42.4, §design infra-providers 3.2): cada réplica do relay
+// (DurableOutbox, task J2.3) que roda esta query pula linhas já travadas por
+// OUTRA réplica em vez de bloquear esperando — sem isso, duas réplicas
+// pegariam o MESMO lote e entregariam o mesmo evento em duplicidade sem
+// necessidade (a idempotência do handler continua sendo a garantia final
+// para o caso de crash, mas SKIP LOCKED elimina a duplicação concorrente
+// rotineira). "ORDER BY id" preserva FIFO (mesma razão do sqlite).
+func (postgresDialect) ScanUndelivered(batch int) string {
+	return fmt.Sprintf(`SELECT id, event_type, payload, attempts FROM outbox WHERE delivered_at IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT %d`, batch)
+}
+
+// MarkDelivered/PurgeDelivered não têm nenhuma sintaxe específica de
+// Postgres (SQL ANSI simples, igual ao sqlite) — implementadas aqui só para
+// satisfazer Dialect, byte-idênticas às de sqliteDialect.
+func (postgresDialect) MarkDelivered(idPlaceholder, timePlaceholder string) string {
+	return fmt.Sprintf(`UPDATE outbox SET delivered_at = %s WHERE id = %s`, timePlaceholder, idPlaceholder)
+}
+
+func (postgresDialect) PurgeDelivered(cutoffPlaceholder string) string {
+	return fmt.Sprintf(`DELETE FROM outbox WHERE delivered_at IS NOT NULL AND delivered_at < %s`, cutoffPlaceholder)
+}
+
 // LimitOffset devolve a cláusula de paginação — idêntica ao sqlite: LIMIT/
 // OFFSET é sintaxe ANSI, suportada nativamente pelo Postgres (a doc do
 // método na interface já antecipa isso).
