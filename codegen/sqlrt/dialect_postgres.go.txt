@@ -66,8 +66,18 @@ func (postgresDialect) CreateEventsTable() string {
 // sqliteDialect.CreateCollectionTable já assume; não quotamos/escapamos o
 // identificador aqui pela mesma razão que o sqlite não faz (paridade
 // deliberada, não uma lacuna nova introduzida por este dialeto).
+//
+// rowid BIGSERIAL (revisão da PR #14): Collection[T].fetch (collection.go.txt)
+// faz "SELECT payload FROM %s%s ORDER BY rowid" para preservar a ordem de
+// inserção (a MESMA garantia de memoryCollection) — código compartilhado
+// entre dialetos, não específico de sqlite. SQLite tem "rowid" IMPLÍCITO em
+// toda tabela comum; Postgres NÃO tem — sem esta coluna, o SELECT falharia
+// em runtime com "column \"rowid\" does not exist". BIGSERIAL cria uma
+// sequência auto-incrementada equivalente à semântica de insert-order do
+// rowid do sqlite.
 func (postgresDialect) CreateCollectionTable(name string) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	rowid   BIGSERIAL,
 	id      TEXT NOT NULL,
 	payload JSONB NOT NULL,
 	PRIMARY KEY (id)

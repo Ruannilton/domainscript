@@ -63,6 +63,7 @@ func TestPostgresDialectStrings(t *testing.T) {
 	coll := d.CreateCollectionTable("tickets")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS tickets",
+		"rowid   BIGSERIAL",
 		"id      TEXT",
 		"payload JSONB",
 		"PRIMARY KEY (id)",
