@@ -135,7 +135,17 @@ const (
 // versão maior (mesmo valor de sqliteMinGoVersion hoje — não há conflito a
 // resolver). Um programa sem nenhum dos três adapters continua produzindo
 // EXATAMENTE o go.mod de antes de G1/H1/H2 (byte a byte).
-func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapter, otelAdapter bool) []byte {
+//
+// providerDeps (J0.2, REQ-46.2, §design 2.2) é activeProviderDeps
+// (provider_registry.go) — as providerDep ativas de QUALQUER categoria não-SQL
+// (canal/cache/ratelimit/filestorage). Cada uma acrescenta "require
+// <dep.module> <dep.version>" ao mesmo bloco (ordenado por módulo com as
+// demais), e sobe o default de versão de Go para dep.minGo quando não-vazio —
+// mesma mecânica de sqlProviderKeys/sqlProviders.minGoVersion, generalizada
+// (REQ-46.1: um provider novo aparece aqui só por entrar no registro da sua
+// categoria, sem nenhuma mudança nesta função). Vazio (o caso de hoje, antes
+// de J1..J5 popularem qualquer registro) não muda nada (NFR-21).
+func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapter, otelAdapter bool, providerDeps []providerDep) []byte {
 	modulePath := opts.ModulePath
 	if modulePath == "" {
 		modulePath = moduleNameFromOutDir(outDir)
@@ -150,6 +160,11 @@ func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapte
 		for _, key := range sqlProviderKeys {
 			if p, ok := sqlProviders[key]; ok {
 				version = maxGoVersion(version, p.minGoVersion)
+			}
+		}
+		for _, dep := range providerDeps {
+			if dep.minGo != "" {
+				version = maxGoVersion(version, dep.minGo)
 			}
 		}
 	}
@@ -170,6 +185,12 @@ func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapte
 		if p, ok := sqlProviders[key]; ok {
 			requires = append(requires, fmt.Sprintf("%s %s", p.driverModule, p.driverVersion))
 		}
+	}
+	for _, dep := range providerDeps {
+		if dep.module == "" {
+			continue
+		}
+		requires = append(requires, fmt.Sprintf("%s %s", dep.module, dep.version))
 	}
 
 	if len(requires) == 0 {

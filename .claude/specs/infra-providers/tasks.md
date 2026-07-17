@@ -36,7 +36,7 @@
     Cache+RateLimit). Ordenação estável (NFR-23).
   - d. Teste: registro vazio ⇒ `activeProviderDeps` vazio; dois mapas com o
     MESMO módulo/dir ⇒ uma entrada só.
-- [ ] **J0.2** `EmitGoMod` consome o registro.
+- [x] **J0.2** `EmitGoMod` consome o registro.
   - a. `EmitGoMod` (`project.go`) itera `activeProviderDeps` além de
     `activeSQLProviders`; `require` ordenado por módulo. (REQ-46.2, §design 2.2).
   - b. `go` diretiva sobe para `maxGoVersion` de todos os ativos (reusa helper
