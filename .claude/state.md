@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J0.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J0.3 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -106,13 +106,30 @@ chega em J1..J5). `activeProviderDeps(prog)` varre `prog.Channels`
 (`provider:`), o bloco `Cache`/`RateLimit` de cada módulo (`backend:`, via
 `moduleCacheBlock`/`moduleRateLimitBlock` já existentes) e cada
 `mod.FileStorages` (`provider:`), resolve contra os registros e devolve a
-lista deduplicada (por `module` **e** por `adapterDir`, R5 — mesmo provider
-em 2 categorias colapsa numa entrada) e ordenada (NFR-23). Testes em
+lista deduplicada (pela `providerDep` inteira — struct totalmente comparável;
+dedup por só "module" OU só "adapterDir" foi tentada e descartada na revisão
+da PR #11 por descartar precocemente providers distintos que só
+compartilhassem um dos dois campos, R5) e ordenada por module com
+`adapterDir` como desempate (NFR-23). Testes em
 `codegen/provider_registry_test.go` (`package codegen`, para mutar os mapas
 no teste de dedup): registro vazio ⇒ sempre vazio mesmo com
 canal/Cache/RateLimit/FileStorage declarando providers desconhecidos; dois
-mapas populados com a MESMA `providerDep` (mesmo module+adapterDir) ⇒ uma
-entrada só. Próxima: **J0.2** (`EmitGoMod` consome `activeProviderDeps`).
+mapas populados com a MESMA `providerDep` ⇒ uma entrada só; duas `providerDep`
+com module igual e `adapterDir` diferente ⇒ as duas sobrevivem.
+
+Concluído: **J0.2** — `EmitGoMod` (`codegen/project.go`) ganha um parâmetro
+`providerDeps []providerDep`: cada dep ativa vira uma linha `require` no MESMO
+bloco que os providers SQL/grpc/OTel já usam (ordenado por módulo,
+determinismo NFR-13) e eleva o default de versão de Go para `dep.minGo`
+quando não-vazio — mesma mecânica de `sqlProviderKeys`/`sqlProviders.minGoVersion`,
+generalizada (REQ-46.2). `Generate` (`codegen.go`) passa
+`activeProviderDeps(prog)`. Registros ainda vazios (J1..J5 não populados) ⇒
+go.mod byte-idêntico ao de antes (NFR-21) — provado por
+`TestEmitGoModNoProviderDepsUnchanged`; `TestEmitGoModWithProviderDepsAddsRequireAndBumpsVersion`/
+`TestEmitGoModWithProviderDepsOrderedWithSQL` provam a adição/ordenação com uma
+dep fake. Sem regressão nos guardas SQL existentes (`TestLedgerGoMod...`,
+`TestWalletGoModStaysDependencyFreeAfterG1`) nem no smoke/comportamental do
+ledger. Próxima: **J0.3** (gate de cópia de fontes por categoria).
 
 ## Issues em aberto
 

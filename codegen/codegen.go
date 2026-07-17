@@ -88,11 +88,12 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 
 	activeSQL := activeSQLProviders(prog) // I7.0, NFR-12 — chaves de sqlProviders (sql_wiring.go) efetivamente usadas
 	needsSQL := len(activeSQL) > 0
-	needsGRPC := programNeedsGRPC(prog) // H1, NFR-12 — true só quando ao menos um arquivo declara "Interface GRPC"
-	needsOTel := programNeedsOTel(prog) // H2, NFR-12 — true só quando ao menos um mod.ds declara "Telemetry { ... }"
+	needsGRPC := programNeedsGRPC(prog)         // H1, NFR-12 — true só quando ao menos um arquivo declara "Interface GRPC"
+	needsOTel := programNeedsOTel(prog)         // H2, NFR-12 — true só quando ao menos um mod.ds declara "Telemetry { ... }"
+	activeProviders := activeProviderDeps(prog) // J0.2, NFR-21 — providerDep de canal/cache/ratelimit/filestorage efetivamente ativas
 
 	var files []File
-	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", activeSQL, needsGRPC, needsOTel)})
+	files = append(files, File{Path: "go.mod", Content: EmitGoMod(opts, "", activeSQL, needsGRPC, needsOTel, activeProviders)})
 
 	runtimeFiles, err := generateRuntimeFiles()
 	if err != nil {
