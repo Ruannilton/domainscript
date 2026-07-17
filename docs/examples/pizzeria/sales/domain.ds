@@ -28,6 +28,13 @@ ValueObject OrderId(string) {
     Valid { value.length() > 0 }
 }
 
+// Identidade do cliente autenticado que fez o pedido (distinta do OrderId):
+// é contra ESTE campo que a visibility de OrderVW compara caller.id (read.ds)
+// — o id do pedido nunca é o id de quem o fez.
+ValueObject CustomerId(string) {
+    Valid { value.length() > 0 }
+}
+
 ValueObject CustomerName(string) {
     Valid { value.length() > 0 }
 }
@@ -116,12 +123,13 @@ Event MenuItemCreated {
 Event MenuItemPriceUpdated { id MenuItemId, price Money }
 
 Event OrderPlaced {
-    id        OrderId
-    customer  CustomerName
-    phone     CustomerPhone
-    orderType OrderType
-    lines     List<OrderLineSnapshot>
-    total     Money
+    id         OrderId
+    customerId CustomerId
+    customer   CustomerName
+    phone      CustomerPhone
+    orderType  OrderType
+    lines      List<OrderLineSnapshot>
+    total      Money
 }
 
 Event OrderPreparingStarted { id OrderId }
@@ -195,13 +203,14 @@ Aggregate Order {
     strategy EventSourced
 
     state {
-        id        OrderId
-        customer  CustomerName
-        phone     CustomerPhone
-        orderType OrderType
-        lines     List<OrderLineSnapshot>
-        total     Money
-        status    OrderStatus
+        id         OrderId
+        customerId CustomerId
+        customer   CustomerName
+        phone      CustomerPhone
+        orderType  OrderType
+        lines      List<OrderLineSnapshot>
+        total      Money
+        status     OrderStatus
     }
 
     access {
@@ -214,13 +223,14 @@ Aggregate Order {
     // Cliente autenticado faz o pedido (§3.2). "Não pode ser vazio" é
     // reforçado aqui como invariante do próprio Aggregate, além da checagem
     // já feita em PlaceOrder (application.ds) antes de carregar o cardápio.
-    Handle Place(customer CustomerName, phone CustomerPhone, orderType OrderType, lines List<OrderLineSnapshot>, total Money) {
+    Handle Place(customerId CustomerId, customer CustomerName, phone CustomerPhone, orderType OrderType, lines List<OrderLineSnapshot>, total Money) {
         ensure lines.length() > 0 else EmptyOrderError
-        emit OrderPlaced(self.id, customer, phone, orderType, lines, total)
+        emit OrderPlaced(self.id, customerId, customer, phone, orderType, lines, total)
     }
 
     Apply OrderPlaced {
         state.id = event.id
+        state.customerId = event.customerId
         state.customer = event.customer
         state.phone = event.phone
         state.orderType = event.orderType

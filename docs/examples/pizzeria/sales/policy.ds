@@ -11,11 +11,18 @@
 // é a mesma conversão de fronteira usada no sentido inverso pela Kitchen
 // (ver kitchen/policy.ds) — o par formam a camada anticorrupção entre os
 // dois bounded contexts.
+//
+// Idempotência sob AtLeastOnce: uma entrega duplicada do MESMO TicketFinished
+// chegaria com o pedido já em Ready/Delivered — chamar CompletePreparation()
+// de novo falharia com InvalidOrderTransition (o Handle exige status ==
+// Preparing). O segundo "ensure" torna a reentrega um no-op silencioso em vez
+// de um erro de aplicação.
 Policy MarkOrderReadyOnTicketFinished on TicketFinished {
     delivery AtLeastOnce
     execute {
         order = load Order(OrderId(event.orderRef))
         ensure order exists else Nop
+        ensure order.state.status == OrderStatus.Preparing else Nop
         order.CompletePreparation()
     }
 }

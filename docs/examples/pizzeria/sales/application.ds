@@ -47,11 +47,12 @@ UseCase UpdateMenuItemPrice handles UpdatePrice {
 // --- Pedidos ---
 
 Command Place {
-    id        ref Order
-    customer  CustomerName
-    phone     CustomerPhone
-    orderType OrderType
-    items     List<OrderItemRequest>
+    id         ref Order
+    customerId CustomerId
+    customer   CustomerName
+    phone      CustomerPhone
+    orderType  OrderType
+    items      List<OrderItemRequest>
 }
 
 // Idempotência com janela de 1h (§3.3 do desafio): dois cliques do cliente
@@ -87,7 +88,7 @@ UseCase PlaceOrder handles Place {
         }
 
         order = load Order(cmd.id)
-        order.Place(cmd.customer, cmd.phone, cmd.orderType, lines, total)
+        order.Place(cmd.customerId, cmd.customer, cmd.phone, cmd.orderType, lines, total)
     }
 }
 

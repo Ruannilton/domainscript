@@ -27,18 +27,24 @@ Query GetAvailableMenu() -> AppendList<MenuItemVW> {
 // Campos sensíveis (dados do cliente e total) só para o próprio dono do
 // pedido ou para staff (§3.4 do desafio) — bloco visibility (§6.2). Nota: a
 // enforcement de campo é um gap conhecido do back-end (ver README).
+//
+// Compara caller.id contra self.customerId (identidade de quem fez o
+// pedido), NUNCA contra self.id (identidade do próprio pedido) — os dois só
+// coincidem por acaso em domínios onde o agregado É o dono (ex. Account na
+// wallet); aqui Order e cliente são identidades distintas.
 View OrderVW {
-    id        OrderId
-    customer  CustomerName
-    phone     CustomerPhone
-    orderType OrderType
-    total     Money
-    status    OrderStatus
+    id         OrderId
+    customerId CustomerId
+    customer   CustomerName
+    phone      CustomerPhone
+    orderType  OrderType
+    total      Money
+    status     OrderStatus
 
     visibility {
-        customer requires caller.id == self.id or caller.hasRole("staff")
-        phone    requires caller.id == self.id or caller.hasRole("staff")
-        total    requires caller.id == self.id or caller.hasRole("staff")
+        customer requires caller.id == self.customerId or caller.hasRole("staff")
+        phone    requires caller.id == self.customerId or caller.hasRole("staff")
+        total    requires caller.id == self.customerId or caller.hasRole("staff")
     }
 }
 

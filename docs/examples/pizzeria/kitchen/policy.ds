@@ -9,10 +9,16 @@
 // Kitchen construindo o ValueObject local a partir do valor estrangeiro
 // (TicketId(event.id), TicketItemName(line.name), ...) — a mesma camada
 // anticorrupção usada no sentido inverso por sales/policy.ds.
+//
+// Idempotência sob AtLeastOnce: uma entrega duplicada do MESMO OrderPaid não
+// pode recriar o ticket (voltaria o status para Pending e duplicaria os
+// itens) — o "ensure not (ticket exists) else Nop" torna a reentrega inteira
+// um no-op depois da primeira entrega bem-sucedida.
 Policy CreateTicketOnOrderPaid on OrderPaid {
     delivery AtLeastOnce
     execute {
         ticket = load KitchenTicket(TicketId(event.id))
+        ensure not (ticket exists) else Nop
         ticket.Create(ExternalOrderRef(event.id))
         for line in event.lines {
             ticket.AddItem(TicketItem(
