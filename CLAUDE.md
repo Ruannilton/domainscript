@@ -18,8 +18,8 @@ bodies generate `where`/`orderBy`/`skip`/`take`/`as`/`join`/`in` and
 `distinct`/`sum`/`focus` over an in-memory seam (`runtime.Query[T]`) that
 descends to parametrized SQL on the sqlite adapter through a pluggable
 `Dialect`. A fifth plan, `.claude/specs/infra-providers/` — real
-infrastructure providers (REQ-41..48, Marco J) — is **in progress /
-not started** (no task begun): it closes gap G-4 / ISSUE-3 for a deliberate
+infrastructure providers (REQ-41..48, Marco J) — is **in progress**
+(J0 done, J1.1/J1.2 done, next is J1.3): it closes gap G-4 / ISSUE-3 for a deliberate
 5-provider slice — Postgres (Database), a durable Outbox, RabbitMQ
 (cross-service channel), Redis (Cache + RateLimit) and S3 (FileStorage) — each
 opt-in behind the seam that already exists. Five spec sets are the source of
@@ -164,9 +164,12 @@ These are the load-bearing decisions — violating them breaks the design's core
   Go stdlib and the vendored `runtime/` only — `go build`/`go run` with no
   external module. A real DB driver, gRPC, or OpenTelemetry are added to
   `go.mod` **only** when the program actually declares them (a `Database` with
-  a provider `codegen/sql_wiring.go` recognizes as real — currently just
-  `"sqlite"`, so a decorative `provider: "postgres"` label pulls nothing; an
-  `Interface GRPC`; a `Telemetry` block) — always isolated behind an interface.
+  a provider `codegen/sql_wiring.go` recognizes as real — `"sqlite"` and, since
+  J1.2, `"postgres"` too, each pulling in exactly its own driver
+  (`modernc.org/sqlite` / `github.com/jackc/pgx/v5`); an `Interface GRPC`; a
+  `Telemetry` block) — always isolated behind an interface. Any other provider
+  label (e.g. `"pg"`, still used as an inert placeholder by several unrelated
+  fixtures) stays decorative and pulls nothing.
 - **Golden test + smoke compile, paired (NFR-17).** Every emitter has a golden
   test (generated output vs. a versioned reference); on top of that, the two
   bundled examples (`docs/examples/wallet`, `docs/examples/shop`) are generated
@@ -271,6 +274,8 @@ de Infraestrutura" — a 5-provider slice of gap G-4 / ISSUE-3: Postgres
 (Database), durable Outbox, RabbitMQ (cross-service channel), Redis (Cache +
 RateLimit), S3 (FileStorage), each opt-in behind the existing seam. J0 is the
 transversal provider registry; J1–J5 are independent per-provider vertical
-slices (J2 depends on J1); J6/J7 anchor+close. **Not started** — next task is
-J0.1. The rest of G-4 (other databases, gRPC channel, Dynamo idempotency,
-layered cache, GCS/Azure) stays explicitly out of this slice.
+slices (J2 depends on J1); J6/J7 anchor+close. **In progress** — J0 (registry)
+and J1.1/J1.2 (Postgres dialect + driver/go.mod) are done; next task is J1.3
+(env-based DSN wiring, R1). The rest of G-4 (other databases, gRPC channel,
+Dynamo idempotency, layered cache, GCS/Azure) stays explicitly out of this
+slice.

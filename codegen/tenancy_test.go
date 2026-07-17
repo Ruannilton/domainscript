@@ -388,7 +388,7 @@ Query Ping() -> NoteText {
 
 const notesModDs = `Module Notes {
     Database NotesDb {
-        provider: "postgres"
+        provider: "pg"
         manages: [Note]
         tenancy: { strategy: row_level, column: "tenant_id" }
     }

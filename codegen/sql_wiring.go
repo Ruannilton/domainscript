@@ -24,6 +24,16 @@ type sqlProvider struct {
 	driverVersion string
 	minGoVersion  string // versão mínima de Go que o driver exige (EmitGoMod)
 	dialectCtor   string // nome do construtor Dialect exportado por sqlruntime, ex. "SQLiteDialect"
+	// openFunc é o nome da func exportada por sqlruntime que abre uma conexão
+	// para este provider (ex. "Open", "OpenPostgres", J1.2) — não pode ser o
+	// mesmo símbolo "Open" para dois providers porque generateSQLRuntimeFiles
+	// (codegen.go) copia TODOS os *.go.txt de sqlrt.Sources() sempre que
+	// qualquer provider real está ativo (não filtra por provider individual):
+	// um projeto com Database "sqlite" E "postgres" ativos ao mesmo tempo tem
+	// os dois open_*.go.txt no MESMO pacote sqlruntime gerado, então cada um
+	// precisa de um nome próprio. emitXADatabaseWiring (abaixo) usa isto em
+	// vez de literal ".Open(".
+	openFunc string
 }
 
 // sqlProviders é o registro único de provider (REQ-40.2): o ÚNICO lugar do
@@ -37,6 +47,20 @@ var sqlProviders = map[string]sqlProvider{
 		driverVersion: sqliteDriverVersion,
 		minGoVersion:  sqliteMinGoVersion,
 		dialectCtor:   "SQLiteDialect",
+		openFunc:      "Open",
+	},
+	// postgres (J1.2, REQ-41.2): segundo provider SQL real deste gerador —
+	// mesmo seam Dialect de sqlite (dialect_postgres.go.txt, J1.1), driver
+	// pgx/v5 stdlib atrás de database/sql (open_postgres.go.txt, §design
+	// infra-providers 3.1). pgx/v5 (>= v5.7.x) exige Go >= 1.25 (mesma
+	// versão mínima que modernc.org/sqlite já exige hoje — maxGoVersion,
+	// project.go, não eleva o default além do que sqlite já elevaria).
+	"postgres": {
+		driverModule:  postgresDriverModule,
+		driverVersion: postgresDriverVersion,
+		minGoVersion:  postgresMinGoVersion,
+		dialectCtor:   "PostgresDialect",
+		openFunc:      "OpenPostgres",
 	},
 }
 
@@ -166,7 +190,7 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 		storeVar := varPrefix + "Store"
 		storeVars[dbName] = storeVar
 
-		e.Line("%s, err := %s.Open(%s)", dbVar, sqlRuntimeAlias, strconv.Quote(db.DSN))
+		e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, strconv.Quote(db.DSN))
 		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
 		e.Line("%s, err := %s.NewEventStore(%s.Background(), %s, %s.EventRegistry(), %s.%s())", storeVar, sqlRuntimeAlias, ctxAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor)
 		e.Line("if err != nil { %s.Fatal(err) }", logAlias)

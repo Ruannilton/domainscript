@@ -13,13 +13,18 @@ import (
 )
 
 // sql_adapter_test.go prova a task G1 (adapter database/sql plugável,
-// REQ-20.5, REQ-26.2/26.3, NFR-12, §design 3.8/3.9/3.11/4.4): nem o wallet
-// nem o shop (as duas fixtures reais deste repositório) declaram um Database
-// com um provider que este gerador reconheça como adapter real (ambos usam
-// "postgres", decorativo até esta task — ver program.Database.Provider) —
-// então esta task precisa de uma fixture SINTÉTICA para exercitar o
-// caminho de verdade, o mesmo padrão que meterFixtureSrc (decl_usecase_test.go,
-// E7.2) já usou para o dispatch de Handle.
+// REQ-20.5, REQ-26.2/26.3, NFR-12, §design 3.8/3.9/3.11/4.4): à época de G1,
+// nem o wallet nem o shop (as duas fixtures reais deste repositório)
+// declaravam um Database com um provider que o gerador reconhecesse como
+// adapter real (ambos usam "postgres", decorativo até J1.2 — ver
+// program.Database.Provider) — então G1 precisou de uma fixture SINTÉTICA
+// para exercitar o caminho de verdade (2PC, multi-Database), o mesmo padrão
+// que meterFixtureSrc (decl_usecase_test.go, E7.2) já usou para o dispatch de
+// Handle. Desde J1.2 (REQ-41.2), sqlProviders["postgres"] existe: o wallet
+// real também passou a exercitar o caminho de verdade (banco único, sem 2PC)
+// — ver TestWalletGoModRequiresOnlyPostgresDriverAfterG1, abaixo — mas a
+// fixture sintética Ledger continua necessária para 2PC/multi-Database, que
+// nenhum exemplo real do repositório declara.
 //
 // A fixture, módulo "Ledger": dois Aggregates EventSourced (Account, gerido
 // por MainDb; Journal, por SideDb), ambos os Database com
@@ -238,11 +243,16 @@ func TestLedgerGoModRequiresSQLiteAndBumpsGoVersion(t *testing.T) {
 	}
 }
 
-// TestWalletGoModStaysDependencyFreeAfterG1 é o guarda de regressão mais
-// importante desta task (NFR-12): o wallet real (provider:"postgres", nunca
-// reconhecido como adapter real) precisa continuar gerando um go.mod SEM
-// nenhum "require" e SEM sqlruntime/* — G1 é estritamente opt-in.
-func TestWalletGoModStaysDependencyFreeAfterG1(t *testing.T) {
+// TestWalletGoModRequiresOnlyPostgresDriverAfterG1 é o guarda de regressão
+// mais importante desta task (NFR-12), revisado por J1.2 (REQ-41.2): até
+// J1.2, "postgres" nunca era reconhecido como adapter real (só "sqlite"
+// era), então o wallet real (provider:"postgres") gerava um go.mod SEM
+// nenhum "require" e SEM sqlruntime/*. Desde J1.2, sqlProviders["postgres"]
+// existe — o wallet passa a ser, como qualquer programa com Database
+// "sqlite", estritamente opt-in: ganha sqlruntime/* e EXATAMENTE uma
+// dependência externa (o driver pgx, nenhuma outra) — G1 continua opt-in,
+// só que agora "postgres" é um dos providers que liga o opt-in.
+func TestWalletGoModRequiresOnlyPostgresDriverAfterG1(t *testing.T) {
 	files := generateWalletProject(t)
 
 	goMod, ok := ledgerFileByPath(files, "go.mod")
@@ -250,17 +260,21 @@ func TestWalletGoModStaysDependencyFreeAfterG1(t *testing.T) {
 		t.Fatal("esperava go.mod entre os arquivos gerados do wallet")
 	}
 	content := string(goMod)
-	if strings.Contains(content, "require") {
-		t.Fatalf("NFR-12: wallet não deveria ter nenhuma dependência externa em go.mod, achei:\n%s", content)
+	if !strings.Contains(content, "require github.com/jackc/pgx/v5 ") {
+		t.Fatalf("esperava go.mod exigir github.com/jackc/pgx/v5 (Database MainDb, provider \"postgres\"), achei:\n%s", content)
 	}
-	if !strings.Contains(content, "go 1.22") {
-		t.Fatalf("esperava a versão de Go do wallet inalterada (\"go 1.22\"), achei:\n%s", content)
+	if strings.Contains(content, "modernc.org/sqlite") {
+		t.Fatalf("go.mod não deveria exigir modernc.org/sqlite (wallet não declara nenhum Database sqlite), achei:\n%s", content)
 	}
 
+	foundEventStore := false
 	for _, f := range files {
-		if strings.HasPrefix(f.Path, "sqlruntime/") {
-			t.Fatalf("NFR-12: wallet não deveria gerar nenhum arquivo sqlruntime/*, achei %q", f.Path)
+		if f.Path == "sqlruntime/eventstore.go" {
+			foundEventStore = true
 		}
+	}
+	if !foundEventStore {
+		t.Fatal("esperava sqlruntime/eventstore.go entre os arquivos gerados do wallet (Database MainDb, provider \"postgres\" real)")
 	}
 }
 

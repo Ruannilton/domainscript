@@ -142,7 +142,7 @@ Query GetAccount(accountId AccountId) -> AccountSummaryVW {
 
 const billingModDs = `Module Billing {
     Database BillingDb {
-        provider: "postgres"
+        provider: "pg"
         manages: [Account]
     }
 }

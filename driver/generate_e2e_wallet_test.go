@@ -71,29 +71,57 @@ func runGoOverDir(t *testing.T, dir string, args ...string) []byte {
 	return out
 }
 
+// ensureModTidyIfNeeded roda `go mod tidy` em dir quando o go.mod já escrito
+// declara um bloco "require" (mesma detecção de gentest.needsModTidy,
+// codegen/gentest/smoke.go) — necessário desde que wallet (provider
+// "postgres", ver mod.ds) passou a ser um provider SQL real (J1.2,
+// REQ-41.2): go.mod ganha "require github.com/jackc/pgx/v5 ...", e sem
+// go.sum resolvido `go build`/`go vet`/`go test` falham com "missing go.sum
+// entry". Sem provider real ativo (o caso antes de J1.2, e ainda o caso de
+// qualquer programa sem Database "sqlite"/"postgres"), go.mod não tem
+// "require" e esta função é um no-op — preserva o comportamento anterior.
+func ensureModTidyIfNeeded(t *testing.T, dir string) {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		t.Fatalf("não consegui ler go.mod: %v", err)
+	}
+	if strings.Contains(string(content), "require ") {
+		runGoOverDir(t, dir, "mod", "tidy")
+	}
+}
+
 // TestGenerateWalletE2ESmokeCompile prova a 1ª/2ª parte do critério de
 // conclusão da task (DoD §5.2, NFR-14): `go build ./...` e `go vet ./...`
 // verdes sobre a saída REAL escrita em disco por GenerateProject — o
 // artefato que um usuário final obtém rodando `dsc gen`.
 func TestGenerateWalletE2ESmokeCompile(t *testing.T) {
 	out := generateWalletE2EProject(t)
+	ensureModTidyIfNeeded(t, out)
 	runGoOverDir(t, out, "build", "./...")
 	runGoOverDir(t, out, "vet", "./...")
 }
 
-// TestGenerateWalletE2EGoModHasNoExternalRequire prova a 4ª parte do
-// critério de conclusão (NFR-12): o go.mod gerado não tem NENHUM bloco
-// require — o núcleo transacional do Marco E depende só da stdlib Go e do
-// runtime vendorado (EmitGoMod, codegen/project.go, sempre "module .../go
-// X.Y", nunca "require").
-func TestGenerateWalletE2EGoModHasNoExternalRequire(t *testing.T) {
+// TestGenerateWalletE2EGoModRequiresPostgresDriver prova a 4ª parte do
+// critério de conclusão, revisada por J1.2 (REQ-41.2/41.3): antes de J1.2,
+// "postgres" não era um provider SQL reconhecido (só "sqlite" era —
+// program.Database.Provider), então o Database "MainDb" (mod.ds, provider
+// "postgres") não disparava adapter nenhum e go.mod nunca tinha "require"
+// (era esse o comportamento que este teste provava, com outro nome). Agora
+// que sqlProviders["postgres"] existe (codegen/sql_wiring.go), o mesmo
+// wallet real É um programa com Database SQL real — o núcleo transacional
+// continua sem dependência externa PRÓPRIA (NFR-12 não mudou para o caso
+// sem nenhum provider real), mas um provider real ativo introduz
+// exatamente UMA dependência isolada e opt-in: o driver pgx (nenhuma outra,
+// nenhum lib/pq, nenhuma dependência do núcleo).
+func TestGenerateWalletE2EGoModRequiresPostgresDriver(t *testing.T) {
 	out := generateWalletE2EProject(t)
 	content, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	if err != nil {
 		t.Fatalf("não consegui ler go.mod: %v", err)
 	}
-	if strings.Contains(string(content), "require") {
-		t.Fatalf("go.mod não deveria conter \"require\" (NFR-12 — zero dep externa):\n%s", content)
+	if !strings.Contains(string(content), "github.com/jackc/pgx/v5 ") {
+		t.Fatalf("go.mod deveria exigir github.com/jackc/pgx/v5 (Database MainDb, provider \"postgres\", J1.2):\n%s", content)
 	}
 }
 
@@ -146,6 +174,7 @@ func TestGenerateWalletE2EBehavior(t *testing.T) {
 	if err := os.WriteFile(path, []byte(walletE2EBehaviorTest), 0o644); err != nil {
 		t.Fatalf("não consegui escrever %q: %v", path, err)
 	}
+	ensureModTidyIfNeeded(t, out)
 	runGoOverDir(t, out, "test", "./...")
 }
 

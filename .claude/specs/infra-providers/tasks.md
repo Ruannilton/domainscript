@@ -72,7 +72,7 @@
     falhe no outro). (§design 3.1, R7).
   - d. Teste unit do dialeto (strings esperadas), reusando o padrão de
     `sql_dialect_test.go` (o dialeto `$1` sobre sqlite já existe lá).
-- [ ] **J1.2** Driver + registro + go.mod.
+- [x] **J1.2** Driver + registro + go.mod.
   - a. `open_postgres.go.txt`: `Open(dsn) (*sql.DB, error)` via
     `sql.Open("pgx", dsn)`. (REQ-41.3).
   - b. **(R1-parte)** `PingContext` com `context.WithTimeout` curto

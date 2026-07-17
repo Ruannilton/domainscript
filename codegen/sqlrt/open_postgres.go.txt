@@ -1,0 +1,59 @@
+package sqlruntime
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	// github.com/jackc/pgx/v5/stdlib registra o driver database/sql "pgx" —
+	// a segunda (e só a segunda) dependência externa deste pacote (J1.2,
+	// REQ-41.2/41.3, §design infra-providers 3.1): opt-in, isolada aqui,
+	// nunca importada pelo núcleo (runtime/) nem por um projeto gerado que
+	// não declare um Database provider: "postgres" (ver
+	// codegen/sql_wiring.go:sqlProviders["postgres"] — este arquivo só é
+	// emitido, e só entra no go.mod, quando esse for o caso, junto de
+	// dialect_postgres.go.txt, J1.1).
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// pingTimeout é o prazo do PingContext em Open — fail-closed (REQ-47.2,
+// §design infra-providers 3.6/3.1): NUNCA context.Background() aqui, para
+// que um Postgres inalcançável (rede/firewall/credencial errada) falhe o
+// startup oportunamente, em vez de travar indefinidamente à espera de uma
+// conexão que nunca vem.
+const pingTimeout = 10 * time.Second
+
+// OpenPostgres abre uma conexão Postgres para dsn (uma connection
+// string/DSN, ex. "postgres://user:pass@host:5432/db?sslmode=disable") — o
+// segundo provider real suportado (ver program.Database.Provider,
+// sqlProviders["postgres"]). Chamado pelo wiring gerado
+// (cmd/<service>/main.go) para cada Database cujo provider é "postgres"
+// (§design infra-providers 3.1, REQ-41.2/41.3).
+//
+// Nome distinto de Open (open_sqlite.go.txt, mesmo pacote sqlruntime):
+// um projeto pode declarar Database de mais de um provider real ao mesmo
+// tempo (ex. um "sqlite" e um "postgres" em módulos diferentes), então os
+// dois arquivos .go.txt são copiados juntos (generateSQLRuntimeFiles copia
+// TODO sqlrt.Sources() sempre que qualquer provider real está ativo) — dois
+// "func Open" no mesmo pacote colidiriam. sqlProvider.openFunc
+// (codegen/sql_wiring.go) é quem resolve, por provider, qual símbolo o
+// wiring gerado chama (REQ-41.2).
+//
+// Diferente de Open (open_sqlite.go.txt), NÃO limita o pool a uma única
+// conexão: Postgres é um servidor real que suporta concorrência de verdade
+// (o SetMaxOpenConns(1) do sqlite é uma peculiaridade daquele driver
+// embutido, não uma regra geral do adapter) — o padrão de pool do
+// database/sql já serve.
+func OpenPostgres(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
