@@ -16,24 +16,35 @@ import (
 //
 // Uma dep cujo adapterDir não está em providerSources é ignorada
 // silenciosamente — hoje (antes de J1..J5) providerSources está vazio, então
-// esta função sempre devolve nil, e nenhum projeto gerado muda (NFR-21). Duas
-// deps que compartilhem o mesmo adapterDir (não deveria acontecer — dedup já
-// colapsou entradas idênticas em activeProviderDeps, e adapterDir distintos
-// por design de cada provider) apareceriam ambas aqui; não há necessidade de
-// uma dedup própria além da de activeProviderDeps (mesmo espírito de "mais
-// casos entram quando surgir necessidade real").
+// esta função sempre devolve nil, e nenhum projeto gerado muda (NFR-21).
+//
+// Dedup por adapterDir (revisão da PR #13): DUAS categorias que usam o MESMO
+// provider real (ex. redis em Cache e em RateLimit, §design 3.4) têm
+// providerDep com o MESMO module/adapterDir mas ctor DIFERENTE
+// (NewRedisQueryCache vs. NewRedisLimiter) — a dedup por struct inteira de
+// activeProviderDeps (R5) NÃO as colapsa (é o comportamento certo para
+// go.mod/ctor, cada categoria precisa do seu). Mas as fontes do adapter (o
+// mesmo diretório redisruntime/) só podem ser copiadas UMA vez — copiar de
+// novo reprocessaria e duplicaria as MESMAS entradas de File (mesmo Path) na
+// lista devolvida. seenDirs garante que cada adapterDir só é materializado
+// uma única vez, mesmo aparecendo em múltiplas providerDep ativas.
 //
 // A ordenação final é por adapterDir e, dentro dele, por nome de arquivo —
 // determinismo (NFR-13), mesmo com múltiplas categorias ativas ao mesmo
 // tempo.
 func generateProviderRuntimeFiles(deps []providerDep) ([]File, error) {
 	var files []File
+	seenDirs := make(map[string]bool)
 
 	for _, dep := range deps {
+		if seenDirs[dep.adapterDir] {
+			continue
+		}
 		sourcesFn, ok := providerSources[dep.adapterDir]
 		if !ok || sourcesFn == nil {
 			continue
 		}
+		seenDirs[dep.adapterDir] = true
 
 		srcs, err := sourcesFn()
 		if err != nil {

@@ -117,3 +117,38 @@ func TestGenerateProviderRuntimeFilesPropagatesSourcesError(t *testing.T) {
 		t.Fatalf("generateProviderRuntimeFiles: esperava erro envolvendo %v, veio %v", wantErr, err)
 	}
 }
+
+// TestGenerateProviderRuntimeFilesSameAdapterDirCopiedOnce prova a correção
+// da revisão da PR #13: duas providerDep que compartilham o MESMO adapterDir
+// mas têm ctor diferente (o caso real de redis em Cache E RateLimit,
+// §design 3.4 — activeProviderDeps não as colapsa de propósito, R5) só
+// materializam as fontes daquele adapterDir UMA vez — nunca arquivos
+// duplicados na lista devolvida.
+func TestGenerateProviderRuntimeFilesSameAdapterDirCopiedOnce(t *testing.T) {
+	orig := providerSources
+	defer func() { providerSources = orig }()
+
+	calls := 0
+	providerSources = map[string]func() (map[string][]byte, error){
+		"redisruntime": func() (map[string][]byte, error) {
+			calls++
+			return map[string][]byte{"cache.go": []byte("package redisruntime\n")}, nil
+		},
+	}
+
+	deps := []providerDep{
+		{module: "github.com/redis/go-redis/v9", version: "v9.7.0", adapterDir: "redisruntime", ctor: "NewRedisQueryCache"},
+		{module: "github.com/redis/go-redis/v9", version: "v9.7.0", adapterDir: "redisruntime", ctor: "NewRedisLimiter"},
+	}
+
+	files, err := generateProviderRuntimeFiles(deps)
+	if err != nil {
+		t.Fatalf("generateProviderRuntimeFiles: erro inesperado: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("generateProviderRuntimeFiles: esperava sources() chamada 1 vez, veio %d", calls)
+	}
+	if len(files) != 1 {
+		t.Fatalf("generateProviderRuntimeFiles: esperava 1 arquivo (adapterDir copiado uma única vez), veio %d: %+v", len(files), files)
+	}
+}

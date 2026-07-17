@@ -62,3 +62,22 @@ func TestEmitGoModNoProviderDepsUnchanged(t *testing.T) {
 		t.Fatalf("esperava go.mod com providerDeps vazio == %q, veio %q", want, string(withEmpty))
 	}
 }
+
+// TestEmitGoModDedupsSameModuleAcrossCategories prova a correção da revisão
+// da PR #13: duas providerDep que compartilham o MESMO module mas ctor
+// diferente (o caso real de redis em Cache E RateLimit — activeProviderDeps
+// não as colapsa de propósito, R5) geram uma ÚNICA linha "require" para
+// aquele módulo, nunca duas linhas idênticas/redundantes.
+func TestEmitGoModDedupsSameModuleAcrossCategories(t *testing.T) {
+	deps := []providerDep{
+		{module: "github.com/redis/go-redis/v9", version: "v9.7.0", adapterDir: "redisruntime", ctor: "NewRedisQueryCache"},
+		{module: "github.com/redis/go-redis/v9", version: "v9.7.0", adapterDir: "redisruntime", ctor: "NewRedisLimiter"},
+	}
+
+	content := string(EmitGoMod(Options{ModulePath: "domainscript/generated"}, "", nil, false, false, deps))
+
+	count := strings.Count(content, "github.com/redis/go-redis/v9")
+	if count != 1 {
+		t.Fatalf("esperava github.com/redis/go-redis/v9 aparecer 1 vez em go.mod, apareceu %d:\n%s", count, content)
+	}
+}
