@@ -88,7 +88,7 @@
     para env). (§design 3.1, R1).
   - b. Teste: fixture postgres com `connection: env("PG_URL")` ⇒ wiring emite
     `os.Getenv("PG_URL")`, não string vazia.
-- [ ] **J1.4** Golden + smoke + integração.
+- [x] **J1.4** Golden + smoke + integração.
   - a. Fixture single-module `provider: "postgres"` gera; projeto builda + `go
     vet`a sobre bytes em disco (NFR-17).
   - b. Integração `//go:build integration` guardada por `PG_URL`:

@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J1.4 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -307,6 +307,44 @@ J1.2 (`TestWallet*`, `TestActiveSQLProviders*`, `TestEmitGoMod*`) seguem
 verdes, assim como `TestGenerate*` (`driver`, wallet/shop e2e).
 `go build ./...`/`gofmt -l .`/`go vet ./...` limpos. Próxima: **J1.4**
 (golden + smoke + teste de integração opt-in guardado por `PG_URL`).
+
+Concluído: **J1.4** — Golden + smoke + integração, fechando a Fase J1
+(REQ-41, NFR-17/22/24). Item (a) (fixture single-module `provider:
+"postgres"` gera + builda + `go vet`a sobre bytes em disco) já era coberto
+sem trabalho novo: `TestGenerateWalletSmokeCompile` (`codegen/
+codegen_test.go`) gera o wallet real — que declara `Database MainDb {
+provider: "postgres" }` desde sempre — e roda `gentest.SmokeCompile` sobre
+os bytes escritos em disco; isso só passou a exercitar o adapter real a
+partir de J1.2 (antes, "postgres" era decorativo). Item (b) (novo,
+`codegen/sql_postgres_integration_test.go`, `//go:build integration`):
+reusa a fixture Ledger (domínio/aplicação/read de `sql_adapter_test.go`)
+com um `mod.ds` de UM Database (`MainDb`, `provider: "postgres"`,
+`connection: env("PG_URL")`, `manages: [Account, Journal]` — sem
+`supportsXA`/2PC, já coberto contra sqlite por `TestLedgerTwoPCBehavior`)
+e roda o MESMO par UseCase/Query (`PerformDebit`/`GetAccount`) duas vezes
+dentro do pacote `ledger` gerado: uma contra `runtime.NewMemoryEventStore()`,
+outra contra `sqlruntime.NewEventStore(..., PostgresDialect())` sobre
+`sqlruntime.OpenPostgres(os.Getenv("PG_URL"))` — compara o `balance` lido de
+volta pelos dois caminhos (paridade, NFR-22). Guarda dupla contra NFR-24: a
+build tag `integration` (o arquivo nem compila em `go test ./...` default)
+MAIS um `t.Skip` em runtime quando `PG_URL` está vazia — tanto no teste
+externo (`TestPostgresIntegrationParity`, evita gerar/rodar o subprocesso à
+toa) quanto no teste comportamental gerado dentro do pacote `ledger`
+(segunda camada de guarda, caso alguém rode o pacote gerado isolado). ID de
+conta único por execução (`fmt.Sprintf("acc-pg-%d", time.Now().UnixNano())`)
+evita colisão com uma tabela `events` persistente entre corridas — o mesmo
+cuidado que os testes sqlite já não precisam (usam arquivo `:memory:`/
+`t.TempDir()` descartável). Verificado manualmente (sem Postgres vivo neste
+ambiente): `go build ./...`/`go vet ./...`/`gofmt -l .` default continuam
+limpos (o arquivo novo é invisível sem `-tags=integration`); com
+`-tags=integration` (ainda sem `PG_URL`), o arquivo compila e
+`TestPostgresIntegrationParity` faz *skip* corretamente; a fixture gera com
+sucesso (`generateLedgerPostgresIntegrationProject`) e o `behavior_test.go`
+gerado passa por `go vet`/`go test` (skip) dentro do projeto Go de verdade
+escrito em disco — provando que o caminho compila e só falta infra viva
+para exercitar o corpo real do teste. Fecha a Fase J1 (REQ-41 completo:
+J1.1–J1.4). Próxima: **J2.1** (estender o seam `runtime.Tx` para o enqueue
+atômico do Outbox durável — Fase J2, depende de J1 ✓).
 
 ## Issues em aberto
 
