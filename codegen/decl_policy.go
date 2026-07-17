@@ -270,7 +270,7 @@ func policyIsAtLeastOnce(decl *ast.PolicyDecl) bool {
 // prog.ChannelBetween devolve nil), o mesmo efeito de nenhum canal
 // declarado.
 func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
-	return EmitPolicies(pkg, []*ast.PolicyDecl{decl}, model, tab, prog, module, reg, adapters)
+	return EmitPolicies(pkg, []*ast.PolicyDecl{decl}, model, tab, prog, module, reg, adapters, nil)
 }
 
 // EmitPolicies gera o Go de várias PolicyDecl num único arquivo
@@ -280,7 +280,18 @@ func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbo
 // (ver emitPolicyDecl) — habilita "DepositNotification(...)" dentro de
 // execute a reconhecer notify (Mode async)/call (Mode sync) do Adapter
 // parceiro (§9.1/9.3, REQ-25.3). prog é repassado a emitPolicyWireFunc (F5).
-func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+// sharedCollectionVars (ISSUE-1, ver a doc de decl_collections.go) é o mapa
+// tipo->var de runtime.Collection[T] JÁ declarado em collections.go pelo
+// CHAMADOR (generateModuleFiles) para os tipos que TAMBÉM são fonte de join
+// de alguma Query do mesmo módulo (a interseção calculada por
+// sharedModuleCollectionTypeNames) — esta função continua calculando sozinha
+// TODO o conjunto de tipos que alguma Policy do arquivo usa via list/count,
+// mas, para um tipo presente em sharedCollectionVars, reusa o var de lá em
+// vez de declarar o seu (evita a redeclaração, ISSUE-1); qualquer outro tipo
+// (o caso comum: nil ou vazio) continua sendo declarado localmente em
+// policies.go (emitPolicyCollectionVars), Go byte-idêntico ao de antes desta
+// task.
+func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, sharedCollectionVars map[string]string) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -288,8 +299,26 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 	// list/count -> runtime.Collection[T] (H4, §22.4) e emit -> runtime.
 	// Dispatcher (H4, §22.4): ver a doc do arquivo. Ambos guardados — um
 	// arquivo cujas Policy não usam nenhuma das duas formas gera Go idêntico
-	// ao de antes desta task.
-	typeToVar := emitPolicyCollectionVars(e, runtimeAlias, policyCollectionTypeNames(decls))
+	// ao de antes desta task. Para um tipo presente em sharedCollectionVars
+	// (ISSUE-1), reusa o var já declarado em collections.go pelo CHAMADOR em
+	// vez de declarar de novo aqui.
+	var typeToVar map[string]string
+	if names := policyCollectionTypeNames(decls); len(names) > 0 {
+		typeToVar = make(map[string]string, len(names))
+		var toDeclare []string
+		for _, name := range names {
+			if v, ok := sharedCollectionVars[name]; ok {
+				typeToVar[name] = v
+				continue
+			}
+			toDeclare = append(toDeclare, name)
+		}
+		if len(toDeclare) > 0 {
+			for name, v := range emitPolicyCollectionVars(e, runtimeAlias, toDeclare) {
+				typeToVar[name] = v
+			}
+		}
+	}
 	needsEmitDispatcher := false
 	for _, decl := range decls {
 		if policyBodyHasEmit(decl.Execute) {

@@ -639,8 +639,29 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		}
 	}
 
+	// collections.go (ISSUE-1, ver a doc de decl_collections.go): quando o
+	// MESMO tipo é fonte de "join" numa Query E de "list"/"count" numa Policy
+	// do MESMO módulo, os dois vars de runtime.Collection[T] colidiriam
+	// (mesmo nome, um em queries.go outro em policies.go — "redeclared in
+	// this block"). sharedModuleCollectionTypeNames calcula a INTERSEÇÃO;
+	// quando não vazia, um único collections.go declara cada var disputado
+	// uma vez só, e o mapa resultante é repassado a EmitQueries/EmitPolicies,
+	// que continuam declarando localmente qualquer tipo NÃO disputado, como
+	// sempre. Vazio (o caso comum — nenhum módulo hoje combina os dois lados
+	// sobre o mesmo tipo) preserva o layout de sempre: nil para os dois,
+	// cada emissor declara tudo o que precisa.
+	var sharedCollectionVars map[string]string
+	if names := sharedModuleCollectionTypeNames(b.queries, b.policies); len(names) > 0 {
+		content, vars, err := EmitCollections(pkg, names)
+		if err != nil {
+			return nil, moduleMarks{}, fmt.Errorf("collections.go: %w", err)
+		}
+		files = append(files, File{Path: path.Join(pkg, "collections.go"), Content: content})
+		sharedCollectionVars = vars
+	}
+
 	if len(b.queries) > 0 {
-		content, err := EmitQueries(pkg, b.queries, aggregates, prog, model, tab, moduleName, reg)
+		content, err := EmitQueries(pkg, b.queries, aggregates, prog, model, tab, moduleName, reg, sharedCollectionVars)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("queries.go: %w", err)
 		}
@@ -656,7 +677,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	}
 
 	if hasPolicies {
-		content, err := EmitPolicies(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName)
+		content, err := EmitPolicies(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName, sharedCollectionVars)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
 		}

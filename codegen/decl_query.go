@@ -85,13 +85,23 @@ import (
 // — nil preserva o comportamento anterior a G1a (nenhuma FileStorage
 // disponível; só relevante se o corpo de fato usar uma op de arquivo).
 func EmitQuery(pkg string, decl *ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
-	return EmitQueries(pkg, []*ast.QueryDecl{decl}, aggregates, prog, model, tab, module, reg)
+	return EmitQueries(pkg, []*ast.QueryDecl{decl}, aggregates, prog, model, tab, module, reg, nil)
 }
 
 // EmitQueries gera o Go de vários QueryDecl num único arquivo — como um
 // módulo real tem mais de uma Query (o wallet declara 2: GetWallet,
-// ListEntries).
-func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry) ([]byte, error) {
+// ListEntries). sharedCollectionVars (ISSUE-1, ver a doc de
+// decl_collections.go) é o mapa tipo->var de runtime.Collection[T] JÁ
+// declarado em collections.go pelo CHAMADOR (generateModuleFiles) para os
+// tipos que TAMBÉM são usados por list/count de alguma Policy do mesmo
+// módulo (a interseção calculada por sharedModuleCollectionTypeNames) — esta
+// função continua calculando sozinha TODO o conjunto de tipos que alguma
+// Query do arquivo usa como fonte de join, mas, para um tipo presente em
+// sharedCollectionVars, reusa o var de lá em vez de declarar o seu (evita a
+// redeclaração, ISSUE-1); qualquer outro tipo (o caso comum: nil ou vazio)
+// continua sendo declarado localmente em queries.go
+// (emitQueryJoinCollectionVars), Go byte-idêntico ao de antes desta task.
+func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, sharedCollectionVars map[string]string) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -107,13 +117,30 @@ func EmitQueries(pkg string, decls []*ast.QueryDecl, aggregates map[string]*ast.
 
 	// Collection[T] var por tipo referenciado como fonte de um "join" (I5.1,
 	// §design read-side 3.7 passo 1) — ver a doc de emitQueryJoinCollectionVars.
-	// joinTypeToVar fica nil (o default) quando NENHUMA Query do arquivo usa
-	// join: preserva Go idêntico ao gerado antes desta task para todo módulo
-	// sem join (GetStatement/GetWallet, ex.).
-	joinTypeNames := queryJoinCollectionTypeNames(decls)
+	// Para um tipo presente em sharedCollectionVars (ISSUE-1, ver a doc de
+	// decl_collections.go — o CHAMADOR já declarou esse var em collections.go
+	// porque uma Policy do mesmo módulo também o usa via list/count), reusa o
+	// var de lá em vez de declarar de novo aqui; qualquer outro tipo (o caso
+	// comum: sharedCollectionVars nil ou sem esse tipo) continua declarado
+	// localmente, em queries.go. joinTypeToVar fica nil (o default) quando
+	// NENHUMA Query do arquivo usa join: preserva Go idêntico ao gerado antes
+	// desta task para todo módulo sem join (GetStatement/GetWallet, ex.).
 	var joinTypeToVar map[string]string
-	if len(joinTypeNames) > 0 {
-		joinTypeToVar = emitQueryJoinCollectionVars(e, runtimeAlias, joinTypeNames)
+	if joinTypeNames := queryJoinCollectionTypeNames(decls); len(joinTypeNames) > 0 {
+		joinTypeToVar = make(map[string]string, len(joinTypeNames))
+		var toDeclare []string
+		for _, name := range joinTypeNames {
+			if v, ok := sharedCollectionVars[name]; ok {
+				joinTypeToVar[name] = v
+				continue
+			}
+			toDeclare = append(toDeclare, name)
+		}
+		if len(toDeclare) > 0 {
+			for name, v := range emitQueryJoinCollectionVars(e, runtimeAlias, toDeclare) {
+				joinTypeToVar[name] = v
+			}
+		}
 	}
 
 	// cached acumula, por Query com "cache" (G3, spec §15), o plano já

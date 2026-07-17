@@ -55,7 +55,7 @@ func emitWalletQueries(t *testing.T) []byte {
 	t.Helper()
 	getWallet, listEntries, aggregates, model, reg, prog := walletQueriesAndAggregates(t)
 
-	got, err := codegen.EmitQueries("wallet", []*ast.QueryDecl{getWallet, listEntries}, aggregates, prog, model, prog.Symbols, "Wallet", reg)
+	got, err := codegen.EmitQueries("wallet", []*ast.QueryDecl{getWallet, listEntries}, aggregates, prog, model, prog.Symbols, "Wallet", reg, nil)
 	if err != nil {
 		t.Fatalf("EmitQueries: erro inesperado: %v", err)
 	}

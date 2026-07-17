@@ -191,7 +191,7 @@ func emitCacheQueries(t *testing.T, prog *program.Program) []byte {
 	model := types.NewModel(prog.Symbols)
 	aggregates := map[string]*ast.AggregateDecl{"Widget": agg}
 
-	got, err := codegen.EmitQueries("widgets", []*ast.QueryDecl{getWidget, getWidgetAuto}, aggregates, prog, model, prog.Symbols, "Widgets", reg)
+	got, err := codegen.EmitQueries("widgets", []*ast.QueryDecl{getWidget, getWidgetAuto}, aggregates, prog, model, prog.Symbols, "Widgets", reg, nil)
 	if err != nil {
 		t.Fatalf("EmitQueries: erro inesperado: %v", err)
 	}

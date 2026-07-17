@@ -86,7 +86,7 @@ Verdade — fechado.**
 
 ## Issues em aberto
 
-Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1): colisão potencial de
-`<tipo>Collection` var entre `EmitQueries` e `EmitPolicies` quando o mesmo
-tipo aparece num join de Query e num list/count de Policy do mesmo módulo —
-nenhum exemplo real exercita a combinação ainda.
+Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit
+`3a22df3`): `codegen/decl_collections.go` centraliza a declaração de
+`Collection[T]` var disputado entre `EmitQueries`/`EmitPolicies` num único
+`collections.go` por módulo — nenhuma issue em aberto no momento.
