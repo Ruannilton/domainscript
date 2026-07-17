@@ -24,7 +24,7 @@
 
 ### Fase J0 — Registro de provider por categoria (peça transversal, REQ-46)
 
-- [ ] **J0.1** Tipo e mapas do registro.
+- [x] **J0.1** Tipo e mapas do registro.
   - a. `codegen/provider_registry.go` (novo): tipo `providerDep {module,
     version, minGo, adapterDir, ctor}` + mapas vazios `channelProviders`/
     `cacheProviders`/`rateLimitProviders`/`fileProviders`. (REQ-46.1, §design
