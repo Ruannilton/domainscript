@@ -40,6 +40,14 @@ func (t *Tx) Load(aggregateID string) ([]runtime.Event, error) {
 	return loadWithinQuerier(t.ctx, t.sqlTx, t.dialect, t.registry, aggregateID)
 }
 
+// EnqueueOutbox implementa runtime.Tx (Marco J, REQ-42.1): grava cada evento
+// na tabela "outbox" dentro da MESMA *sql.Tx que Append já usa — commit
+// grava as duas tabelas, rollback desfaz as duas. Ver enqueueOutboxWithinTx
+// (eventstore.go.txt) para a query/ordenação.
+func (t *Tx) EnqueueOutbox(events []runtime.Event) error {
+	return enqueueOutboxWithinTx(t.ctx, t.sqlTx, t.dialect, events)
+}
+
 // UnitOfWork é o runtime.UnitOfWork de um único banco sobre database/sql (G1,
 // §design 3.8): abre uma *sql.Tx de verdade, roda fn e comita no sucesso ou
 // rollbacka no erro — o mesmo contrato commit/rollback que memoryUnitOfWork

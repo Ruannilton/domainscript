@@ -84,6 +84,25 @@ func (postgresDialect) CreateCollectionTable(name string) string {
 )`, name)
 }
 
+// CreateOutboxTable devolve o DDL idempotente da tabela "outbox" sobre
+// Postgres (Marco J, REQ-42.1/42.4): "id" é BIGSERIAL (auto-incrementado
+// pelo banco, mesma razão do "rowid BIGSERIAL" de CreateCollectionTable
+// acima — o relay entrega por ordem de "id", e só um contador monotônico de
+// inserção garante isso; um UUID não ordenaria por chegada). "payload" é
+// JSONB (mesma razão de CreateEventsTable); "created_at"/"delivered_at" são
+// TIMESTAMPTZ (preservam o fuso UTC do valor Go, ao contrário de um
+// TIMESTAMP "naive").
+func (postgresDialect) CreateOutboxTable() string {
+	return `CREATE TABLE IF NOT EXISTS outbox (
+	id           BIGSERIAL PRIMARY KEY,
+	event_type   TEXT NOT NULL,
+	payload      JSONB NOT NULL,
+	created_at   TIMESTAMPTZ NOT NULL,
+	delivered_at TIMESTAMPTZ,
+	attempts     INTEGER NOT NULL DEFAULT 0
+)`
+}
+
 // LimitOffset devolve a cláusula de paginação — idêntica ao sqlite: LIMIT/
 // OFFSET é sintaxe ANSI, suportada nativamente pelo Postgres (a doc do
 // método na interface já antecipa isso).

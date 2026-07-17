@@ -65,10 +65,18 @@ func NewEventStore(ctx context.Context, db *sql.DB, registry map[string]EventFac
 // domínio por Database, então parametrizar o nome da coluna não muda a
 // SEMÂNTICA de isolamento, só a rotulagem; documentado como simplificação
 // desta task, não uma limitação de segurança.
+// A tabela "outbox" (Marco J, REQ-42.1) também é garantida aqui, ao lado de
+// "events": qualquer Database real gerido por um EventStore pode receber um
+// Tx.EnqueueOutbox (uow.go.txt) a qualquer momento — criar a tabela junto
+// com "events" (em vez de esperar por uma construção separada de
+// DurableOutbox, task J2.3) evita uma corrida de "tabela ainda não existe"
+// no primeiro EnqueueOutbox e mantém um único dono de schema por Database.
 func (s *EventStore) ensureSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, s.dialect.CreateEventsTable())
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, s.dialect.CreateEventsTable()); err != nil {
 		return fmt.Errorf("sqlruntime: criar tabela events: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, s.dialect.CreateOutboxTable()); err != nil {
+		return fmt.Errorf("sqlruntime: criar tabela outbox: %w", err)
 	}
 	return nil
 }
@@ -239,4 +247,32 @@ func loadWithinQuerier(ctx context.Context, q querier, dialect Dialect, registry
 		return nil, fmt.Errorf("sqlruntime: Load: %w", err)
 	}
 	return events, nil
+}
+
+// enqueueOutboxWithinTx grava cada evento de events na tabela "outbox"
+// dentro de tx já aberta (Marco J, REQ-42.1) — reusada por Tx.EnqueueOutbox
+// (uow.go.txt/twophase.go.txt), a MESMA *sql.Tx de uma unit of work inteira:
+// atomicidade store+outbox por construção (um rollback de Run desfaz as
+// duas tabelas, um commit grava as duas). "id" é deixado para o banco
+// auto-incrementar (Dialect.CreateOutboxTable) — nunca um UUID: o relay
+// (DurableOutbox, task J2.3) entrega por ordem de "id" (FIFO, task J2.2),
+// e só um contador monotônico de inserção garante essa ordem.
+// delivered_at/attempts ficam nos defaults do schema (NULL/0) — a linha
+// nasce "não entregue".
+func enqueueOutboxWithinTx(ctx context.Context, tx *sql.Tx, dialect Dialect, events []runtime.Event) error {
+	insertQuery := fmt.Sprintf(
+		`INSERT INTO outbox (event_type, payload, created_at) VALUES (%s, %s, %s)`,
+		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3),
+	)
+	now := time.Now().UTC()
+	for _, ev := range events {
+		payload, err := json.Marshal(ev)
+		if err != nil {
+			return fmt.Errorf("sqlruntime: EnqueueOutbox: encode %s: %w", ev.EventType(), err)
+		}
+		if _, err := tx.ExecContext(ctx, insertQuery, ev.EventType(), string(payload), now); err != nil {
+			return fmt.Errorf("sqlruntime: EnqueueOutbox: insert %s: %w", ev.EventType(), err)
+		}
+	}
+	return nil
 }

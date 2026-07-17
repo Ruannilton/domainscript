@@ -19,6 +19,18 @@ type Tx interface {
 	// aggregateID returns an empty, non-nil slice and no error (same
 	// contract as EventStore.Load).
 	Load(aggregateID string) ([]Event, error)
+	// EnqueueOutbox records events for durable, at-least-once delivery
+	// (Marco J, REQ-42.1, §design infra-providers 3.2) ATOMICALLY with this
+	// unit of work: the durable adapter (sqlruntime.Tx.EnqueueOutbox,
+	// codegen/sqlrt/uow.go.txt) enqueues inside the SAME database
+	// transaction as Append, so a crash between commit and delivery never
+	// loses the event — the relay (DurableOutbox, rtsrc/outbox.go.txt, task
+	// J2.3) delivers it later by scanning the outbox table. memoryTx
+	// implements this as a documented no-op (see below): the in-memory core
+	// has no durable Outbox to enqueue into (memoryOutbox, outbox.go.txt,
+	// only forwards to Dispatcher) — there is nothing to persist across a
+	// crash for a process that IS the store.
+	EnqueueOutbox(events []Event) error
 }
 
 // UnitOfWork runs a function within a single logical transaction: commit
@@ -132,3 +144,10 @@ func (tx *memoryTx) Append(aggregateID string, events []Event) error {
 func (tx *memoryTx) Load(aggregateID string) ([]Event, error) {
 	return tx.store.Load(tx.ctx, aggregateID)
 }
+
+// EnqueueOutbox implements Tx as a no-op (Marco J, REQ-42.5): the in-memory
+// core has no durable Outbox behind it — see the interface doc above for
+// why. Kept only so memoryTx keeps satisfying Tx; no generated code path
+// calls it today, since the durable outbox is opt-in and selected by codegen
+// only when the module has a real Database (task J2.5).
+func (tx *memoryTx) EnqueueOutbox(events []Event) error { return nil }
