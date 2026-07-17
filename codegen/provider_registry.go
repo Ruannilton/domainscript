@@ -49,31 +49,26 @@ var (
 // elevada a todas as categorias (REQ-46.1).
 //
 // Dedup (R5, §design 7): duas categorias que apontam para o MESMO provider
-// (ex. redis em Cache e em RateLimit) colapsam numa única providerDep — tanto
-// por "module" (um único require em go.mod) quanto por "adapterDir" (uma
-// única cópia de fontes), mesmo quando as duas entradas de registro são
-// structs distintas (uma por mapa) com os mesmos valores.
+// (ex. redis em Cache e em RateLimit) colapsam numa única providerDep — a
+// struct inteira é comparável (só campos de texto), então a chave de dedup é
+// o valor inteiro de providerDep, não "module" e "adapterDir" checados
+// independentemente (isso descartaria precocemente dois providers distintos
+// que só compartilhassem um dos dois campos). Dedup específica de "module"
+// (para go.mod) ou de "adapterDir" (para a cópia de fontes) é responsabilidade
+// dos respectivos consumidores (EmitGoMod/generateCategoryRuntimeFiles), não
+// desta função.
 func activeProviderDeps(prog *program.Program) []providerDep {
-	seenModule := make(map[string]bool)
-	seenDir := make(map[string]bool)
+	seen := make(map[providerDep]bool)
 	var deps []providerDep
 
 	add := func(dep providerDep, ok bool) {
 		if !ok {
 			return
 		}
-		if dep.module != "" {
-			if seenModule[dep.module] {
-				return
-			}
-			seenModule[dep.module] = true
+		if seen[dep] {
+			return
 		}
-		if dep.adapterDir != "" {
-			if seenDir[dep.adapterDir] {
-				return
-			}
-			seenDir[dep.adapterDir] = true
-		}
+		seen[dep] = true
 		deps = append(deps, dep)
 	}
 
@@ -131,6 +126,11 @@ func activeProviderDeps(prog *program.Program) []providerDep {
 		}
 	}
 
-	sort.Slice(deps, func(i, j int) bool { return deps[i].module < deps[j].module })
+	sort.Slice(deps, func(i, j int) bool {
+		if deps[i].module != deps[j].module {
+			return deps[i].module < deps[j].module
+		}
+		return deps[i].adapterDir < deps[j].adapterDir
+	})
 	return deps
 }

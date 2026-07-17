@@ -95,3 +95,41 @@ func TestActiveProviderDepsDedupSameModuleAndDir(t *testing.T) {
 		t.Fatalf("activeProviderDeps: entrada inesperada %+v", deps[0])
 	}
 }
+
+// TestActiveProviderDepsDistinctPartialOverlapSurvives prova a correção do
+// bug apontado na revisão da PR #11: duas providerDep que compartilham UM dos
+// dois campos (module OU adapterDir) mas não os dois são dependências
+// DISTINTAS — nenhuma pode ser descartada por engano. A dedup (R5) só colapsa
+// quando a struct inteira é igual (mesmo provider real usado em duas
+// categorias), nunca por coincidência parcial de campo.
+func TestActiveProviderDepsDistinctPartialOverlapSurvives(t *testing.T) {
+	origCache, origRateLimit := cacheProviders, rateLimitProviders
+	defer func() { cacheProviders, rateLimitProviders = origCache, origRateLimit }()
+
+	// Mesmo "module", adapterDir DIFERENTE — duas entradas distintas.
+	depSameModule := providerDep{module: "github.com/example/shared", adapterDir: "cacheruntime", ctor: "NewCache"}
+	depSameModuleOtherDir := providerDep{module: "github.com/example/shared", adapterDir: "ratelimitruntime", ctor: "NewLimiter"}
+	cacheProviders = map[string]providerDep{"shared": depSameModule}
+	rateLimitProviders = map[string]providerDep{"shared": depSameModuleOtherDir}
+
+	prog := &program.Program{
+		Modules: map[string]*program.Module{
+			"Shop": {
+				Name: "Shop",
+				Decl: ast.NewModuleDecl("Shop", nil, []*ast.ConfigBlock{
+					ast.NewConfigBlock("Cache", "", []ast.ConfigEntry{
+						{Key: "backend", Value: &ast.Literal{Kind: token.STRING, Value: "shared"}},
+					}, ast.Span{}),
+					ast.NewConfigBlock("RateLimit", "", []ast.ConfigEntry{
+						{Key: "backend", Value: &ast.Literal{Kind: token.STRING, Value: "shared"}},
+					}, ast.Span{}),
+				}, ast.Span{}),
+			},
+		},
+	}
+
+	deps := activeProviderDeps(prog)
+	if len(deps) != 2 {
+		t.Fatalf("activeProviderDeps: esperava 2 entradas distintas (mesmo module, adapterDir diferente), veio %d: %+v", len(deps), deps)
+	}
+}
