@@ -162,10 +162,14 @@ func (c *Collection[T]) fetch(ctx context.Context, whereEq []runtime.FieldEq) ([
 	return items, nil
 }
 
-// whereEqClause monta " WHERE json_extract(payload,'$.<Field>') = <placeholder>
-// AND ..." (string vazia quando whereEq está vazio) e os argumentos na MESMA
+// whereEqClause monta " WHERE <extração-json-do-campo> = <placeholder> AND
+// ..." (string vazia quando whereEq está vazio) e os argumentos na MESMA
 // ordem — a única tradução SQL de WhereEq (REQ-38.1), sempre via
-// c.dialect.Placeholder (nunca "?"/"$N" cru — I7.0).
+// c.dialect.Placeholder (nunca "?"/"$N" cru — I7.0) e c.dialect.JSONFieldEq
+// (nunca um literal json_extract(...) cru — REQ-40.1/41.1: a sintaxe de
+// extração de campo JSON varia por banco — json_extract no sqlite,
+// payload->>'campo' no postgres — e por isso vive inteiramente no Dialect,
+// não aqui).
 func (c *Collection[T]) whereEqClause(whereEq []runtime.FieldEq) (string, []any) {
 	if len(whereEq) == 0 {
 		return "", nil
@@ -173,7 +177,7 @@ func (c *Collection[T]) whereEqClause(whereEq []runtime.FieldEq) (string, []any)
 	conds := make([]string, len(whereEq))
 	args := make([]any, len(whereEq))
 	for i, eq := range whereEq {
-		conds[i] = fmt.Sprintf("json_extract(payload,'$.%s') = %s", eq.Field, c.dialect.Placeholder(i+1))
+		conds[i] = c.dialect.JSONFieldEq(eq.Field, c.dialect.Placeholder(i+1))
 		args[i] = eq.Value
 	}
 	return " WHERE " + strings.Join(conds, " AND "), args

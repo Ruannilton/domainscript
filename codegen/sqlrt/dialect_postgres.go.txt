@@ -1,0 +1,98 @@
+package sqlruntime
+
+import "fmt"
+
+// dialect_postgres.go.txt implementa Dialect (dialect.go.txt) para Postgres
+// (REQ-41, §design infra-providers 3.1) — o segundo Database provider real
+// deste gerador, ao lado de sqliteDialect. Nenhuma outra peça do adapter
+// (eventstore.go.txt/uow.go.txt/twophase.go.txt/collection.go.txt) muda: elas
+// já falam só através de Dialect (REQ-40.1), então "adicionar um banco" é
+// só isto — implementar a interface — mais UMA entrada em
+// codegen/sql_wiring.go:sqlProviders (J1.2, fora do escopo deste arquivo).
+//
+// Esta task (J1.1) entrega só as strings SQL do dialeto — a abertura real
+// da conexão Postgres (sql.Open("pgx", dsn), PingContext fail-closed) é
+// open_postgres.go.txt, adicionada em J1.2.
+type postgresDialect struct{}
+
+// PostgresDialect devolve o Dialect usado por todo adapter gerado para um
+// Database provider:"postgres" — o registro de provider (J1.2,
+// codegen/sql_wiring.go:sqlProviders["postgres"].dialectCtor) referenciará
+// este construtor pelo nome, do mesmo jeito que sqlProviders["sqlite"] já
+// referencia SQLiteDialect.
+func PostgresDialect() Dialect { return postgresDialect{} }
+
+// Placeholder devolve o parâmetro posicional do Postgres: "$1", "$2", ...
+// (REQ-41.1).
+func (postgresDialect) Placeholder(n int) string {
+	return fmt.Sprintf("$%d", n)
+}
+
+// CreateEventsTable devolve o DDL idempotente da tabela "events" com os
+// tipos Postgres correspondentes (REQ-41.4): aggregate_id/event_type/
+// tenant_id continuam TEXT (mesma semântica de string do sqlite); sequence
+// é BIGINT (um contador que cresce sem limite prático por agregado, mais
+// seguro que INTEGER de 32 bits ao longo da vida de um agregado
+// long-lived); payload é JSONB (não TEXT) — é o que permite ao operador
+// "->>'' " de JSONFieldEq (abaixo) funcionar e ser index-friendly (§design
+// infra-providers 3.1), ao custo de reparse feito pelo próprio Postgres na
+// escrita (aceitável: o gerador já produz JSON válido via
+// encoding/json.Marshal do lado Go); recorded_at é TIMESTAMPTZ — decisão
+// deliberada de divergir do TIMESTAMP "naive" do sqlite: um valor Go
+// time.Time serializado por database/sql/driver já carrega fuso horário
+// (UTC, rtsrc grava sempre em UTC), e TIMESTAMPTZ é o tipo Postgres que
+// preserva essa informação corretamente (TIMESTAMP "naive" a descartaria
+// silenciosamente) — mesma coluna, mesmo papel, tipo mais correto para o
+// valor que de fato chega. Mesma chave primária (aggregate_id, sequence)
+// e "IF NOT EXISTS" para idempotência, espelhando sqliteDialect.
+func (postgresDialect) CreateEventsTable() string {
+	return `CREATE TABLE IF NOT EXISTS events (
+	aggregate_id TEXT NOT NULL,
+	sequence     BIGINT NOT NULL,
+	event_type   TEXT NOT NULL,
+	payload      JSONB NOT NULL,
+	recorded_at  TIMESTAMPTZ NOT NULL,
+	tenant_id    TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (aggregate_id, sequence)
+)`
+}
+
+// CreateCollectionTable devolve o DDL idempotente da tabela que sustenta um
+// Collection[T] chamado name (REQ-38, adapter I7.1) sobre Postgres: id TEXT,
+// payload JSONB (mesma razão de CreateEventsTable — habilita JSONFieldEq),
+// chave primária (id). name é um identificador de tabela FORNECIDO PELO
+// GERADOR (o nome do Collection[T] declarado em DomainScript, nunca input
+// de usuário em runtime) — mesmo nível de confiança que
+// sqliteDialect.CreateCollectionTable já assume; não quotamos/escapamos o
+// identificador aqui pela mesma razão que o sqlite não faz (paridade
+// deliberada, não uma lacuna nova introduzida por este dialeto).
+func (postgresDialect) CreateCollectionTable(name string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	id      TEXT NOT NULL,
+	payload JSONB NOT NULL,
+	PRIMARY KEY (id)
+)`, name)
+}
+
+// LimitOffset devolve a cláusula de paginação — idêntica ao sqlite: LIMIT/
+// OFFSET é sintaxe ANSI, suportada nativamente pelo Postgres (a doc do
+// método na interface já antecipa isso).
+func (postgresDialect) LimitOffset(limit, offset int) string {
+	return fmt.Sprintf("LIMIT %d OFFSET %d", limit, offset)
+}
+
+// JSONFieldEq devolve a condição de igualdade de campo JSON no Postgres:
+// "payload->>'<campo>' = <placeholder>" — o operador "->>" extrai o valor
+// do campo JSONB COMO TEXTO (ao contrário de "->", que devolve jsonb), a
+// forma exigida por R7 (§design infra-providers 3.1): o parâmetro vinculado
+// do lado do chamador (Collection[T].whereEqClause, collection.go.txt) já é
+// o valor Go stringificado (o mesmo texto que json_extract devolveria no
+// sqlite para o mesmo campo), então a igualdade textual bate exatamente
+// para os tipos que unsafeWhereEqPrimitives já permite
+// (codegen/lower/whereeq.go) — essa lista é dialeto-agnóstica, então o
+// conjunto de tipos seguros aqui é IDÊNTICO ao do sqlite por construção,
+// nunca por auditoria em separado (nenhum tipo passa num dialeto e falha
+// no outro).
+func (postgresDialect) JSONFieldEq(field, placeholder string) string {
+	return fmt.Sprintf("payload->>'%s' = %s", field, placeholder)
+}
