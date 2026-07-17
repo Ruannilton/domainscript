@@ -90,6 +90,12 @@ Cada issue é um bloco novo, nesta forma:
   read-side/I7.0, `codegen/sqlrt/dialect.go.txt`) já reduz o custo da parte
   SQL — adicionar banco vira "implementar `Dialect` + entrada no registro"; o
   restante (driver real, migrations, type mapping) segue aberto.
+- EM ANDAMENTO (spec criada): `.claude/specs/infra-providers/` (Marco J,
+  REQ-41..48 / NFR-21..24) trata esta issue com **recorte de 5 providers** —
+  Postgres, RabbitMQ, Redis (Cache+RateLimit), S3 e Outbox durável. As demais
+  categorias de G-4 (outros bancos, gRPC-canal, Dynamo para idempotency
+  `external`, backend `layered` de cache, GCS/Azure) ficam explicitamente fora
+  do recorte, para ciclos futuros. Fecha PARCIALMENTE quando o Marco J fechar.
 
 ## ISSUE-4
 - SPEC: codegen

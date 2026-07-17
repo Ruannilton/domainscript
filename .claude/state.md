@@ -14,6 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | pending | J0.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -83,6 +84,18 @@ fechados com ponteiro para este ciclo, item §22.4 de G-7 atualizado, nota de
 G-4 atualizada para o `Dialect` já entregue; `README.md`/`CLAUDE.md`
 atualizados para refletir o Marco I completo. **Marco I — Read Side de
 Verdade — fechado.**
+
+## infra-providers — `.claude/specs/infra-providers/tasks.md`
+
+Marco J ("Providers Reais de Infraestrutura"), REQ-41..48 / NFR-21..24. Nasce
+do gap G-4 (`.claude/specs/codegen/gaps.md`) / ISSUE-3, com **recorte explícito
+de 5 providers**: Postgres (Database), Outbox durável, RabbitMQ (canal
+cross-service), Redis (Cache + RateLimit) e S3 (FileStorage). Cada categoria já
+tem o seam pronto (read-side/codegen) — o trabalho é implementar o lado real
+atrás dele e generalizar o registro de provider (REQ-46). **Nenhuma task
+iniciada.** Próxima: **J0.1** (registro de provider por categoria +
+`activeProviderDeps`, a peça transversal). J1–J5 são independentes após J0
+(exceto J2, que depende de J1). Ver `tasks.md` para o mapa de dependências.
 
 ## Issues em aberto
 
