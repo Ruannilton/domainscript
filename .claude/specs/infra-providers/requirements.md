@@ -169,11 +169,23 @@ para ter a garantia at-least-once que o spec §7 promete.
    handler)` **inalterada** — o código gerado que chama `Outbox.Subscribe`
    hoje não muda (a doc de `outbox.go.txt` já garante o contrato).
 4. THE SYSTEM SHALL usar a tabela de outbox atrás do MESMO `Dialect` (REQ-41):
-   o DDL e o SQL de enfileirar/varrer/marcar vivem no dialeto, funcionando
-   sobre sqlite **e** postgres sem string específica de banco fora dele.
+   o DDL e o SQL de enfileirar/varrer/marcar/**purgar** vivem no dialeto,
+   funcionando sobre sqlite **e** postgres sem string específica de banco fora
+   dele; a varredura SHALL usar `ORDER BY id` (FIFO) e, no postgres, `FOR UPDATE
+   SKIP LOCKED` (lote exclusivo por réplica, §design 3.2).
 5. WHEN o módulo não tem Database real (só in-memory), THE SYSTEM SHALL manter
    o `memoryOutbox` stopgap de hoje — o Outbox durável é opt-in, atrelado à
    presença de um Database real (NFR-21).
+6. THE SYSTEM SHALL fazer o **relay do outbox alimentar o canal cross-service**:
+   um `PublicEvent` com destino em outro service é publicado no
+   `ChannelTransport` (REQ-43) **de dentro do relay**, não direto pelo publisher
+   da tx — só assim a entrega cross-service herda a durabilidade at-least-once
+   (marca `delivered_at` só após o `Publish` no broker suceder). Publicar direto
+   no commit (fora da tx) é **proibido** para destino cross-service (§design
+   3.2a).
+7. THE SYSTEM SHALL apagar periodicamente as linhas entregues mais velhas que
+   uma janela de retenção (`StartOutboxCleanup`, análogo a
+   `StartIdempotencyCleanup`) — a tabela de outbox nunca cresce sem limite.
 
 ### REQ-43 — RabbitMQ como transporte de canal cross-process
 
@@ -193,14 +205,26 @@ para que a topologia do spec §11 funcione num deploy real distribuído.
    `emitPolicyWireFunc`), construir a instância RabbitMQ a partir da URL de
    conexão declarada no canal (`connection: env(...)`), mantendo o wiring de
    produtor/consumidor que já existe para `queue`.
-3. THE SYSTEM SHALL respeitar `orderBy` (chave de particionamento →
-   routing/consumer key best-effort), `workers { concurrency }` (prefetch/N
-   consumidores), `timeout` e `circuitBreaker` declarados — reusando a leitura
-   de `channel.go` (`channelQueueConfigGo` e afins), sem reinterpretar o `.ds`.
-4. THE SYSTEM SHALL fazer `ack` após sucesso do handler e `nack`/requeue após
-   falha (at-least-once, coerente com o Outbox de REQ-42) — nunca `ack`
-   antecipado que perca a entrega.
-5. WHEN o canal declara `via: queue` SEM `provider: "rabbitmq"` (ou provider
+3. THE SYSTEM SHALL preservar a semântica de ordenação do `QueueChannel`
+   in-memory (NFR-22): `orderBy` declarado ⇒ **exchange consistent-hash** por
+   `hash(chave)` para N filas de partição, um consumidor por partição (ordem por
+   chave preservada, concorrência = `workers.concurrency` entre partições); sem
+   `orderBy` ⇒ work-queue com prefetch = concurrency (sem ordem). Ordem estrita
+   só por chave, nunca global (§design 3.3). `timeout`/`circuitBreaker`
+   reusam a leitura de `channel.go`, sem reinterpretar o `.ds`.
+4. THE SYSTEM SHALL fazer `ack` após sucesso do handler; numa falha, `nack
+   requeue=false` para uma DLX+retry-queue(TTL) que reencaminha (o broker
+   incrementa `x-death`), e após esgotar `circuitBreaker.threshold` a mensagem
+   vai para a DLQ final — nunca `ack` antecipado nem `requeue=true` incondicional
+   (poison pill; §design 3.3).
+5. THE SYSTEM SHALL registrar as factories dos `PublicEvent` de `contracts/` no
+   `EventRegistry` do binário **consumidor** (além do registry do módulo), para
+   desserializar o envelope AMQP cross-service — senão o consumo falha em runtime
+   (§design 3.3, R8).
+6. THE SYSTEM SHALL reconectar automaticamente (loop com backoff sobre
+   `NotifyClose`) re-estabelecendo conexão/canal/consumidores — um blip de rede
+   não pode parar o consumidor em silêncio (§design 3.3).
+7. WHEN o canal declara `via: queue` SEM `provider: "rabbitmq"` (ou provider
    não reconhecido), THE SYSTEM SHALL manter o `QueueChannel` in-memory de hoje
    (o provider real é opt-in, NFR-21); `via: grpc/http/stream` seguem erro de
    geração claro.
@@ -232,10 +256,11 @@ que a cota e a invalidação valham para o cluster inteiro, não por processo.
    declara `Cache { backend: redis }` e/ou `RateLimit { backend: redis }` — na
    ausência, o in-memory de hoje permanece (NFR-21). A URL do Redis vem de
    `env(...)`.
-5. THE SYSTEM SHALL falhar o **rate limit** fechado ou aberto conforme a
-   política declarada/decisão de design documentada — mas o **cache** SHALL
-   sempre falhar aberto (§15), nunca bloqueando a query por indisponibilidade
-   de Redis.
+5. WHEN o Redis está indisponível, THE SYSTEM SHALL degradar o **rate limit**
+   para o `Limiter` in-memory local (por-réplica) — **fallback local**, não
+   fail-open puro: a proteção continua ativa (por processo) durante a queda, sem
+   abrir uma janela de abuso. O **cache** SHALL sempre falhar aberto (§15),
+   nunca bloqueando a query por indisponibilidade de Redis (§design 3.4).
 
 ### REQ-45 — S3 como FileStorage provider real
 
@@ -291,6 +316,16 @@ banco, o 2º broker) seja barato e localizado.
 4. WHEN nenhuma categoria declara provider real, THE SYSTEM SHALL gerar um
    projeto **byte-idêntico** ao de hoje (NFR-21/NFR-23) — os exemplos
    wallet/shop atuais não regridem.
+5. THE SYSTEM SHALL emitir o projeto **vendorizado** quando algum provider real
+   está ativo: `go.sum` com os hashes fixados + um `vendor/` com a árvore dos
+   drivers oficiais ativos e suas deps transitivas, de modo que `go build
+   -mod=vendor` rode **offline** (sem download; smoke-compile sem rede, NFR-24).
+   Os bytes vendorizados vêm da árvore de dependências do próprio repositório
+   domainscript (que passa a depender dos drivers oficiais). Drivers **oficiais
+   têm prioridade** (pgx, amqp091-go, go-redis, aws-sdk-go-v2): onde falar com
+   infra real exige a lib estabelecida, usa-se ela — reimplementá-la seria menos
+   seguro (§design 2.2). Sem provider ativo, **nenhum** `vendor/`/`go.sum` extra
+   (byte-idêntico, NFR-21).
 
 ### REQ-47 — Configuração por ambiente, fail-closed no startup, e wiring
 
@@ -328,8 +363,9 @@ rodar a prova end-to-end quando a infra existir.
 
 1. THE SYSTEM SHALL ter, para cada provider, **golden test** (fonte do adapter
    gerada vs. referência versionada) + **smoke-compile** (o projeto gerado com
-   o adapter presente builda e `go vet`a limpo sobre os bytes em disco) —
-   NFR-17, sem infra.
+   o adapter presente builda `go build -mod=vendor` **offline** contra o
+   `vendor/` emitido e `go vet`a limpo sobre os bytes em disco) — NFR-17/24, sem
+   infra e sem download.
 2. THE SYSTEM SHALL ter **unit tests de dialeto/serialização** sem infra: SQL
    `$N` do PostgresDialect (reusando o padrão do "segundo dialeto de teste"
    REQ-40.3), envelope de mensagem AMQP, chave/serialização Redis, key/layout
@@ -358,9 +394,12 @@ rodar a prova end-to-end quando a infra existir.
 O núcleo transacional in-memory (event store, dispatcher, uow, HTTP, cache/
 ratelimit/filestorage/outbox in-memory) continua compilando e rodando com
 **Go stdlib + `runtime/` vendorizado apenas**. Cada driver externo (postgres,
-rabbitmq, redis, s3) entra em `go.mod` **exclusivamente** quando o programa
-declara aquele provider — categoria não declarada não puxa nada. Extensão
-direta de NFR-12.
+rabbitmq, redis, s3) entra em `go.mod`/`go.sum`/`vendor/` **exclusivamente**
+quando o programa declara aquele provider — categoria não declarada não puxa
+nada. Onde um provider real é declarado, o driver **oficial** é a escolha
+(prioridade sobre reimplementar protocolo, que seria menos seguro) e é
+**vendorizado** para build offline (REQ-46.5). Extensão direta de NFR-12: deps
+mínimas no núcleo, deps reais e auditadas onde falar com infra as exige.
 
 ### NFR-22 — Paridade comportamental in-memory ↔ provider real
 Para toda operação que existe nos dois lados (persistência, entrega de canal,
@@ -405,16 +444,20 @@ O ciclo está completo quando:
 
 1. A fixture-âncora (§1.4) gera um projeto que compila e vet-limpa com os cinco
    providers reais presentes (golden + smoke, NFR-17).
-2. Postgres é um adapter real (REQ-41), o Outbox durável grava atômico com a tx
-   de negócio (REQ-42), o canal RabbitMQ entrega cross-process (REQ-43), Redis
-   respalda Cache e RateLimit (REQ-44), e S3 respalda FileStorage (REQ-45) —
-   cada um opt-in e isolado atrás do seam existente.
-3. `go.mod` reflete exatamente os providers declarados e **nada** a mais; o
-   mesmo programa sem providers gera projeto byte-idêntico ao de hoje
-   (NFR-21/23); wallet/shop sem regressão (NFR-19).
-4. Cada provider tem golden + smoke + unit de dialeto/serialização passando
-   **sem infra** (REQ-48.1/2); os testes de integração existem, rodam quando há
-   infra + build tag, e são pulados (não falham) sem ela (REQ-48.3, NFR-24).
+2. Postgres é um adapter real (REQ-41); o Outbox durável grava atômico com a tx
+   de negócio **e alimenta o canal cross-service** (o relay publica no broker,
+   não o commit — REQ-42.1/42.6), com cleanup de retenção (REQ-42.7); o canal
+   RabbitMQ entrega cross-process com ordem por chave (consistent-hash),
+   reconexão e DLQ (REQ-43); Redis respalda Cache e RateLimit **com fallback
+   local** no rate limit (REQ-44); e S3 respalda FileStorage (REQ-45) — cada um
+   opt-in e isolado atrás do seam existente.
+3. `go.mod`/`go.sum`/`vendor/` refletem exatamente os providers declarados e
+   **nada** a mais; o mesmo programa sem providers gera projeto byte-idêntico ao
+   de hoje (NFR-21/23); wallet/shop sem regressão (NFR-19).
+4. Cada provider tem golden + smoke (build **offline** `-mod=vendor`) + unit de
+   dialeto/serialização passando **sem infra e sem download** (REQ-48.1/2); os
+   testes de integração existem, rodam quando há infra + build tag, e são
+   pulados (não falham) sem ela (REQ-48.3, NFR-24).
 5. `go build ./...` / `go test ./...` do compilador verdes; a doc dos exemplos
    que marcava esses providers como decorativos é atualizada (REQ-48.4).
 6. `.claude/specs/codegen/gaps.md` e `.claude/issues.md` atualizados: G-4/
