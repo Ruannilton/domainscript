@@ -139,7 +139,7 @@ func TestEmitPoliciesChannelWithWorkersTimeoutCircuitBreakerGolden(t *testing.T)
 	model := types.NewModel(prog.Symbols)
 	policy := findPolicyDecl(t, prog, "ReactToWidget")
 
-	got, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil)
+	got, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil, nil)
 	if err != nil {
 		t.Fatalf("EmitPolicies: erro inesperado: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestEmitPoliciesChannelSettingsDeterministic(t *testing.T) {
 		prog := parseChannelFixture(t, channelFixtureTopologyDs)
 		model := types.NewModel(prog.Symbols)
 		policy := findPolicyDecl(t, prog, "ReactToWidget")
-		got, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil)
+		got, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil, nil)
 		if err != nil {
 			t.Fatalf("EmitPolicies: erro inesperado: %v", err)
 		}
@@ -210,7 +210,7 @@ func channelFixtureSmokeFiles(t *testing.T) map[string][]byte {
 	files[filepath.Join("contracts", "events.go")] = contractsGo
 
 	policy := findPolicyDecl(t, prog, "ReactToWidget")
-	policyGo, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil)
+	policyGo, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil, nil)
 	if err != nil {
 		t.Fatalf("EmitPolicies(ReactToWidget): erro inesperado: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestEmitPoliciesUnsupportedChannelKindIsGenerationError(t *testing.T) {
 	model := types.NewModel(prog.Symbols)
 	policy := findPolicyDecl(t, prog, "ReactToWidget")
 
-	_, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil)
+	_, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil, nil)
 	if err == nil {
 		t.Fatal("esperava erro de geração para via \"grpc\" (não suportado neste marco)")
 	}
@@ -362,7 +362,7 @@ func TestEmitPoliciesOrderByFieldMismatchIsGenerationError(t *testing.T) {
 	model := types.NewModel(prog.Symbols)
 	policy := findPolicyDecl(t, prog, "ReactToWidget")
 
-	_, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil)
+	_, err := codegen.EmitPolicies("beta", []*ast.PolicyDecl{policy}, model, prog.Symbols, prog, "Beta", goname.NewVOOperatorRegistry(), nil, nil)
 	if err == nil {
 		t.Fatal("esperava erro de geração: orderBy \"bogus\" não existe em WidgetMade")
 	}
