@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J1.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J1.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -158,6 +158,41 @@ regressão: `TestWallet*`/`TestLedger*` (`codegen`) e `TestGenerate*`
 (`driver`) continuam verdes, incluindo os guardas de determinismo/byte-
 identidade (NFR-13/21) — `providerSources` vazio não altera nenhum projeto
 gerado. Próxima: **J1.1** (dialeto Postgres, primeira subtask da Fase J1).
+
+Concluído: **J1.1** — `PostgresDialect` (`codegen/sqlrt/dialect_postgres.go.txt`,
+novo): implementa `Dialect` (REQ-41.1) com `Placeholder` posicional (`$N`),
+`CreateEventsTable`/`CreateCollectionTable` com os tipos Postgres (`BIGINT`
+para `sequence`, `JSONB` para `payload`, `TIMESTAMPTZ` para `recorded_at` —
+decisão documentada no arquivo: preserva o fuso UTC que o valor Go já carrega,
+ao contrário do `TIMESTAMP` naive do sqlite) e `LimitOffset` idêntico ao
+sqlite (LIMIT/OFFSET é ANSI). Só o dialeto — nenhum driver `pgx`, nenhuma
+entrada em `sqlProviders`, nenhuma mudança em `go.mod` (isso é J1.2). A
+interface `Dialect` (`codegen/sqlrt/dialect.go.txt`) ganhou um QUINTO método,
+`JSONFieldEq(field, placeholder string) string`, porque `whereEqClause`
+(`codegen/sqlrt/collection.go.txt`) hardcodava a sintaxe `json_extract(...)`
+do sqlite fora de qualquer `Dialect` — uma violação de REQ-40.1/41.1 que só
+apareceria quando um segundo banco tentasse descer `WhereEq` (REQ-38). O
+método agora encapsula a extração de campo JSON por banco: `sqliteDialect`
+devolve `json_extract(payload,'$.<campo>') = <placeholder>` (string idêntica
+à de antes — behavior-preserving, provado por
+`TestSQLiteDialectJSONFieldEqUnchanged`); `postgresDialect` devolve
+`payload->>'<campo>' = <placeholder>` (o operador de extração-como-texto do
+Postgres, R7: o parâmetro do lado do chamador já é o valor Go stringificado,
+igual ao sqlite, e `unsafeWhereEqPrimitives`
+(`codegen/lower/whereeq.go`) continua uma lista ÚNICA dialeto-agnóstica —
+confirmado por leitura, nenhuma mudança necessária nesse arquivo — então o
+conjunto de tipos seguros é idêntico nos dois dialetos por construção).
+Testes novos em `codegen/sql_postgres_dialect_test.go`
+(`TestPostgresDialectSQLStrings`, que roda `TestPostgresDialectStrings` e
+`TestSQLiteDialectJSONFieldEqUnchanged` de verdade num projeto Go efêmero via
+`gentest.WriteFiles`/`RunTests`, mesmo padrão de
+`TestSQLEventStoreDialectPluggability`) — puras asserções de string, nenhuma
+conexão Postgres real aberta ou necessária. Sem regressão:
+`codegen/sql_collection_test.go`/`sql_dialect_test.go`/`sql_tenancy_test.go`
+(`go test ./codegen/ -run TestSQL`) e `driver` `TestGenerate*` (wallet/shop
+e2e, NFR-19) continuam verdes — o refactor de `whereEqClause` não muda
+nenhum byte gerado para sqlite. Próxima: **J1.2** (driver `pgx` real +
+entrada em `sqlProviders` + `go.mod` opt-in).
 
 ## Issues em aberto
 

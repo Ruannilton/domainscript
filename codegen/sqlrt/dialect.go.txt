@@ -25,6 +25,24 @@ type Dialect interface {
 	// OFFSET ANSI serve sqlite e postgres; o método existe para o banco que
 	// divergir).
 	LimitOffset(limit, offset int) string
+	// JSONFieldEq devolve a condição SQL "<extração-json-do-campo> =
+	// <placeholder>" usada por Collection[T].whereEqClause
+	// (collection.go.txt, REQ-38.1) para cada FieldEq de um WhereEq —
+	// TODA a diferença de sintaxe de extração/igualdade de campo JSON vive
+	// aqui (REQ-40.1/41.1/41.4): sqlite usa a função
+	// json_extract(payload,'$.<campo>'); postgres usa o operador
+	// payload->>'<campo>' (extração como TEXTO, não jsonb). placeholder já
+	// vem pronto (o resultado de Placeholder(n) — este método não decide
+	// o estilo do parâmetro, só a extração do campo). O parâmetro
+	// vinculado do lado do chamador é sempre o valor Go stringificado
+	// (nunca o valor nativo), porque ambos os operadores de extração
+	// devolvem texto — é a mesma régua de segurança de tipo que já
+	// restringe quais primitivos entram em WhereEq
+	// (codegen/lower/whereeq.go:unsafeWhereEqPrimitives, R7 §design
+	// infra-providers 3.1): essa lista é dialeto-agnóstica de propósito,
+	// então o conjunto de tipos seguros é idêntico entre SQLiteDialect e
+	// PostgresDialect por construção, nunca por auditoria caso a caso.
+	JSONFieldEq(field, placeholder string) string
 }
 
 // sqliteDialect implementa Dialect para o único driver real que este
@@ -60,4 +78,8 @@ func (sqliteDialect) CreateCollectionTable(name string) string {
 
 func (sqliteDialect) LimitOffset(limit, offset int) string {
 	return fmt.Sprintf("LIMIT %d OFFSET %d", limit, offset)
+}
+
+func (sqliteDialect) JSONFieldEq(field, placeholder string) string {
+	return fmt.Sprintf("json_extract(payload,'$.%s') = %s", field, placeholder)
 }

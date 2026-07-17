@@ -61,7 +61,7 @@
 
 ### Fase J1 — Postgres como Database provider real (REQ-41)
 
-- [ ] **J1.1** `PostgresDialect` (só strings SQL, sem driver ainda).
+- [x] **J1.1** `PostgresDialect` (só strings SQL, sem driver ainda).
   - a. `dialect_postgres.go.txt` (ou struct em `dialect.go.txt`): `Placeholder`
     `$N`, `LimitOffset` `LIMIT/OFFSET`. (REQ-41.1, §design 3.1).
   - b. DDL `events`/collection com `text`/`jsonb`; `WhereEq` via
