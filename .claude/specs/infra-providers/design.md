@@ -196,7 +196,7 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   `NewDurableOutbox(db, dialect, dispatcher, publisher)` quando o módulo tem
   Database real (REQ-42.5). O `Subscribe` do código gerado é idêntico nos dois
   (REQ-42.3).
-- **O outbox alimenta o canal cross-service (REQ-42.6, §3.3a) — não são dois
+- **O outbox alimenta o canal cross-service (REQ-42.6, §3.2a) — não são dois
   mecanismos paralelos.** Um `PublicEvent` que cruza serviços NÃO pode ser
   publicado direto no broker pelo publisher do UnitOfWork (isso aconteceria
   *fora* da tx SQL — crash pós-commit/pré-publish perderia o evento, o buraco

@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | pending | J0.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J0.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -92,10 +92,27 @@ do gap G-4 (`.claude/specs/codegen/gaps.md`) / ISSUE-3, com **recorte explícito
 de 5 providers**: Postgres (Database), Outbox durável, RabbitMQ (canal
 cross-service), Redis (Cache + RateLimit) e S3 (FileStorage). Cada categoria já
 tem o seam pronto (read-side/codegen) — o trabalho é implementar o lado real
-atrás dele e generalizar o registro de provider (REQ-46). **Nenhuma task
-iniciada.** Próxima: **J0.1** (registro de provider por categoria +
-`activeProviderDeps`, a peça transversal). J1–J5 são independentes após J0
-(exceto J2, que depende de J1). Ver `tasks.md` para o mapa de dependências.
+atrás dele e generalizar o registro de provider (REQ-46). J1–J5 são
+independentes após J0 (exceto J2, que depende de J1). Ver `tasks.md` para o
+mapa de dependências.
+
+Concluído: **J0.1** — `codegen/provider_registry.go` (novo): tipo `providerDep
+{module, version, minGo, adapterDir, ctor}` (generalização de `sqlProvider`,
+I7.0, para as categorias Canal/Cache/RateLimit/FileStorage — Database
+continua em `sqlProviders`, que tem `dialectCtor`, um campo específico de
+SQL) + os quatro mapas do registro (`channelProviders`/`cacheProviders`/
+`rateLimitProviders`/`fileProviders`), vazios nesta task (cada entrada real
+chega em J1..J5). `activeProviderDeps(prog)` varre `prog.Channels`
+(`provider:`), o bloco `Cache`/`RateLimit` de cada módulo (`backend:`, via
+`moduleCacheBlock`/`moduleRateLimitBlock` já existentes) e cada
+`mod.FileStorages` (`provider:`), resolve contra os registros e devolve a
+lista deduplicada (por `module` **e** por `adapterDir`, R5 — mesmo provider
+em 2 categorias colapsa numa entrada) e ordenada (NFR-23). Testes em
+`codegen/provider_registry_test.go` (`package codegen`, para mutar os mapas
+no teste de dedup): registro vazio ⇒ sempre vazio mesmo com
+canal/Cache/RateLimit/FileStorage declarando providers desconhecidos; dois
+mapas populados com a MESMA `providerDep` (mesmo module+adapterDir) ⇒ uma
+entrada só. Próxima: **J0.2** (`EmitGoMod` consome `activeProviderDeps`).
 
 ## Issues em aberto
 
