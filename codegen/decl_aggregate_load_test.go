@@ -642,6 +642,13 @@ func TestEmitAggregateLoadSnapshotBehavior(t *testing.T) {
 // runGeneratedTests escreve files num diretório isolado e roda `go test
 // ./...` de verdade — helper compartilhado pelos testes comportamentais desta
 // parte (mesmo padrão de TestEmitAggregateBehavior, decl_aggregate_test.go).
+//
+// Roda `go mod tidy` primeiro quando go.mod declara um bloco "require" (J1.2,
+// REQ-41.2, mesma detecção de gentest.needsModTidy — codegen/gentest/smoke.go):
+// desde que "postgres" virou um provider SQL real, qualquer fixture cujo
+// Database use provider:"postgres" (o wallet real, docs/examples/wallet,
+// incluído) ganha "require github.com/jackc/pgx/v5 ..." em go.mod, e sem
+// go.sum resolvido o `go test` abaixo falharia com "missing go.sum entry".
 func runGeneratedTests(t *testing.T, files map[string][]byte) {
 	t.Helper()
 	dir := t.TempDir()
@@ -652,6 +659,14 @@ func runGeneratedTests(t *testing.T, files map[string][]byte) {
 		}
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			t.Fatalf("não consegui escrever %q: %v", path, err)
+		}
+	}
+
+	if goMod, ok := files["go.mod"]; ok && strings.Contains(string(goMod), "require ") {
+		tidy := exec.Command("go", "mod", "tidy")
+		tidy.Dir = dir
+		if out, err := tidy.CombinedOutput(); err != nil {
+			t.Fatalf("`go mod tidy` falhou em %q: %v\n%s", dir, err, out)
 		}
 	}
 

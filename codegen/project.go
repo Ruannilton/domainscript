@@ -30,6 +30,22 @@ const (
 	// o chamador não pediu uma versão explícita.
 	sqliteMinGoVersion = "1.25"
 
+	// postgresDriverModule/postgresDriverVersion identificam o SEGUNDO driver
+	// real que este gerador sabe vendorar atrás do adapter sqlruntime (J1.2,
+	// REQ-41.2/41.3, §design infra-providers 3.1): pgx/v5 stdlib
+	// (github.com/jackc/pgx/v5/stdlib registra o driver database/sql "pgx"),
+	// escolhido em vez de lib/pq por ser mantido ativamente e ter suporte
+	// nativo a jsonb — mesma razão documentada em open_postgres.go.txt. Fixo
+	// (não "latest"), mesma razão de sqliteDriverVersion (determinismo,
+	// NFR-13).
+	postgresDriverModule  = "github.com/jackc/pgx/v5"
+	postgresDriverVersion = "v5.10.0"
+	// postgresMinGoVersion é a versão mínima de Go que postgresDriverVersion
+	// exige (seu próprio go.mod declara "go 1.25.0", confirmado via
+	// `go mod download`) — coincide com sqliteMinGoVersion, mesmo espírito
+	// documental.
+	postgresMinGoVersion = "1.25"
+
 	// grpcModule/grpcVersion identificam o ÚNICO par módulo/versão que este
 	// gerador sabe vendorar atrás do pacote de borda grpcedge (H1, NFR-12,
 	// REQ-29.2): fixado (não "latest") pela mesma razão de

@@ -26,10 +26,11 @@ type Database struct {
 	Manages    []string // nomes de Aggregate geridos por este banco
 	// Provider é o valor textual de "provider:" (ex. "postgres", "sqlite"),
 	// livre no front-end (nunca validado contra um enum fixo — qualquer string
-	// é aceita, ver resolver/resolve_config_test.go). O codegen (G1,
-	// §design 3.11) é quem dá semântica a valores reconhecidos: hoje só
-	// "sqlite" seleciona o adapter real database/sql (codegen/sqlrt);
-	// qualquer outro valor (incl. "postgres", ausente) mantém o fallback
+	// é aceita, ver resolver/resolve_config_test.go). O codegen (G1, J1.2,
+	// §design 3.11/infra-providers 3.1) é quem dá semântica a valores
+	// reconhecidos: "sqlite" (G1) e "postgres" (J1.2, REQ-41.2) selecionam o
+	// adapter real database/sql (codegen/sqlrt); qualquer outro valor
+	// (ausente, ou um provider ainda não implementado) mantém o fallback
 	// in-memory do Marco E — nenhum driver correspondente é vendorado ainda
 	// (NFR-12, mesmo espírito documentado de gRPC/OTel em §design 4.4).
 	Provider string

@@ -34,7 +34,7 @@ import (
 
 const metricsDemoModDs = `Module MetricsDemo {
     Database MetricsDemoDb {
-        provider: "postgres"
+        provider: "pg"
         manages: [Wallet]
     }
 }

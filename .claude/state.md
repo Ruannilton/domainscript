@@ -194,6 +194,93 @@ e2e, NFR-19) continuam verdes — o refactor de `whereEqClause` não muda
 nenhum byte gerado para sqlite. Próxima: **J1.2** (driver `pgx` real +
 entrada em `sqlProviders` + `go.mod` opt-in).
 
+Concluído: **J1.2** — driver Postgres real + registro + `go.mod` opt-in
+(REQ-41.2/41.3). `codegen/sqlrt/open_postgres.go.txt` (novo):
+`OpenPostgres(dsn) (*sql.DB, error)` via `sql.Open("pgx", dsn)` (driver
+`github.com/jackc/pgx/v5/stdlib`) + `PingContext` fail-closed com
+`context.WithTimeout(10s)` — nunca `context.Background()` (REQ-47.2): um
+Postgres inalcançável falha o startup oportunamente. Nome **`OpenPostgres`**,
+não `Open` — achado desta task: `generateSQLRuntimeFiles` (codegen.go) copia
+TODO `sqlrt.Sources()` sempre que qualquer provider real está ativo (não
+filtra por provider individual), então um projeto com Database "sqlite" E
+"postgres" ativos ao mesmo tempo teria os dois `open_*.go.txt` no MESMO
+pacote `sqlruntime` gerado — dois `func Open` colidiriam. `sqlProvider`
+(`codegen/sql_wiring.go`) ganhou o campo `openFunc` (mesmo padrão de
+`dialectCtor`): `"Open"` para sqlite (inalterado, zero regressão),
+`"OpenPostgres"` para postgres; `emitXADatabaseWiring` usa
+`provider.openFunc` em vez do literal `.Open(` que tinha antes (sqlite
+continua emitindo `.Open(` byte-a-byte — só postgres muda). Registro:
+`sqlProviders["postgres"] = {driverModule: "github.com/jackc/pgx/v5",
+driverVersion: "v5.10.0", minGoVersion: "1.25", dialectCtor:
+"PostgresDialect", openFunc: "OpenPostgres"}` (`project.go` ganhou as
+constantes `postgresDriverModule`/`postgresDriverVersion`/
+`postgresMinGoVersion` — v5.10.0 confirmada via `go mod download` exigir
+`go >= 1.25.0`, mesma versão mínima que sqlite já exige, então
+`maxGoVersion` não muda o default). `EmitGoMod`/`activeSQLProviders` já
+eram genéricos (nenhuma mudança — só a entrada no registro basta,
+REQ-40.2). Testes novos `codegen/sql_wiring_test.go` (pacote interno
+`codegen`, J1.2.d): `TestActiveSQLProvidersRecognizesPostgres`
+(case-insensitive), `TestActiveSQLProvidersUnrecognizedProviderIsNFR21NoOp`
+(um provider não reconhecido, ex. `"pg"`, não ativa nada),
+`TestEmitGoModRequiresPgxForPostgres`, `TestEmitGoModWithoutPostgresHasNoPgx`
+(NFR-21).
+
+**Ripple grande, não previsto no orçamento original da task, corrigido
+dentro dela por ser causado diretamente por ela** (regra de "erro no escopo
+da task atual"): `wallet`/`shop` (`docs/examples/`) declaram `provider:
+"postgres"` DE VERDADE em `mod.ds` — antes de J1.2 isso era decorativo (só
+"sqlite" era reconhecido), documentado explicitamente em vários comentários
+como invariante ("wallet/shop nunca disparam esse caminho"). Registrar
+"postgres" em `sqlProviders` torna essa suposição falsa: os dois exemplos
+passam a ser programas SQL reais (ganham `sqlruntime/*` + `require
+github.com/jackc/pgx/v5` em go.mod), o que quebrava testes que dependiam do
+invariante antigo. Corrigido:
+- `driver/generate_e2e_wallet_test.go`/`generate_e2e_shop_test.go`: novo
+  helper `ensureModTidyIfNeeded` (roda `go mod tidy` quando go.mod tem
+  `require`, mesma detecção de `gentest.needsModTidy`) chamado antes de
+  `go build`/`go vet`/`go test` sobre a saída em disco — sem isso,
+  `missing go.sum entry` falha o build. `TestGenerateWalletE2EGoModHasNoExternalRequire`/
+  `TestGenerateShopE2EGoModHasNoExternalRequire` viraram
+  `TestGenerateWalletE2EGoModRequiresPostgresDriver`/
+  `TestGenerateShopE2EGoModRequiresPostgresDriver` (a asserção invertida é o
+  comportamento correto agora, não uma regressão).
+- `codegen/decl_aggregate_load_test.go:runGeneratedTests` (helper
+  compartilhado por ~10 testes comportamentais do pacote, incl. os que usam
+  o wallet real via `generateWalletProject`): mesmo fix de `go mod tidy`
+  condicional, num único ponto.
+- `codegen/sql_adapter_test.go:TestWalletGoModStaysDependencyFreeAfterG1` →
+  `TestWalletGoModRequiresOnlyPostgresDriverAfterG1`: a asserção "NFR-12: sem
+  require" não é mais verdadeira para o wallet real; reescrita para provar
+  que exige EXATAMENTE `github.com/jackc/pgx/v5` (nenhum `modernc.org/sqlite`)
+  e gera `sqlruntime/eventstore.go`.
+- `codegen/decl_metric_test.go`/`ratelimit_test.go`/`tenancy_test.go`/
+  `versioning_test.go`: 6 fixtures SINTÉTICAS (não wallet/shop) usavam
+  `provider: "postgres"` só como rótulo inerte de propósito, para testar algo
+  não relacionado (Metric/RateLimit/tenancy in-memory/versioning de evento)
+  sem acionar o adapter SQL — renomeadas para `provider: "pg"` (a mesma
+  convenção já usada em `sema/rules_audit_test.go`), restaurando a intenção
+  original sem herdar uma dependência pgx irrelevante ao que cada teste
+  prova.
+- `program/graph.go` (doc de `Database.Provider`) e `CLAUDE.md` (invariante
+  "Core vs. opt-in dependencies", NFR-12): atualizados — "postgres" não é
+  mais decorativo, é o segundo provider real.
+- Não tocado (fora do orçamento, passam mesmo assim via `gentest.SmokeCompile`,
+  que já faz `go mod tidy` condicional): `channel_test.go`/`grpc_test.go`/
+  `otel_test.go`/`idempotency_test.go`/`filestorage_test.go`/
+  `decl_query_cache_test.go`/`decl_usecase_test.go`/`decl_query_test.go`/
+  `decl_projection_test.go`/`decl_aggregate_load_test.go` (uma 2ª fixture)
+  ainda usam `provider: "postgres"` decorativo — passam, mas puxam pgx à toa
+  via `go mod tidy` nesses smoke tests; não é uma falha, só um desperdício
+  de rede/tempo de teste. Candidato a limpeza futura (mesmo padrão da
+  renomeação para "pg" acima), não registrado como issue por não ser um
+  bug.
+`go build ./...`, `go vet ./...`, `gofmt -l .` limpos; `go test ./...`
+(suíte inteira, não só o escopo da task, por causa do ripple acima) verde.
+Próxima: **J1.3** — `(R1)` wiring lê conexão por `env(...)`, não por
+`db.DSN` (`emitXADatabaseWiring` hoje faz `strconv.Quote(db.DSN)`, que é
+`""` para `connection: env(...)`; precisa lowerizar via
+`decl_io.go:envCallGo`).
+
 ## Issues em aberto
 
 Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit

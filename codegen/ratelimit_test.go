@@ -37,7 +37,7 @@ import (
 // billing/interface.ds).
 const rateLimitBillingModDs = `Module Billing {
     Database BillingDb {
-        provider: "postgres"
+        provider: "pg"
         manages: [Account]
     }
 }
@@ -161,7 +161,7 @@ Interface HTTP {
 
 const rateLimitCatalogModDs = `Module Catalog {
     Database CatalogDb {
-        provider: "postgres"
+        provider: "pg"
         manages: [Product]
     }
 
@@ -223,7 +223,7 @@ Query PeekProduct(id ProductId) -> ProductVW {
 
 const rateLimitSearchModDs = `Module Search {
     Database SearchDb {
-        provider: "postgres"
+        provider: "pg"
         manages: [SearchIndex]
     }
 

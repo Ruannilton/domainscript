@@ -23,14 +23,15 @@ import (
 // (topology.ds) — logo dois cmd/<service>/main.go, não um.
 //
 // Achado da auditoria (ver investigação registrada no fechamento H5,
-// tasks.md): Orders/mod.ds declara `Database MainDb { provider: "postgres" }`,
-// mas G1 (codegen/sql_wiring.go) só reconhece "sqlite" (case-insensitive) como
-// adapter real — "postgres" é decorativo (mesmo achado documentado em
-// codegen/sql_adapter_test.go). Não há Interface GRPC nem Telemetry em nenhum
-// .ds do Shop. Logo o go.mod gerado do Shop, como o do Wallet, não tem NENHUM
-// require — TestGenerateShopE2EGoModHasNoExternalRequire prova isso
-// empiricamente (não apenas por leitura do código), porque uma mudança futura
-// em sql_wiring.go que passasse a reconhecer "postgres" quebraria este teste.
+// tasks.md): Orders/mod.ds declara `Database MainDb { provider: "postgres" }`.
+// Até J1.2 (REQ-41.2) G1 (codegen/sql_wiring.go) só reconhecia "sqlite"
+// (case-insensitive) como adapter real — "postgres" era decorativo (mesmo
+// achado documentado em codegen/sql_adapter_test.go), e o go.mod gerado do
+// Shop, como o do Wallet, não tinha NENHUM require. Desde J1.2,
+// sqlProviders["postgres"] existe: o Shop passou a ser, como o Wallet, um
+// exemplo real de provider Postgres — TestGenerateShopE2EGoModRequiresPostgresDriver
+// prova isso empiricamente. Não há Interface GRPC nem Telemetry em nenhum
+// .ds do Shop, então pgx continua a única dependência externa.
 //
 // Julgamento sobre teste comportamental: o único Policy do Shop é
 // `execute { return }` (sem lógica de negócio observável) e não há *.test.ds
@@ -104,26 +105,34 @@ func TestGenerateShopE2ELayout(t *testing.T) {
 // saída REAL escrita em disco por GenerateProject compila, passa go vet e
 // roda go test (a suíte real, ainda que sem *.test.ds no exemplo — cobre o
 // runtime vendorado e qualquer teste gerado por outros módulos do repo).
+// Desde J1.2 (REQ-41.2), Orders/mod.ds (provider "postgres") passa a
+// disparar o adapter SQL real — ensureModTidyIfNeeded (generate_e2e_wallet_
+// test.go) resolve o go.sum do driver pgx antes de compilar (mesmo motivo
+// documentado ali).
 func TestGenerateShopE2ESmokeCompile(t *testing.T) {
 	out := generateShopE2EProject(t)
+	ensureModTidyIfNeeded(t, out)
 	runGoOverDir(t, out, "build", "./...")
 	runGoOverDir(t, out, "vet", "./...")
 	runGoOverDir(t, out, "test", "./...")
 }
 
-// TestGenerateShopE2EGoModHasNoExternalRequire prova empiricamente (NFR-12)
-// que o go.mod gerado do Shop não tem require: apesar de Orders/mod.ds
-// declarar `provider: "postgres"`, G1 só reconhece "sqlite" como adapter SQL
-// real (codegen/sql_wiring.go) — "postgres" é decorativo neste exemplo — e não
-// há Interface GRPC nem Telemetry em nenhum .ds do Shop.
-func TestGenerateShopE2EGoModHasNoExternalRequire(t *testing.T) {
+// TestGenerateShopE2EGoModRequiresPostgresDriver prova, revisado por J1.2
+// (REQ-41.2/41.3, mesma revisão de TestGenerateWalletE2EGoModRequiresPostgresDriver
+// em generate_e2e_wallet_test.go): Orders/mod.ds declara `Database MainDb {
+// provider: "postgres" }` — antes de J1.2 "postgres" era decorativo (só
+// "sqlite" era reconhecido, ver o histórico deste arquivo), agora é um
+// provider SQL real, então o go.mod gerado do Shop exige o driver pgx (a
+// única dependência externa introduzida — não há Interface GRPC nem
+// Telemetry em nenhum .ds do Shop).
+func TestGenerateShopE2EGoModRequiresPostgresDriver(t *testing.T) {
 	out := generateShopE2EProject(t)
 	content, err := os.ReadFile(filepath.Join(out, "go.mod"))
 	if err != nil {
 		t.Fatalf("não consegui ler go.mod: %v", err)
 	}
-	if strings.Contains(string(content), "require") {
-		t.Fatalf("go.mod não deveria conter \"require\" (NFR-12 — zero dep externa, provider \"postgres\" é decorativo neste exemplo):\n%s", content)
+	if !strings.Contains(string(content), "github.com/jackc/pgx/v5 ") {
+		t.Fatalf("go.mod deveria exigir github.com/jackc/pgx/v5 (Orders/MainDb, provider \"postgres\", J1.2):\n%s", content)
 	}
 }
 
