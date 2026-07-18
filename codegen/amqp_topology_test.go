@@ -113,9 +113,12 @@ func TestConsistentHashBindingKeyIsNumeric(t *testing.T) {
 }
 
 // TestXDeathCountSumsAcrossEntries prova que xDeathCount lê o header
-// x-death (formato padrão do RabbitMQ: array de amqp.Table, cada um com um
-// campo "count") e soma o total — o que consume usa pra decidir entre
-// nack(requeue=false) (mais uma volta) ou DLQ final (REQ-43.4).
+// x-death (formato padrão do RabbitMQ: array de amqp.Table) e soma SÓ as
+// entradas com reason "rejected" — cada volta do ciclo DLX+retry produz
+// DOIS eventos de dead-lettering (um "rejected", da fila principal pra DLX
+// de retry; um "expired", da retry queue de volta pra exchange original,
+// puro trânsito, nunca uma tentativa em si) — somar os dois contaria cada
+// tentativa em dobro (revisão da PR #24).
 func TestXDeathCountSumsAcrossEntries(t *testing.T) {
 	if got := xDeathCount(nil); got != 0 {
 		t.Fatalf("xDeathCount(nil) = %d, want 0", got)
@@ -130,8 +133,8 @@ func TestXDeathCountSumsAcrossEntries(t *testing.T) {
 			amqp.Table{"count": int64(1), "reason": "rejected"},
 		},
 	}
-	if got := xDeathCount(headers); got != 3 {
-		t.Fatalf("xDeathCount = %d, want 3 (2+1)", got)
+	if got := xDeathCount(headers); got != 1 {
+		t.Fatalf("xDeathCount = %d, want 1 (ignora \"expired\", só \"rejected\" conta como tentativa)", got)
 	}
 }
 

@@ -255,11 +255,20 @@ func retryQueueArgs(mainExchange string, ttl time.Duration) amqp.Table {
 func consistentHashBindingKey() string { return consistentHashWeight }
 
 // xDeathCount lê o header `x-death` (formato padrão do RabbitMQ: um array
-// de amqp.Table, um por ciclo de dead-lettering, cada um com um campo
-// "count") e soma o total de vezes que esta mensagem já deu a volta pelo
+// de amqp.Table) e soma quantas vezes esta mensagem já deu a volta pelo
 // ciclo DLX+retry — 0 quando o header está ausente (mensagem na 1ª
 // tentativa) ou malformado (nunca panica sobre um header inesperado, só
 // trata como "nenhuma tentativa anterior conhecida").
+//
+// Filtra por reason == "rejected" (revisão da PR #24): CADA volta do ciclo
+// produz DOIS eventos de dead-lettering, não um — (1) da fila principal pra
+// DLX de retry, reason "rejected" (o nack(requeue=false) de consume), e (2)
+// da retry queue de volta pra exchange original, reason "expired" (o TTL
+// vencendo). Somar os dois SEM filtrar contaria cada tentativa em dobro —
+// uma mensagem chegaria na DLQ final depois de só metade de
+// effectiveMaxAttempts tentativas de verdade. "rejected" conta exatamente
+// uma vez por tentativa que de fato falhou (decodificação ou handler);
+// "expired" é só o mecanismo de trânsito de volta, não uma tentativa em si.
 func xDeathCount(headers amqp.Table) int64 {
 	if headers == nil {
 		return 0
@@ -276,6 +285,9 @@ func xDeathCount(headers amqp.Table) int64 {
 	for _, e := range entries {
 		t, ok := e.(amqp.Table)
 		if !ok {
+			continue
+		}
+		if reason, _ := t["reason"].(string); reason != "rejected" {
 			continue
 		}
 		switch c := t["count"].(type) {
