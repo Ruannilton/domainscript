@@ -200,3 +200,27 @@ Cada issue é um bloco novo, nesta forma:
   Policy) nem quebra NFR-21 (shop continua byte-idêntico, confirmado por
   `driver.TestGenerateShopE2E*`/golden tests). Fica para J3.4 (RabbitMQ, R2)
   ou J6 fechar de verdade.
+
+## ISSUE-10
+- SPEC: infra-providers
+- TASK: J4.1 (achado durante a revisão da PR #26)
+- DESCRIPTION: `memoryQueryCache.Coalesce` (`codegen/rtsrc/querycache.go.txt`,
+  Marco G3) tem o MESMO bug que a revisão do Gemini Code Assist apontou em
+  `redisQueryCache.Coalesce` (`codegen/redisrt/cache.go.txt`, task J4.1,
+  copiado do padrão de `querycache.go.txt`): se `fn()` panica, `close(
+  fl.done)` e a remoção de `key` de `c.flights` nunca rodam (não há
+  `defer`) — toda goroutine concorrente bloqueada em `<-fl.done` trava para
+  sempre (vazamento de goroutine), e a MESMA chave nunca mais coalesce de
+  novo (fica presa em `c.flights` indefinidamente). `redisQueryCache` já foi
+  corrigido (commit da revisão da PR #26, `defer` fechando/limpando mesmo
+  sob panic) — `memoryQueryCache`, o backend em produção desde G3 (Marco
+  E/F, todo módulo com Query cacheada usa isto hoje, incl. potencialmente
+  wallet/shop se algum dia declararem `cache {}`), continua com o bug
+  original. Fora do escopo de J4.1 (é `rtsrc/`, núcleo, não o adapter redis
+  que a task realmente toca) — registrado aqui em vez de corrigido
+  silenciosamente numa PR que não é sobre isso. Fix sugerido: mesmo padrão
+  de `defer` que `redisQueryCache.Coalesce` já usa. Baixo risco prático (um
+  handler de Query gerado só panica sobre um bug de geração ou um builtin
+  malformado — não exercitado por nenhum teste comportamental hoje), mas
+  vale uma task pequena e dedicada (fora de Marco J, é `rtsrc/` puro) para
+  fechar.

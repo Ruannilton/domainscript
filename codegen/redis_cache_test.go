@@ -253,18 +253,19 @@ func TestRedisQueryCacheGetFailsOpenOnRedisError(t *testing.T) {
 // pânico no type assertion do chamador.
 func TestRedisQueryCacheGetFailsOpenOnUnregisteredType(t *testing.T) {
 	fake := newFakeCmdable()
-	// Corrompe deliberadamente a entrada: bytes que não formam um gob válido
-	// para cachePayload.
-	fake.store["ns-corrupt:0:whatever"] = []byte("isto não é gob válido")
-
 	c := newRedisQueryCache(fake, "ns-corrupt")
 	ctx := context.Background()
 
-	v, err, hit := c.Get(ctx, "whatever-key-that-does-not-hash-to-the-corrupt-suffix")
-	// A chave real (hasheada) não bate com a entrada corrompida forjada
-	// acima, então isto já seria um miss comum (redis.Nil) — o que também é
-	// hit=false, cobrindo o mesmo contrato. Reforça só que nenhum caminho
-	// deste teste panica nem devolve erro.
+	// dataKey (revisão da PR #26): a chave real que Get vai buscar é
+	// hasheada (ver a doc de dataKey) — gravar num literal escrito à mão
+	// ("ns-corrupt:0:whatever") NUNCA bate com o hash de nenhuma key real, e
+	// o teste original passava só porque Get já dava miss ANTES de chegar no
+	// gob.Decode (nunca exercitava o caminho de payload corrompido de
+	// verdade). Usar c.dataKey(0, ...) garante que a entrada corrompida está
+	// exatamente onde Get vai procurar.
+	fake.store[c.dataKey(0, "my-key")] = []byte("isto não é gob válido")
+
+	v, err, hit := c.Get(ctx, "my-key")
 	if hit {
 		t.Fatal("Get: esperava hit=false, veio true")
 	}
