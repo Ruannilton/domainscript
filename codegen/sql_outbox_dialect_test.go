@@ -28,7 +28,9 @@ import (
 
 // TestSQLiteOutboxDialectStrings prova que o sqlite usa LIMIT simples (sem
 // SKIP LOCKED — single-writer, a trava de escrita do próprio banco já
-// serializa) e sempre ORDER BY id (FIFO).
+// serializa) e ORDER BY attempts ASC, id ASC (FIFO dentro do mesmo nível de
+// tentativa, mas nunca deixa uma linha que falha permanentemente bloquear
+// entregas novas — revisão da PR #20, mitiga head-of-line blocking).
 func TestSQLiteOutboxDialectStrings(t *testing.T) {
 	d := sqlruntime.SQLiteDialect()
 
@@ -36,7 +38,7 @@ func TestSQLiteOutboxDialectStrings(t *testing.T) {
 	for _, want := range []string{
 		"SELECT id, event_type, payload, attempts FROM outbox",
 		"WHERE delivered_at IS NULL",
-		"ORDER BY id",
+		"ORDER BY attempts ASC, id ASC",
 		"LIMIT 10",
 	} {
 		if !strings.Contains(scan, want) {
@@ -60,8 +62,9 @@ func TestSQLiteOutboxDialectStrings(t *testing.T) {
 
 // TestPostgresOutboxDialectStrings prova que o Postgres acrescenta FOR
 // UPDATE SKIP LOCKED (lote exclusivo entre réplicas do relay) mantendo
-// ORDER BY id (FIFO), e que MarkDelivered/PurgeDelivered usam o placeholder
-// posicional passado (nunca "?" cru).
+// ORDER BY attempts ASC, id ASC (mitiga head-of-line blocking, revisão da
+// PR #20), e que MarkDelivered/PurgeDelivered usam o placeholder posicional
+// passado (nunca "?" cru).
 func TestPostgresOutboxDialectStrings(t *testing.T) {
 	d := sqlruntime.PostgresDialect()
 
@@ -69,7 +72,7 @@ func TestPostgresOutboxDialectStrings(t *testing.T) {
 	for _, want := range []string{
 		"SELECT id, event_type, payload, attempts FROM outbox",
 		"WHERE delivered_at IS NULL",
-		"ORDER BY id",
+		"ORDER BY attempts ASC, id ASC",
 		"FOR UPDATE SKIP LOCKED",
 		"LIMIT 25",
 	} {

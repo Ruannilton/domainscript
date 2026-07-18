@@ -121,7 +121,7 @@
   - b. **(FIFO)** `ScanUndelivered` sempre com `ORDER BY id`; postgres com `FOR
     UPDATE SKIP LOCKED`, sqlite com `LIMIT` simples. (§design 3.2).
   - c. Teste unit dos dois dialetos (strings esperadas).
-- [ ] **J2.3** `DurableOutbox` + relay.
+- [x] **J2.3** `DurableOutbox` + relay.
   - a. `DurableOutbox` em `rtsrc/outbox.go.txt` (ao lado de `memoryOutbox`,
     MESMA interface `Outbox`): relay `Start(ctx)` com backoff, entrega, marca;
     falha ⇒ re-tenta (at-least-once). (REQ-42.2/42.3, §design 3.2).

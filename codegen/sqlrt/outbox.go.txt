@@ -1,0 +1,102 @@
+package sqlruntime
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	"domainscript/generated/runtime"
+)
+
+// outbox.go.txt implementa runtime.OutboxStore (Marco J, REQ-42.2/42.3,
+// §design infra-providers 3.2) sobre database/sql — o lado de leitura/
+// consumo que DurableOutbox (rtsrc/outbox.go.txt) usa para escanear/marcar
+// linhas da tabela "outbox" que Tx.EnqueueOutbox (uow.go.txt, task J2.1) já
+// grava atomicamente com os eventos de negócio. Toda a SQL específica de
+// banco (SELECT ... FOR UPDATE SKIP LOCKED no Postgres, LIMIT simples no
+// sqlite) vem do Dialect (ScanUndelivered/MarkDelivered, task J2.2) — este
+// arquivo só orquestra a transação e o loop de entrega, nunca um literal SQL
+// solto fora dele (REQ-40.1), com UMA exceção documentada: o incremento de
+// "attempts" é SQL ANSI simples, sem variação por banco (não precisou de um
+// método próprio no Dialect — só os dois métodos ScanUndelivered/
+// MarkDelivered têm forma que difere por banco).
+type outboxStore struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+// NewOutboxStore cria um runtime.OutboxStore real sobre db (já aberta via
+// Open/OpenPostgres) — o wiring gerado (cmd/<service>/main.go, task J2.5)
+// passa isto a runtime.NewDurableOutbox quando o módulo tem um Database
+// real.
+func NewOutboxStore(db *sql.DB, dialect Dialect) runtime.OutboxStore {
+	return &outboxStore{db: db, dialect: dialect}
+}
+
+// ProcessBatch implementa runtime.OutboxStore: abre UMA transação para o
+// lote inteiro — o SELECT (com a trava de linha do Dialect) e todo
+// UPDATE de marcação/incremento de tentativa rodam dentro dela, comitando
+// só ao final (REQ-42.2). Isso é o que dá a "réplica leva um lote
+// EXCLUSIVO" do design (§design infra-providers 3.2): no Postgres, "FOR
+// UPDATE SKIP LOCKED" só mantém as linhas travadas enquanto ESTA transação
+// está aberta — se o SELECT comitasse sozinho antes de deliver rodar, a
+// trava seria liberada cedo demais e outra réplica poderia pegar o MESMO
+// lote antes deste terminar de entregar.
+func (s *outboxStore) ProcessBatch(ctx context.Context, batch int, deliver func(runtime.OutboxRow) error) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("sqlruntime: ProcessBatch: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, s.dialect.ScanUndelivered(batch))
+	if err != nil {
+		return 0, fmt.Errorf("sqlruntime: ProcessBatch: scan: %w", err)
+	}
+	defer rows.Close()
+
+	var scanned []runtime.OutboxRow
+	for rows.Next() {
+		var row runtime.OutboxRow
+		var payload string
+		if err := rows.Scan(&row.ID, &row.EventType, &payload, &row.Attempts); err != nil {
+			return 0, fmt.Errorf("sqlruntime: ProcessBatch: scan: %w", err)
+		}
+		row.Payload = []byte(payload)
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("sqlruntime: ProcessBatch: scan: %w", err)
+	}
+
+	// MarkDelivered(idPlaceholder, timePlaceholder) monta o texto SEMPRE na
+	// forma "SET delivered_at = <timePlaceholder> WHERE id = <idPlaceholder>"
+	// (dialect.go.txt/dialect_postgres.go.txt) — timePlaceholder aparece
+	// PRIMEIRO no texto. Para bater com isso nos dois dialetos (Postgres
+	// numerado por posição "$N", sqlite posicional por ordem textual de
+	// "?"), passamos Placeholder(1) como timePlaceholder (aparece primeiro,
+	// vira "$1"/1º "?") e Placeholder(2) como idPlaceholder (aparece
+	// segundo, vira "$2"/2º "?") — e chamamos Exec com os argumentos na
+	// MESMA ordem (now, id), que serve os dois esquemas de binding.
+	markQuery := s.dialect.MarkDelivered(s.dialect.Placeholder(2), s.dialect.Placeholder(1))
+	incrementQuery := fmt.Sprintf("UPDATE outbox SET attempts = attempts + 1 WHERE id = %s", s.dialect.Placeholder(1))
+
+	now := time.Now().UTC()
+	for _, row := range scanned {
+		if deliverErr := deliver(row); deliverErr != nil {
+			if _, execErr := tx.ExecContext(ctx, incrementQuery, row.ID); execErr != nil {
+				return 0, fmt.Errorf("sqlruntime: ProcessBatch: incrementar attempts (id=%d): %w", row.ID, execErr)
+			}
+			continue
+		}
+		if _, execErr := tx.ExecContext(ctx, markQuery, now, row.ID); execErr != nil {
+			return 0, fmt.Errorf("sqlruntime: ProcessBatch: marcar entregue (id=%d): %w", row.ID, execErr)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("sqlruntime: ProcessBatch: commit: %w", err)
+	}
+	return len(scanned), nil
+}
