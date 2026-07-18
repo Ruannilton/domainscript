@@ -237,7 +237,7 @@
     geração `<ns>:gen` **sem** expiração. (§design 3.4).
   - c. Teste unit: montagem de chave/serialização + fail-open (erro ⇒
     hit=false) por client fake injetado.
-- [ ] **J4.2** `redisLimiter` (RateLimit §16) + fallback local.
+- [x] **J4.2** `redisLimiter` (RateLimit §16) + fallback local.
   - a. `redisrt/ratelimit.go.txt`: implementa `Limiter` via script Lua atômico
     (token_bucket/sliding/fixed). Entrada `rateLimitProviders["redis"]`.
     `CheckRateLimits` reusado inalterado. (REQ-44.2/44.3).

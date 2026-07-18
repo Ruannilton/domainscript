@@ -75,8 +75,20 @@ var (
 	cacheProviders = map[string]providerDep{
 		"redis": {module: redisDriverModule, version: redisDriverVersion, minGo: redisMinGoVersion, adapterDir: "redisruntime", ctor: "NewRedisQueryCache"},
 	}
-	rateLimitProviders = map[string]providerDep{}
-	fileProviders      = map[string]providerDep{}
+	// rateLimitProviders["redis"] (J4.2, REQ-44.2, §design infra-providers
+	// 3.4): MESMO module/adapterDir de cacheProviders["redis"] acima — a
+	// dedup por struct inteira de activeProviderDeps (R5) colapsa as duas
+	// categorias numa única entrada de go.mod/cópia de fontes quando um
+	// programa usa redis nas duas pontas (ex. Cache E RateLimit do mesmo
+	// módulo). ctor documenta o construtor exportado por redisruntime —
+	// informativo, nenhum código deste gerador ainda CHAMA ctor
+	// programaticamente; a seleção/wiring real (decl_query_cache.go/
+	// ratelimit.go emitindo "redisruntime.NewRedisLimiter(...)" em vez de
+	// "runtime.NewLimiter(...)") é a task J4.3.
+	rateLimitProviders = map[string]providerDep{
+		"redis": {module: redisDriverModule, version: redisDriverVersion, minGo: redisMinGoVersion, adapterDir: "redisruntime", ctor: "NewRedisLimiter"},
+	}
+	fileProviders = map[string]providerDep{}
 )
 
 // activeProviderDeps varre prog por categoria (canal, Cache, RateLimit,

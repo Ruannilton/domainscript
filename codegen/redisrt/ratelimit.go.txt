@@ -1,0 +1,396 @@
+package redisruntime
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	redis "github.com/redis/go-redis/v9"
+
+	"domainscript/generated/runtime"
+)
+
+// ratelimit.go.txt implementa runtime.Limiter sobre um Redis real (Marco J,
+// task J4.2, REQ-44.2/44.3/44.5, §design infra-providers 3.4) — o
+// contraparte distribuído dos três algoritmos in-memory de
+// rtsrc/ratelimit.go.txt (token_bucket/sliding_window/fixed_window, que só
+// contam DENTRO do mesmo processo — cada réplica teria seu próprio balde,
+// nunca uma cota compartilhada de verdade entre réplicas, exatamente o
+// cenário que o spec §16 chama de "quase obrigatório com réplicas").
+// Selecionado pelo wiring gerado (task J4.3, codegen/ratelimit.go) quando o
+// RateLimit do módulo declara `backend: "redis"`; sem esse backend, o
+// Limiter in-memory de sempre continua (NFR-21) — nenhuma mudança de call
+// site (CheckRateLimits/RateLimitCheck continuam a MESMA interface,
+// runtime.Limiter, reusados sem alteração — REQ-44.2 pede exatamente isso).
+//
+// --- Atomicidade cross-réplica via script Lua (REQ-44.2) ---
+//
+// Um Limiter distribuído precisa de UMA operação atômica read-modify-write
+// por chave — "ler o estado, decidir, escrever o novo estado" tem que
+// acontecer sem outra réplica intercalando entre os passos, senão duas
+// réplicas concorrentes poderiam AMBAS ler "ainda cabe" e admitir duas
+// requisições quando só uma deveria passar (a mesma classe de bug que
+// levaria um "GET então SET" ingênuo a estourar a cota sob concorrência
+// real). Redis executa um script Lua inteiro atomicamente (single-threaded
+// por design) — cada algoritmo abaixo (tokenBucketScript/
+// slidingWindowScript/fixedWindowScript) é UM script Lua que faz o
+// read-modify-write inteiro num único EVAL, o mesmo papel que o mutex
+// por-instância de cada Limiter in-memory já cumpre localmente
+// (rtsrc/ratelimit.go.txt), agora coordenando entre processos via o
+// servidor Redis em vez de memória compartilhada.
+//
+// EVAL (não EVALSHA+SCRIPT LOAD): esta primeira versão sempre manda o texto
+// do script inteiro a cada chamada — mais simples e sem o caminho de erro
+// NOSCRIPT que EVALSHA exigiria tratar (um Redis reiniciado/com script
+// evictado do cache precisaria recarregar); o Redis já cacheia o script
+// internamente por hash de conteúdo entre chamadas EVAL idênticas, então o
+// custo extra é só bytes na rede, não recompilação repetida. Otimizar para
+// EVALSHA fica para quando um perfil real pedir por isso.
+//
+// --- Semântica idêntica ao in-memory, reimplementada em Lua (REQ-44.3) ---
+//
+// Os três scripts abaixo replicam EXATAMENTE a lógica de
+// tokenBucketLimiter/slidingWindowLimiter/fixedWindowLimiter
+// (rtsrc/ratelimit.go.txt) — mesmas fórmulas de refill/janela deslizante/
+// janela fixa, mesma definição de Remaining/RetryAfter/ResetAt — só trocando
+// "um mapa Go protegido por mutex" por "um valor Redis manipulado
+// atomicamente por um script": um fixed_window negado, por exemplo,
+// continua NÃO incrementando o contador (mesma escolha de design do
+// in-memory: `if allowed { e.count++ }`, nunca incondicional) — replicar
+// fielmente aqui é o que torna REQ-44.3 (mesma semântica, backend
+// diferente) verdade, não só uma alegação.
+//
+// --- Fallback local, não fail-open total (REQ-44.5, ponto 6) ---
+//
+// Ao contrário de QueryCache (fail-open sempre — um cache é opcional por
+// natureza), rate limiting existe PRA PROTEGER o sistema — um fail-open
+// total durante uma queda do Redis abriria uma janela real de abuso/
+// sobrecarga bem na hora em que a proteção mais importa. redisLimiter
+// compõe um runtime.Limiter in-memory (o MESMO NewLimiter que já existe,
+// rtsrc/ratelimit.go.txt) como fallback: um erro de Redis (rede, timeout,
+// conexão recusada) faz Allow rotear IMEDIATAMENTE para esse Limiter local
+// em vez de propagar o erro — a proteção continua ativa, agora só por
+// processo (não mais coordenada globalmente) em vez de desligada. Quando o
+// Redis volta a responder, a PRÓXIMA chamada de Allow já tenta ele de novo
+// (nenhum estado "estou em modo degradado" persistido) — a contagem global
+// retoma sozinha, sem nenhum passo de recuperação manual. O Limiter local é
+// construído UMA vez, na criação do redisLimiter, e vive pela vida inteira
+// da instância — cada réplica acumula sua PRÓPRIA cota local durante uma
+// queda (não sincronizada entre réplicas, mesma limitação documentada de
+// qualquer fallback local: proteção por-réplica, não global, enquanto durar
+// a queda).
+
+// redisScripter é a superfície mínima de comando Redis que este adapter
+// precisa (só EVAL) — mesmo espírito de redisCmdable (cache.go.txt, J4.1):
+// um tipo à parte, nunca um campo *redis.Client concreto direto, para o
+// teste (task J4.2.c) poder injetar um client fake sem nenhuma conexão de
+// rede real.
+type redisScripter interface {
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
+}
+
+// tokenBucketScript replica tokenBucketLimiter.Allow (rtsrc/ratelimit.go.txt):
+// refill contínuo (rate = limit/period tokens/segundo), capado em burst,
+// gasta 1 token quando disponível. KEYS[1] é a chave do balde (um HASH com
+// os campos "tokens"/"last"); ARGV = {limit, period_seconds, burst,
+// now_unix_seconds}. Devolve {allowed(0/1), remaining, retry_after_seconds,
+// reset_in_seconds} — o Go que chama (evalRateLimit, abaixo) monta
+// RateLimitResult a partir disso, incl. ResetAt = now.Add(reset_in).
+const tokenBucketScript = `
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local period = tonumber(ARGV[2])
+local burst = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
+local rate = limit / period
+
+local data = redis.call("HMGET", key, "tokens", "last")
+local tokens
+local last
+if data[1] == false then
+  tokens = burst
+  last = now
+else
+  tokens = tonumber(data[1])
+  last = tonumber(data[2])
+  tokens = tokens + (now - last) * rate
+  if tokens > burst then tokens = burst end
+end
+last = now
+
+local allowed = 0
+local retry_after = 0
+if tokens >= 1 then
+  allowed = 1
+  tokens = tokens - 1
+else
+  retry_after = (1 - tokens) / rate
+end
+
+redis.call("HMSET", key, "tokens", tokens, "last", last)
+redis.call("EXPIRE", key, math.ceil(period * 10))
+
+local remaining = math.floor(tokens)
+if remaining < 0 then remaining = 0 end
+local reset_in = (burst - tokens) / rate
+
+return {allowed, remaining, tostring(retry_after), tostring(reset_in)}
+`
+
+// slidingWindowScript replica slidingWindowLimiter.Allow: um log de
+// timestamps de hit por chave (ZSET, score = timestamp), aparando tudo mais
+// velho que period a cada chamada. KEYS[1] é a chave do ZSET; ARGV =
+// {limit, period_seconds, burst, now_unix_seconds} — MESMA ordem que
+// evalRedis passa pra TODOS os scripts (ver a doc do arquivo); ARGV[3]
+// (burst) não é usado por este algoritmo, "now" é ARGV[4] (revisão da PR
+// #28 — um bug real aqui lia "now" de ARGV[3], o que na prática travava a
+// janela no valor de burst, nunca avançando: uma vez esgotado o limite,
+// nunca mais desbloquearia).
+const slidingWindowScript = `
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local period = tonumber(ARGV[2])
+local now = tonumber(ARGV[4])
+local cutoff = now - period
+
+redis.call("ZREMRANGEBYSCORE", key, "-inf", cutoff)
+local count = redis.call("ZCARD", key)
+
+local allowed = 0
+local retry_after = 0
+if count < limit then
+  allowed = 1
+  redis.call("ZADD", key, now, tostring(now) .. "-" .. tostring(math.random()))
+  count = count + 1
+end
+redis.call("EXPIRE", key, math.ceil(period * 10))
+
+local remaining = limit - count
+if remaining < 0 then remaining = 0 end
+
+local reset_in = period
+local oldest = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
+if oldest[2] then
+  reset_in = (tonumber(oldest[2]) + period) - now
+  if allowed == 0 then
+    retry_after = reset_in
+  end
+end
+
+return {allowed, remaining, tostring(retry_after), tostring(reset_in)}
+`
+
+// fixedWindowScript replica fixedWindowLimiter.Allow: um contador por
+// janela absoluta (alinhada a múltiplos de period desde a época) — NUNCA
+// incrementa quando nega (mesma escolha do in-memory: só conta admissões).
+// KEYS[1] é a base da chave (a janela corrente é anexada a ela); ARGV =
+// {limit, period_seconds, burst, now_unix_seconds} — MESMA ordem que
+// evalRedis passa pra TODOS os scripts (ver a doc do arquivo); ARGV[3]
+// (burst) não é usado por este algoritmo, "now" é ARGV[4] (revisão da PR
+// #28 — mesmo bug de slidingWindowScript, corrigido junto: lia "now" de
+// ARGV[3], travando a janela permanentemente no valor de burst).
+const fixedWindowScript = `
+local base = KEYS[1]
+local limit = tonumber(ARGV[1])
+local period = tonumber(ARGV[2])
+local now = tonumber(ARGV[4])
+local window_start = math.floor(now / period) * period
+local key = base .. ":" .. tostring(window_start)
+
+local count = tonumber(redis.call("GET", key) or "0")
+local allowed = 0
+if count < limit then
+  allowed = 1
+  count = redis.call("INCR", key)
+  if count == 1 then
+    redis.call("EXPIRE", key, math.ceil(period))
+  end
+end
+
+local remaining = limit - count
+if remaining < 0 then remaining = 0 end
+
+local reset_in = (window_start + period) - now
+local retry_after = 0
+if allowed == 0 then
+  retry_after = reset_in
+end
+
+return {allowed, remaining, tostring(retry_after), tostring(reset_in)}
+`
+
+// redisLimiter implementa runtime.Limiter (task J4.2.a).
+type redisLimiter struct {
+	client    redisScripter
+	namespace string
+	algorithm string
+	script    string
+	limit     int
+	period    time.Duration
+	burst     int
+
+	// local é o fallback (REQ-44.5, ver a doc do arquivo) — o MESMO
+	// runtime.NewLimiter que o caminho in-memory de sempre usa, construído
+	// uma vez com a MESMA config (limit/period/burst) e mantido pela vida
+	// inteira desta instância.
+	local runtime.Limiter
+}
+
+var _ runtime.Limiter = (*redisLimiter)(nil)
+
+// NewRedisLimiter constrói um runtime.Limiter distribuído sobre client, sob
+// namespace (task J4.3, o wiring gerado escolhe um namespace por dimensão
+// configurada — tipicamente rota+dimensão, único dentro do módulo).
+// algorithm é um dos três de rtsrc/ratelimit.go.txt ("token_bucket" —
+// default para qualquer valor não reconhecido, mesma postura de
+// runtime.NewLimiter — "sliding_window", "fixed_window"); limit/period/burst
+// têm a MESMA semântica/defaults de runtime.NewLimiter (burst <= 0 vira
+// limit, só usado por token_bucket).
+func NewRedisLimiter(client *redis.Client, namespace, algorithm string, limit int, period time.Duration, burst int) runtime.Limiter {
+	return newRedisLimiter(client, namespace, algorithm, limit, period, burst)
+}
+
+// newRedisLimiter é a construção interna usada tanto por NewRedisLimiter
+// (client real, *redis.Client) quanto pelo teste da task J4.2.c (client
+// fake, satisfazendo só redisScripter — ver a doc do tipo).
+func newRedisLimiter(client redisScripter, namespace, algorithm string, limit int, period time.Duration, burst int) *redisLimiter {
+	if limit <= 0 {
+		limit = 1
+	}
+	if period <= 0 {
+		period = time.Minute
+	}
+	if burst <= 0 {
+		burst = limit
+	}
+	script := tokenBucketScript
+	switch algorithm {
+	case "sliding_window":
+		script = slidingWindowScript
+	case "fixed_window":
+		script = fixedWindowScript
+	}
+	return &redisLimiter{
+		client:    client,
+		namespace: namespace,
+		algorithm: algorithm,
+		script:    script,
+		limit:     limit,
+		period:    period,
+		burst:     burst,
+		local:     runtime.NewLimiter(algorithm, limit, period, burst),
+	}
+}
+
+// key monta a chave Redis desta instância para k (o "key" que Allow recebe
+// — um IP/caller/tenant/API-key ID, ou "" pra dimensão global) — namespaced
+// pra nunca colidir entre dimensões/rotas distintas que compartilhem o
+// MESMO client Redis.
+func (l *redisLimiter) key(k string) string {
+	return fmt.Sprintf("ratelimit:%s:%s", l.namespace, k)
+}
+
+// Allow implementa runtime.Limiter: tenta o script Lua sobre o Redis
+// primeiro — QUALQUER erro (rede, timeout, conexão recusada, resposta
+// malformada) faz Allow rotear pro fallback local IMEDIATAMENTE (REQ-44.5,
+// ver a doc do arquivo), nunca propaga o erro pro chamador (ao contrário de
+// QueryCache.Get, runtime.Limiter.Allow AINDA tem um retorno de erro na
+// assinatura — mas esta implementação nunca o usa: um Limiter cuja proteção
+// pode simplesmente "desligar" sob erro de rede seria fail-open total,
+// exatamente o que REQ-44.5 rejeita para rate limiting).
+func (l *redisLimiter) Allow(ctx context.Context, key string) (bool, runtime.RateLimitResult, error) {
+	allowed, result, err := l.evalRedis(ctx, key)
+	if err == nil {
+		return allowed, result, nil
+	}
+	slog.Error("redisruntime: rate limit indisponível, usando fallback local", "error", err, "namespace", l.namespace)
+	return l.local.Allow(ctx, key)
+}
+
+// evalRedis roda o script Lua deste algoritmo sobre l.client e decodifica a
+// resposta {allowed, remaining, retry_after_seconds, reset_in_seconds} — só
+// esta função conhece o formato de fio do script; Allow trata qualquer erro
+// dela (de rede ou de decodificação) uniformemente, roteando pro fallback.
+func (l *redisLimiter) evalRedis(ctx context.Context, key string) (bool, runtime.RateLimitResult, error) {
+	now := float64(time.Now().UnixNano()) / float64(time.Second)
+	raw, err := l.client.Eval(ctx, l.script, []string{l.key(key)}, l.limit, l.period.Seconds(), l.burst, now).Result()
+	if err != nil {
+		return false, runtime.RateLimitResult{}, fmt.Errorf("redisruntime: Eval: %w", err)
+	}
+
+	values, ok := raw.([]interface{})
+	if !ok || len(values) != 4 {
+		return false, runtime.RateLimitResult{}, fmt.Errorf("redisruntime: Eval: resposta inesperada %#v", raw)
+	}
+
+	allowedN, err := toInt64(values[0])
+	if err != nil {
+		return false, runtime.RateLimitResult{}, fmt.Errorf("redisruntime: Eval: allowed: %w", err)
+	}
+	remaining, err := toInt64(values[1])
+	if err != nil {
+		return false, runtime.RateLimitResult{}, fmt.Errorf("redisruntime: Eval: remaining: %w", err)
+	}
+	retryAfterSec, err := toFloat64(values[2])
+	if err != nil {
+		return false, runtime.RateLimitResult{}, fmt.Errorf("redisruntime: Eval: retry_after: %w", err)
+	}
+	resetInSec, err := toFloat64(values[3])
+	if err != nil {
+		return false, runtime.RateLimitResult{}, fmt.Errorf("redisruntime: Eval: reset_in: %w", err)
+	}
+
+	limitField := l.limit
+	if l.algorithm != "sliding_window" && l.algorithm != "fixed_window" {
+		limitField = l.burst // token_bucket reporta Limit=burst, mesma convenção do in-memory
+	}
+
+	result := runtime.RateLimitResult{
+		Limit:      limitField,
+		Remaining:  int(remaining),
+		RetryAfter: time.Duration(retryAfterSec * float64(time.Second)),
+		ResetAt:    time.Now().Add(time.Duration(resetInSec * float64(time.Second))),
+	}
+	return allowedN == 1, result, nil
+}
+
+// toInt64/toFloat64 normalizam um valor decodificado da resposta do EVAL
+// (redis.Cmd.Result() devolve tipos dinâmicos: int64 para inteiros Lua,
+// string para os campos que os scripts acima explicitamente
+// tostring()-am, já que Lua trunca número não-inteiro ao cruzar a fronteira
+// com o protocolo RESP2 — retry_after/reset_in são float, por isso os
+// scripts os convertem pra string explicitamente e o Go os re-parseia
+// aqui).
+func toInt64(v interface{}) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case string:
+		var out int64
+		_, err := fmt.Sscanf(n, "%d", &out)
+		return out, err
+	default:
+		return 0, fmt.Errorf("tipo inesperado %T", v)
+	}
+}
+
+func toFloat64(v interface{}) (float64, error) {
+	switch n := v.(type) {
+	case string:
+		var out float64
+		_, err := fmt.Sscanf(n, "%g", &out)
+		return out, err
+	case float64:
+		// RESP3 (revisão da PR #28): sob esse protocolo o cliente pode
+		// devolver um número Lua não-inteiro já como float64 nativo, em vez
+		// da string que os scripts explicitamente tostring()-am — aceitar os
+		// dois formatos evita uma falha de type assertion dependendo do
+		// protocolo negociado com o servidor.
+		return n, nil
+	case int64:
+		return float64(n), nil
+	default:
+		return 0, fmt.Errorf("tipo inesperado %T", v)
+	}
+}

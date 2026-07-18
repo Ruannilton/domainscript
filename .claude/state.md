@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J4.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J4.3 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1006,12 +1006,87 @@ mesmo programa sem provider continua byte-idêntico, nem uma linha mudou) e
 `TestGenerate*` (`driver`, wallet/shop e2e — nenhum dos dois declara canal
 `provider: "rabbitmq"`, nenhum byte mudou).
 
-Próxima: **J4.2** — `redisLimiter` (RateLimit §16) + fallback local:
-`redisrt/ratelimit.go.txt` implementa `Limiter` via script Lua atômico
-(token_bucket/sliding/fixed); entrada `rateLimitProviders["redis"]`;
-compõe um `Limiter` in-memory como fallback quando o Redis está
-indisponível (proteção por-réplica ativa, não fail-open total — REQ-44.5).
-Abre a última fase de provider real antes do fechamento (J5, S3).
+Concluído: **J4.2** — `redisLimiter` (RateLimit §16) + fallback local
+(REQ-44.2/44.3/44.5). Novo `codegen/redisrt/ratelimit.go.txt` implementa
+`runtime.Limiter` sobre `github.com/redis/go-redis/v9` — o contraparte
+distribuído dos três algoritmos in-memory de `rtsrc/ratelimit.go.txt`
+(`token_bucket`/`sliding_window`/`fixed_window`, que só contam DENTRO do
+mesmo processo: cada réplica teria seu próprio balde, nunca uma cota
+compartilhada de verdade). `CheckRateLimits`/`RateLimitCheck`
+(`rtsrc/ratelimit.go.txt`) reusados SEM NENHUMA mudança (REQ-44.2 pedia
+exatamente isso) — `redisLimiter` só implementa a MESMA interface
+`runtime.Limiter`.
+
+Atomicidade cross-réplica via script Lua (REQ-44.2): três scripts
+(`tokenBucketScript`/`slidingWindowScript`/`fixedWindowScript`) fazem o
+read-modify-write inteiro num único `EVAL` (Redis executa um script Lua
+atomicamente, single-threaded — o mesmo papel que o mutex por-instância de
+cada Limiter in-memory já cumpria localmente, agora coordenando entre
+processos via o servidor). Cada script replica a fórmula EXATA do seu
+equivalente in-memory (mesmo refill contínuo capado em burst pro
+token_bucket; mesmo ZSET aparado por `period` pro sliding_window; mesmo
+"NUNCA incrementa quando nega" pro fixed_window — `if allowed { e.count++
+}`, nunca incondicional) — replicar fielmente é o que torna REQ-44.3 (mesma
+semântica, backend diferente) verdade. `EVAL`, não `EVALSHA+SCRIPT LOAD`
+(decisão documentada no arquivo): mais simples, sem o caminho `NOSCRIPT`
+que `EVALSHA` exigiria tratar — Redis já cacheia o script internamente por
+hash de conteúdo entre chamadas `EVAL` idênticas.
+
+Fallback local, não fail-open total (REQ-44.5, ponto 6): `redisLimiter`
+compõe um `runtime.Limiter` in-memory (o MESMO `NewLimiter` que o caminho
+de sempre usa, construído uma vez com a MESMA config) — `Allow` tenta o
+Redis primeiro; QUALQUER falha (erro de rede OU resposta malformada do
+`EVAL`) roteia IMEDIATAMENTE pro Limiter local em vez de propagar o erro —
+a proteção continua ativa, agora só por processo, em vez de desligada (um
+fail-open total abriria uma janela real de abuso bem na hora em que a
+proteção mais importa). Quando o Redis volta, a PRÓXIMA chamada já tenta
+ele de novo — nenhum estado "modo degradado" persistido, a contagem global
+retoma sozinha.
+
+Registro: `codegen/provider_registry.go` ganha `rateLimitProviders["redis"]`
+— MESMO `module`/`adapterDir` de `cacheProviders["redis"]` (J4.1): a dedup
+por struct inteira de `activeProviderDeps` (R5) já colapsa as duas
+categorias numa única entrada de go.mod/cópia de fontes quando um programa
+usa redis nas duas pontas, sem nenhuma mudança adicional. Um efeito
+colateral (não uma regressão): `TestActiveProviderDepsUnrecognizedProviders
+AreNoOp` (`provider_registry_test.go`) usava `"redis"` como exemplo de
+backend de RateLimit NÃO reconhecido — agora que `rateLimitProviders["redis"]`
+é real, trocado para `"memcached"` (mesmo exemplo que Cache já usava desde
+J4.1).
+
+Testes novos (item c): `codegen/redis_ratelimit_test.go` (`package
+codegen`, mesmo padrão de `redis_cache_test.go`/J4.1.c — `gentest.WriteFiles`/
+`RunTests` sobre um `fakeScripter` em memória, SEM nenhuma conexão Redis
+real; go-redis/v9's `*redis.Client` é uma struct concreta, então só um
+campo de interface — `redisScripter`, `Eval` — permite o dublê de teste):
+`TestRedisLimiterSelectsScriptAndKeyPerAlgorithm` (script Lua certo por
+algoritmo, incl. o default `token_bucket` pra um valor desconhecido, e a
+chave namespaced `"ratelimit:<namespace>:<key>"`),
+`TestRedisLimiterParsesResultFields`, e o par que prova REQ-44.5:
+`TestRedisLimiterFallsBackToLocalOnRedisError`/`TestRedisLimiterFallsBackTo
+LocalOnMalformedResponse` (o fallback local NEGA depois de esgotar a cota
+configurada — nunca um "libera tudo" disfarçado). `codegen/
+redis_ratelimit_integration_test.go` (`//go:build integration`, guardado
+por `REDIS_URL`, mesmo padrão de `sql_postgres_integration_test.go`/
+`channel_rabbitmq_integration_test.go`): os três algoritmos admitindo até a
+cota e negando de verdade contra um Redis vivo, mais um teste de isolamento
+entre chaves distintas sob o mesmo namespace; pula sem `REDIS_URL`
+(REQ-48.3/NFR-24) — confirmado compilando com `-tags=integration` e
+pulando sem Redis disponível neste ambiente.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...`/`go vet -tags=integration ./...` limpos; `go
+test ./...` (suíte inteira) verde; `TestGenerate*` (`driver`, wallet/shop
+e2e) — nenhum byte mudou (nenhum dos dois declara `RateLimit { backend:
+"redis" }`).
+
+Próxima: **J4.3** — **(R2/R3)** Seleção + wiring: `decl_query_cache.go`/
+`ratelimit.go` trocam o construtor in-memory pelo redis quando
+`Cache{backend:redis}`/`RateLimit{backend:redis}` (lidos dos ConfigBlocks
+de módulo, incl. as chamadas `gob.Register` que J4.1 documentou como
+responsabilidade do wiring); URL de `env(...)`; teste de fixture confirma
+que `url:`/`connection: env(...)` chega em `Decl.Entries`; golden + smoke;
+sem `backend: redis` ⇒ byte-idêntico. Fecha a Fase J4 (REQ-44 completo).
 
 ## Issues em aberto
 
