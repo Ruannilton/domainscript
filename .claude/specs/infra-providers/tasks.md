@@ -114,7 +114,7 @@
     `EnqueueOutbox`). `id` é auto-incrementado pelo banco (`INTEGER PRIMARY
     KEY AUTOINCREMENT`/`BIGSERIAL`), nunca um UUID — só um contador
     monotônico de inserção garante `ORDER BY id` (FIFO, J2.2).
-- [ ] **J2.2** Leitura/consumo da tabela `outbox` no `Dialect`.
+- [x] **J2.2** Leitura/consumo da tabela `outbox` no `Dialect`.
   - a. `ScanUndelivered`/`MarkDelivered`/`PurgeDelivered` como métodos do
     `Dialect`, em Sqlite e PostgresDialect (`CreateOutboxTable`/o INSERT já
     saíram em J2.1). (REQ-42.4).

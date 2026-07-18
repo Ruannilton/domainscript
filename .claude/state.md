@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.3 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -378,6 +378,33 @@ seguem verdes — a interface `Dialect` estendida não quebra nenhum
 consumidor existente. `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
 Próxima: **J2.2** (leitura/consumo da tabela outbox: `ScanUndelivered`/
 `MarkDelivered`/`PurgeDelivered`, FIFO+`SKIP LOCKED`).
+
+Concluído: **J2.2** — leitura/consumo da tabela `outbox` no `Dialect`
+(REQ-42.4): três métodos novos na interface (`codegen/sqlrt/dialect.go.txt`)
+— `ScanUndelivered(batch int) string` (SELECT em ordem FIFO, `ORDER BY id`
+sempre; Postgres acrescenta `FOR UPDATE SKIP LOCKED` para que réplicas do
+relay levem lotes exclusivos sem duplicar entrega à toa; sqlite usa `LIMIT`
+simples — single-writer, a trava de escrita do próprio banco já serializa),
+`MarkDelivered(idPlaceholder, timePlaceholder string) string` e
+`PurgeDelivered(cutoffPlaceholder string) string` (idênticos nos dois
+dialetos — SQL ANSI simples, sem sintaxe específica de banco; implementados
+em ambos só para satisfazer `Dialect`). Mesma convenção de
+`JSONFieldEq`/`LimitOffset`: os placeholders chegam prontos (o resultado de
+`Placeholder(n)`, decidido pelo CHAMADOR — J2.3), `batch` é inlined como
+inteiro Go direto (mesma convenção de `LimitOffset`, não parametrizado).
+Teste novo `codegen/sql_outbox_dialect_test.go`
+(`TestSQLOutboxDialectStrings`, via `gentest.WriteFiles`/`RunTests` — mesmo
+padrão de `TestPostgresDialectSQLStrings`): confirma as strings exatas dos
+dois dialetos, incl. que sqlite NUNCA contém `SKIP LOCKED` e que Postgres
+sempre contém `FOR UPDATE SKIP LOCKED` + `ORDER BY id`. Sem regressão:
+`TestSQL*`/`TestPostgres*`/`TestWallet*`/`TestLedger*` (`codegen`, incl. o
+teste de integração Postgres sob `-tags=integration`, que segue compilando
+e pulando sem `PG_URL`) e `TestGenerate*` (`driver`) seguem verdes — a
+interface `Dialect` estendida (agora com 8 métodos) não quebra nenhum
+consumidor existente. `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
+Próxima: **J2.3** (`DurableOutbox` + relay: `Start(ctx)` com backoff,
+consumindo `ScanUndelivered`/`MarkDelivered` de verdade contra um `*sql.DB`
+sqlite `:memory:`, incl. teste de crash simulado — não marca ⇒ re-entrega).
 
 ## Issues em aberto
 
