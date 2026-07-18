@@ -165,6 +165,84 @@ func TestS3FileStorage_StoreThenLoadRoundTrips(t *testing.T) {
 	}
 }
 
+// TestS3FileStorage_StoreThenLoadRoundTripsNonASCIIMetadata prova o achado
+// de alta prioridade da revisão da PR #30: "x-amz-meta-*" só aceita
+// US-ASCII — Name/Metadata com acento/cedilha/emoji precisam sobreviver ao
+// round-trip Store->Load via url.PathEscape/PathUnescape
+// (mergeMetadataWithName/splitMetadataName).
+func TestS3FileStorage_StoreThenLoadRoundTripsNonASCIIMetadata(t *testing.T) {
+	fake := newFakeS3()
+	fs := newS3FileStorage(fake, fake, fake, fakePresigner{}, "my-bucket")
+	ctx := context.Background()
+
+	ref, err := fs.Store(ctx, runtime.File{
+		Name:     "relatório-ação-😀.pdf",
+		Metadata: map[string]string{"responsável": "João Ntumba"},
+		Buffer:   []byte("data"),
+	})
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	got, err := fs.Load(ctx, ref)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Name != "relatório-ação-😀.pdf" {
+		t.Fatalf("Load: Name = %q, want %q", got.Name, "relatório-ação-😀.pdf")
+	}
+	if got.Metadata["responsável"] != "João Ntumba" {
+		t.Fatalf("Load: Metadata[\"responsável\"] = %q, want %q", got.Metadata["responsável"], "João Ntumba")
+	}
+}
+
+// TestS3FileStorage_StoreDefaultsSizeToBufferLength prova a consistência de
+// Size (revisão da PR #30): f.Size==0 com um buffer não vazio faz o
+// FileRef.Size devolvido cair para len(f.Buffer), batendo com o Size que
+// Load devolve depois (sempre de ContentLength real do S3).
+func TestS3FileStorage_StoreDefaultsSizeToBufferLength(t *testing.T) {
+	fake := newFakeS3()
+	fs := newS3FileStorage(fake, fake, fake, fakePresigner{}, "my-bucket")
+	ctx := context.Background()
+
+	ref, err := fs.Store(ctx, runtime.File{Name: "a.txt", Buffer: []byte("hello")})
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if ref.Size != 5 {
+		t.Fatalf("Store: FileRef.Size = %d, want 5 (len(f.Buffer), já que f.Size era 0)", ref.Size)
+	}
+
+	got, err := fs.Load(ctx, ref)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Size != ref.Size {
+		t.Fatalf("Load.Size (%d) != Store's FileRef.Size (%d) — deveriam bater", got.Size, ref.Size)
+	}
+}
+
+// TestS3FileStorage_EmptyRefIDSkipsNetworkCalls prova a checagem defensiva
+// (revisão da PR #30): Load/SignedURL/Delete sobre um FileRef zero-value
+// (ID=="") nunca chamam a API — Load devolve ErrNotFound, SignedURL devolve
+// "", Delete devolve nil, todos sem round-trip.
+func TestS3FileStorage_EmptyRefIDSkipsNetworkCalls(t *testing.T) {
+	fake := newFakeS3()
+	fs := newS3FileStorage(fake, fake, fake, fakePresigner{}, "my-bucket")
+	ctx := context.Background()
+	empty := runtime.FileRef{}
+
+	if _, err := fs.Load(ctx, empty); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("Load(ref vazio): err = %v, want runtime.ErrNotFound", err)
+	}
+	if url := fs.SignedURL(ctx, empty, time.Minute); url != "" {
+		t.Fatalf("SignedURL(ref vazio): esperava \"\", veio %q", url)
+	}
+	if err := fs.Delete(ctx, empty); err != nil {
+		t.Fatalf("Delete(ref vazio): esperava nil, veio %v", err)
+	}
+}
+
 // TestS3FileStorage_StoreTwiceProducesDistinctKeys prova key ÚNICA por
 // Store (UUID v4 novo a cada chamada, nunca determinística por conteúdo,
 // mesmo com bytes idênticos) — §design infra-providers 3.5.

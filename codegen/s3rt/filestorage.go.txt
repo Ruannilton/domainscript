@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -40,10 +41,14 @@ import (
 // Content-Length e um mapa de metadata do usuário (os headers
 // "x-amz-meta-*"). File.Name é guardado sob a chave reservada
 // s3NameMetadataKey dentro desse mesmo mapa (mergeMetadataWithName no
-// Store), e separado de volta no Load (splitMetadata) — o SDK normaliza
+// Store), e separado de volta no Load (splitMetadataName) — o SDK normaliza
 // toda chave de metadata para minúsculo na leitura, então a chave reservada
 // também é minúscula para nunca colidir por diferença de caixa com uma
-// chave de usuário só por normalização.
+// chave de usuário só por normalização. Os VALORES (Name e cada entrada de
+// Metadata) passam por url.PathEscape antes de virar header (e
+// url.PathUnescape de volta no Load): "x-amz-meta-*" só aceita US-ASCII —
+// um Name/Metadata com acento/cedilha/emoji quebraria a requisição ou
+// corromperia o dado sem esse escape (achado da revisão da PR #30).
 //
 // --- Load lê do S3, nunca confia nos campos do FileRef recebido ---
 //
@@ -183,32 +188,42 @@ func newS3FileStorage(putter s3PutObjectAPI, getter s3GetObjectAPI, deleter s3De
 // mergeMetadataWithName monta o mapa de metadata do objeto S3 (ver a doc do
 // arquivo) — f.Metadata primeiro, a chave reservada s3NameMetadataKey por
 // cima (sempre vence, mesmo que o chamador já tenha essa chave em
-// f.Metadata: File.Name é a fonte de verdade do nome).
+// f.Metadata: File.Name é a fonte de verdade do nome). Cada VALOR passa por
+// url.PathEscape: "x-amz-meta-*" só aceita US-ASCII (ver a doc do arquivo) —
+// sem isso, um Name/valor com acento/cedilha/emoji quebraria a requisição ou
+// corromperia o dado (achado da revisão da PR #30).
 func mergeMetadataWithName(name string, metadata map[string]string) map[string]string {
 	merged := make(map[string]string, len(metadata)+1)
 	for k, v := range metadata {
-		merged[k] = v
+		merged[k] = url.PathEscape(v)
 	}
-	merged[s3NameMetadataKey] = name
+	merged[s3NameMetadataKey] = url.PathEscape(name)
 	return merged
 }
 
 // splitMetadataName separa a chave reservada s3NameMetadataKey (ver a doc do
 // arquivo) do resto do metadata do usuário — o inverso de
-// mergeMetadataWithName, usado por Load. metadata devolvido é nil quando não
-// sobra nenhuma chave de usuário (mesmo "sem metadata" que File{} zero-value
-// já representa).
+// mergeMetadataWithName (incl. o url.PathUnescape simétrico; um valor
+// malformado — não deveria acontecer com dados escritos por esta MESMA
+// versão do adapter — passa através sem decodificar em vez de falhar o
+// Load inteiro por causa de 1 entry de metadata), usado por Load. metadata
+// devolvido é nil quando não sobra nenhuma chave de usuário (mesmo "sem
+// metadata" que File{} zero-value já representa).
 func splitMetadataName(raw map[string]string) (name string, metadata map[string]string) {
 	if len(raw) == 0 {
 		return "", nil
 	}
 	metadata = make(map[string]string, len(raw))
 	for k, v := range raw {
+		decoded, err := url.PathUnescape(v)
+		if err != nil {
+			decoded = v
+		}
 		if k == s3NameMetadataKey {
-			name = v
+			name = decoded
 			continue
 		}
-		metadata[k] = v
+		metadata[k] = decoded
 	}
 	if len(metadata) == 0 {
 		metadata = nil
@@ -218,15 +233,32 @@ func splitMetadataName(raw map[string]string) (name string, metadata map[string]
 
 // Store implementa runtime.FileStorage: PutObject com key ÚNICA (UUID v4,
 // ver a doc do arquivo), Content-Type + metadata (incl. Name, via
-// mergeMetadataWithName) preservados como object metadata.
+// mergeMetadataWithName) preservados como object metadata. ContentLength é
+// explícito (len(f.Buffer) — evita o SDK precisar inferir via Seek);
+// ContentType vazio vira nil (deixa o S3/SDK aplicar seu próprio default em
+// vez de um header Content-Type vazio); o FileRef.Size devolvido cai para
+// len(f.Buffer) quando f.Size não foi declarado (0), para bater com o Size
+// que Load devolve depois (sempre de out.ContentLength, o tamanho real do
+// objeto — achados da revisão da PR #30).
 func (s *s3FileStorage) Store(ctx context.Context, f runtime.File) (runtime.FileRef, error) {
 	id := runtime.UUID()
+
+	var contentType *string
+	if f.ContentType != "" {
+		contentType = aws.String(f.ContentType)
+	}
+	size := f.Size
+	if size == 0 {
+		size = int64(len(f.Buffer))
+	}
+
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(id),
-		Body:        bytes.NewReader(f.Buffer),
-		ContentType: aws.String(f.ContentType),
-		Metadata:    mergeMetadataWithName(f.Name, f.Metadata),
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(id),
+		Body:          bytes.NewReader(f.Buffer),
+		ContentLength: aws.Int64(int64(len(f.Buffer))),
+		ContentType:   contentType,
+		Metadata:      mergeMetadataWithName(f.Name, f.Metadata),
 	})
 	if err != nil {
 		return runtime.FileRef{}, err
@@ -235,7 +267,7 @@ func (s *s3FileStorage) Store(ctx context.Context, f runtime.File) (runtime.File
 		ID:          id,
 		Name:        f.Name,
 		ContentType: f.ContentType,
-		Size:        f.Size,
+		Size:        size,
 		Metadata:    f.Metadata,
 		StoredAt:    runtime.Now(ctx),
 	}, nil
@@ -243,10 +275,16 @@ func (s *s3FileStorage) Store(ctx context.Context, f runtime.File) (runtime.File
 
 // Load implementa runtime.FileStorage: GetObject por ref.ID — Name/
 // ContentType/Size/Metadata reconstruídos da resposta de verdade do S3
-// (nunca dos campos de ref, ver a doc do arquivo). ref.ID desconhecido (nunca
-// armazenado, ou já removido via Delete) devolve runtime.ErrNotFound, mesmo
-// contrato de memoryFileStorage.Load.
+// (nunca dos campos de ref, ver a doc do arquivo). ref.ID vazio (um FileRef
+// zero-value, nunca produzido por Store) devolve runtime.ErrNotFound
+// diretamente, sem round-trip nenhum (achado da revisão da PR #30) — mesmo
+// resultado de um ID desconhecido (nunca armazenado, ou já removido via
+// Delete), mesmo contrato de memoryFileStorage.Load.
 func (s *s3FileStorage) Load(ctx context.Context, ref runtime.FileRef) (runtime.File, error) {
+	if ref.ID == "" {
+		return runtime.File{}, runtime.ErrNotFound
+	}
+
 	out, err := s.getter.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(ref.ID),
@@ -277,8 +315,14 @@ func (s *s3FileStorage) Load(ctx context.Context, ref runtime.FileRef) (runtime.
 
 // SignedURL implementa runtime.FileStorage: presigned GET real (REQ-45.2),
 // válida por expires. Deliberadamente sem error (ver a doc do arquivo) —
-// numa falha (rara, estrutural), loga e devolve "".
+// numa falha (rara, estrutural), loga e devolve "". ref.ID vazio devolve ""
+// direto, sem chamar o presigner por uma key que nunca poderia ter sido
+// armazenada (achado da revisão da PR #30).
 func (s *s3FileStorage) SignedURL(ctx context.Context, ref runtime.FileRef, expires time.Duration) string {
+	if ref.ID == "" {
+		return ""
+	}
+
 	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(ref.ID),
@@ -291,8 +335,14 @@ func (s *s3FileStorage) SignedURL(ctx context.Context, ref runtime.FileRef, expi
 }
 
 // Delete implementa runtime.FileStorage: DeleteObject — idempotente de graça
-// (S3 não erra numa key inexistente, ver a doc do arquivo).
+// (S3 não erra numa key inexistente, ver a doc do arquivo). ref.ID vazio
+// devolve nil direto, sem uma chamada de rede por uma key que nunca poderia
+// ter sido armazenada (achado da revisão da PR #30) — mesma idempotência.
 func (s *s3FileStorage) Delete(ctx context.Context, ref runtime.FileRef) error {
+	if ref.ID == "" {
+		return nil
+	}
+
 	_, err := s.deleter.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(ref.ID),
