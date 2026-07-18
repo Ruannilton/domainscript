@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.4 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.5 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -451,10 +451,57 @@ sucede na 2ª tentativa ⇒ entrega, at-least-once cumprido). Sem regressão:
 `TestOutbox*`/`TestGentest*` (`codegen`, incl. integração Postgres sob
 `-tags=integration`, segue compilando/pulando) e `TestGenerate*` (`driver`)
 seguem verdes. `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
-Próxima: **J2.4** — `(R9)` o relay alimenta o canal cross-service: o
-`publisher` (transporte de saída, ex. `ChannelTransport`) passa a ser
-injetado em `NewDurableOutbox`, roteando por `event_type` (in-process vs.
-canal de saída via `producerChannelFor`) em vez do commit publicar direto.
+Concluído: **J2.4** — `(R9)` o relay alimenta o canal cross-service
+(REQ-42.6). `NewDurableOutbox(store, registry, publisher ...Publisher)`
+ganha um `publisher` opcional (mesma convenção variádica de
+`NewUnitOfWork`): quando presente, `deliver` roteia TODA linha entregue por
+`publisher.Publish` em vez de rodar os handlers localmente assinados via
+`Subscribe` — a decisão é tomada UMA vez por instância de `DurableOutbox`
+(não por `event_type` dinamicamente), espelhando a MESMA exclusividade
+mútua que `codegen.go` já impõe hoje entre dispatcher/canal por módulo
+(`NewUnitOfWork(store, dispatcher)` OU `NewUnitOfWork(store, canal)`, nunca
+os dois — comentário em `codegen.go` sobre "wiring combinado ainda não
+suportado"). `Publisher` (`Dispatcher`/`ChannelTransport` já satisfazem a
+MESMA assinatura `Publish(ctx, ev) error`) é o único contrato exigido — o
+mecanismo de roteamento não conhece nem depende de qual transporte concreto
+está por trás (RabbitMQ, Marco J3, ainda não existe; os testes usam um
+`fakePublisher` local). Uma falha de `Publish` é retentável exatamente como
+falha de handler: `ProcessBatch` incrementa `attempts` em vez de marcar
+entregue, e `ORDER BY attempts ASC, id ASC` (revisão da PR #20) garante que
+a mesma linha volta a ser escaneada num `Tick` seguinte.
+
+**Desvio de escopo (reclassificação):** o item (b) da task original
+("proibir publish direto no commit... o publisher da uow deixa de receber
+o canal quando o outbox durável está ativo") é uma decisão de WIRING — qual
+valor `codegen.go` passa para `NewUnitOfWork`/qual `main.go` gerado
+constrói — não do mecanismo do `DurableOutbox` em si; reclassificado para
+**J2.5** (a task de seleção/wiring), documentado em `tasks.md`. A garantia
+comportamental que o item (b) pedia ("crash entre commit e publish ⇒ evento
+re-entregue") já está provada nesta task, no nível do relay, independente
+de qualquer decisão de wiring futura.
+
+Testes novos (`codegen/sql_outbox_channel_test.go`, via
+`gentest.WriteFiles`/`RunTests` sobre sqlite real):
+`TestDurableOutboxRoutesToPublisherInsteadOfLocalHandlers` (com
+`publisher` configurado, `deliver` chama `Publish` e NUNCA roda o handler
+local — mesmo quando esse handler está assinado para o mesmo `event_type`)
+e `TestDurableOutboxRetriesOnPublishFailure` (o "crash simulado" do lado do
+publisher: `Publish` falha na 1ª tentativa ⇒ `attempts` sobe,
+`delivered_at` continua NULL; a MESMA linha é re-escaneada no próximo
+`Tick` ⇒ `Publish` sucede na 2ª tentativa ⇒ entrega — nenhum evento
+cross-service é perdido). Sem regressão:
+`TestSQL*`/`TestPostgres*`/`TestWallet*`/`TestLedger*`/`TestPolicy*`/
+`TestOutbox*`/`TestGentest*` (`codegen`, incl. integração Postgres sob
+`-tags=integration`) e `TestGenerate*` (`driver`) seguem verdes.
+`go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
+
+Próxima: **J2.5** — cleanup + seleção/wiring: `StartOutboxCleanup(ctx)`
+(análogo a `StartIdempotencyCleanup`, purga entregues via `PurgeDelivered`,
+J2.2) + `codegen.go` decide `NewDurableOutbox(...)` vs. `NewOutbox(
+dispatcher)` por módulo (Database real ou não) e para de passar o canal
+direto ao publisher da `uow` quando o outbox durável está ativo (a
+reclassificação do item (b) de J2.4, acima) — fecha a Fase J2 (REQ-42
+completo).
 
 ## Issues em aberto
 

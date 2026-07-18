@@ -120,9 +120,45 @@ const (
 // business transaction, task J2.1) survives a crash between commit and
 // delivery, because the row is still sitting in durable storage, undelivered,
 // for the NEXT ProcessBatch call to pick up.
+//
+// --- Composição outbox <-> canal (task J2.4, REQ-42.6, §design
+// infra-providers 3.2a) ---
+//
+// publisher (optional, NewDurableOutbox's variadic last argument — same
+// convention as NewUnitOfWork) is the module's ONE outgoing transport for
+// cross-service delivery (a ChannelTransport, e.g. the RabbitMQ adapter once
+// Marco J3 lands, or today's in-memory QueueChannel — both already satisfy
+// Publisher structurally, same shape as Dispatcher). A single DurableOutbox
+// routes ALL of its delivered rows ONE way, decided once at construction —
+// never per-event_type dynamically — mirroring the SAME mutual-exclusivity
+// codegen.go's producer-channel wiring already enforces for the (older,
+// non-durable) UnitOfWork publisher: a module either has an outgoing
+// channel (every emitted PublicEvent leaves the process through it) or
+// Policies subscribe locally (in-process) — never a per-event mix within
+// the SAME module, today.
+//
+//   - publisher != nil (cross-service): deliver calls publisher.Publish
+//     instead of running any locally-subscribed handler — a
+//     publish failure is retriable exactly like a handler failure (ProcessBatch
+//     increments attempts instead of marking delivered, so the SAME row
+//     is retried on the next Tick — REQ-42.6's durability claim: a crash
+//     between commit and a successful Publish never loses the event,
+//     because the row is still sitting undelivered in the outbox table for
+//     Start's next tick to pick up).
+//   - publisher == nil (in-process, the J2.3 shape): deliver runs every
+//     handler Subscribe registered for that row's event type, exactly as
+//     before this task.
+//
+// Wiring which module gets which (deciding when a module's UnitOfWork
+// publisher STOPS receiving the channel directly, so an event is never
+// published twice — once inline at commit, once again later by the relay)
+// is task J2.5's job (codegen.go/cmd/<service>/main.go), not this type's:
+// DurableOutbox itself just does whichever ONE thing it was constructed to
+// do.
 type DurableOutbox struct {
-	store    OutboxStore
-	registry map[string]EventFactory
+	store     OutboxStore
+	registry  map[string]EventFactory
+	publisher Publisher
 
 	mu       sync.Mutex
 	handlers map[string][]func(ctx context.Context, ev Event) error
@@ -131,13 +167,20 @@ type DurableOutbox struct {
 // NewDurableOutbox creates a DurableOutbox over store, decoding rows via
 // registry (a module's generated "EventRegistry()", or a merge of several
 // when a service consumes events declared by more than one module — see
-// task J2.4/contracts.EventRegistry() for the cross-service case).
-func NewDurableOutbox(store OutboxStore, registry map[string]EventFactory) *DurableOutbox {
-	return &DurableOutbox{
+// task J2.4/contracts.EventRegistry() for the cross-service case). publisher
+// is optional (NewUnitOfWork's exact convention): when given, EVERY
+// delivered row routes through it instead of locally-subscribed handlers —
+// see the type doc above for the full routing rule.
+func NewDurableOutbox(store OutboxStore, registry map[string]EventFactory, publisher ...Publisher) *DurableOutbox {
+	o := &DurableOutbox{
 		store:    store,
 		registry: registry,
 		handlers: make(map[string][]func(ctx context.Context, ev Event) error),
 	}
+	if len(publisher) > 0 {
+		o.publisher = publisher[0]
+	}
+	return o
 }
 
 // Subscribe implements Outbox: registers handler for eventType. Multiple
@@ -194,17 +237,24 @@ func (o *DurableOutbox) Tick(ctx context.Context) (delivered int, err error) {
 	})
 }
 
-// deliver decodes row via the registry and runs every handler subscribed to
-// its event type. An unknown event type or a JSON decode failure is a
-// permanent, non-retriable condition (no future ProcessBatch call would
-// decode it any differently) — logged loudly and treated as delivered
-// (marked, not retried) so a single malformed/unrecognized row can never
-// wedge the relay in a tight retry loop forever (the poison-pill concern
-// §design infra-providers 3.3 raises for the RabbitMQ transport applies here
-// too, in spirit). A handler returning an error, in contrast, IS retriable
-// (transient — a downstream dependency being briefly unavailable, say), so
-// it propagates to ProcessBatch, which increments attempts instead of
-// marking delivered.
+// deliver decodes row via the registry, then routes it to EXACTLY ONE
+// destination (task J2.4, REQ-42.6, §design infra-providers 3.2a — see the
+// type doc's "Composição outbox <-> canal" section for the full rule):
+// o.publisher when configured (cross-service), or every locally-subscribed
+// handler for its event type otherwise (in-process, the J2.3 shape). An
+// unknown event type or a JSON decode failure is a permanent, non-retriable
+// condition (no future ProcessBatch call would decode it any differently) —
+// logged loudly and treated as delivered (marked, not retried) so a single
+// malformed/unrecognized row can never wedge the relay in a tight retry
+// loop forever (the poison-pill concern §design infra-providers 3.3 raises
+// for the RabbitMQ transport applies here too, in spirit). A publish or
+// handler failure, in contrast, IS retriable (transient — a downstream
+// dependency being briefly unavailable, say), so it propagates to
+// ProcessBatch, which increments attempts instead of marking delivered —
+// the SAME row is re-scanned (ORDER BY attempts ASC, id ASC still puts it
+// ahead of never-yet-tried rows) and re-delivered on a later Tick, closing
+// exactly the "crash between commit and publish" window REQ-42.6 exists
+// for.
 func (o *DurableOutbox) deliver(ctx context.Context, row OutboxRow) error {
 	factory, ok := o.registry[row.EventType]
 	if !ok {
@@ -215,6 +265,10 @@ func (o *DurableOutbox) deliver(ctx context.Context, row OutboxRow) error {
 	if err := json.Unmarshal(row.Payload, ev); err != nil {
 		slog.Error("durable outbox: falha ao decodificar payload, descartando linha", "eventType", row.EventType, "id", row.ID, "error", err)
 		return nil
+	}
+
+	if o.publisher != nil {
+		return o.publisher.Publish(ctx, ev)
 	}
 
 	o.mu.Lock()
