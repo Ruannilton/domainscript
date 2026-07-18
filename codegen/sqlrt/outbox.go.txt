@@ -54,22 +54,21 @@ func (s *outboxStore) ProcessBatch(ctx context.Context, batch int, deliver func(
 	if err != nil {
 		return 0, fmt.Errorf("sqlruntime: ProcessBatch: scan: %w", err)
 	}
+	defer rows.Close()
+
 	var scanned []runtime.OutboxRow
 	for rows.Next() {
 		var row runtime.OutboxRow
 		var payload string
 		if err := rows.Scan(&row.ID, &row.EventType, &payload, &row.Attempts); err != nil {
-			rows.Close()
 			return 0, fmt.Errorf("sqlruntime: ProcessBatch: scan: %w", err)
 		}
 		row.Payload = []byte(payload)
 		scanned = append(scanned, row)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return 0, fmt.Errorf("sqlruntime: ProcessBatch: scan: %w", err)
 	}
-	rows.Close()
 
 	// MarkDelivered(idPlaceholder, timePlaceholder) monta o texto SEMPRE na
 	// forma "SET delivered_at = <timePlaceholder> WHERE id = <idPlaceholder>"

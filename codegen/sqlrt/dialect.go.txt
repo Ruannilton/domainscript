@@ -34,17 +34,25 @@ type Dialect interface {
 	CreateOutboxTable() string
 	// ScanUndelivered devolve o SELECT que busca até batch linhas não
 	// entregues da tabela "outbox" (Marco J, REQ-42.4, §design
-	// infra-providers 3.2): sempre em ordem FIFO ("ORDER BY id" — só um
-	// contador monotônico de inserção garante essa ordem, ver
-	// CreateOutboxTable) e com a trava de linha própria do banco, para que
-	// múltiplas réplicas do relay (DurableOutbox, task J2.3) levem lotes
-	// EXCLUSIVOS sem duplicar entrega desnecessariamente: Postgres usa "FOR
-	// UPDATE SKIP LOCKED" (cada réplica pula linhas já travadas por outra,
-	// sem bloquear); sqlite (single-writer) não tem "SKIP LOCKED" — a
-	// própria trava de escrita do banco já serializa, então um "LIMIT"
-	// simples basta. SEMPRE roda dentro de uma *sql.Tx (a trava de linha só
-	// existe durante uma transação aberta) — devolve id/event_type/payload/
-	// attempts de cada linha batida.
+	// infra-providers 3.2), ordenadas por "attempts ASC, id ASC" — FIFO
+	// ("id", um contador monotônico de inserção, ver CreateOutboxTable)
+	// DENTRO de cada nível de tentativa, mas priorizando sempre quem tem
+	// MENOS tentativas (revisão da PR #20, mitiga head-of-line blocking):
+	// um "ORDER BY id" puro deixaria uma linha que falha PERMANENTEMENTE
+	// (bug de handler, payload nunca decodificável) presa no início da
+	// fila para sempre — se linhas assim acumularem até o tamanho de
+	// batch, elas sozinhas preencheriam todo lote escaneado, travando a
+	// entrega de eventos novos e saudáveis. Com attempts como critério
+	// primário, um evento recém-enfileirado (attempts=0) sempre fura a
+	// fila à frente de um que já falhou antes. Com a trava de linha própria
+	// do banco, múltiplas réplicas do relay (DurableOutbox, task J2.3)
+	// levam lotes EXCLUSIVOS sem duplicar entrega desnecessariamente:
+	// Postgres usa "FOR UPDATE SKIP LOCKED" (cada réplica pula linhas já
+	// travadas por outra, sem bloquear); sqlite (single-writer) não tem
+	// "SKIP LOCKED" — a própria trava de escrita do banco já serializa,
+	// então um "LIMIT" simples basta. SEMPRE roda dentro de uma *sql.Tx (a
+	// trava de linha só existe durante uma transação aberta) — devolve
+	// id/event_type/payload/attempts de cada linha batida.
 	ScanUndelivered(batch int) string
 	// MarkDelivered devolve o UPDATE que marca uma linha da outbox
 	// (idPlaceholder) como entregue (delivered_at = timePlaceholder) — os
@@ -124,7 +132,7 @@ func (sqliteDialect) CreateOutboxTable() string {
 }
 
 func (sqliteDialect) ScanUndelivered(batch int) string {
-	return fmt.Sprintf(`SELECT id, event_type, payload, attempts FROM outbox WHERE delivered_at IS NULL ORDER BY id LIMIT %d`, batch)
+	return fmt.Sprintf(`SELECT id, event_type, payload, attempts FROM outbox WHERE delivered_at IS NULL ORDER BY attempts ASC, id ASC LIMIT %d`, batch)
 }
 
 func (sqliteDialect) MarkDelivered(idPlaceholder, timePlaceholder string) string {

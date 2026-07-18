@@ -103,10 +103,14 @@ type OutboxStore interface {
 // idempotencyCleanupInterval (usecase_idempotency.go, a generated periodic
 // worker in the same spirit): frequent enough that AtLeastOnce delivery
 // feels near-real-time, infrequent enough not to hammer the database with
-// an empty-outbox poll every tick.
+// an empty-outbox poll every tick. defaultOutboxMaxBackoff caps Start's
+// exponential backoff on repeated ProcessBatch errors (revisão da PR #20):
+// a database outage or a downstream dependency being down must not keep the
+// relay hammering it once a second, flooding logs — see Start below.
 const (
 	defaultOutboxPollInterval = time.Second
 	defaultOutboxBatchSize    = 50
+	defaultOutboxMaxBackoff   = 10 * time.Second
 )
 
 // DurableOutbox is the Marco J real Outbox (REQ-42.2/42.3): Subscribe
@@ -150,20 +154,33 @@ func (o *DurableOutbox) Subscribe(eventType string, handler func(ctx context.Con
 // Start runs the relay loop until ctx is done (the same "ticker + select"
 // shape as a generated periodic worker, e.g. StartIdempotencyCleanup,
 // usecase_idempotency.go) — called once from the generated
-// cmd/<service>/main.go (task J2.5), alongside StartWorkers/Wire. A
-// ProcessBatch error is logged and the loop keeps going on the next tick —
-// a transient database hiccup never stops the relay permanently.
+// cmd/<service>/main.go (task J2.5), alongside StartWorkers/Wire.
+//
+// Exponential backoff (revisão da PR #20): a ProcessBatch error (ex. o
+// banco caiu, uma dependência downstream está fora) doubles the wait until
+// defaultOutboxMaxBackoff instead of retrying every defaultOutboxPollInterval
+// — a fixed 1s retry during an outage would hammer the database and flood
+// logs with the same error every tick. A successful Tick (even one that
+// simply found nothing to deliver) resets the interval back to the default.
 func (o *DurableOutbox) Start(ctx context.Context) {
-	ticker := time.NewTicker(defaultOutboxPollInterval)
-	defer ticker.Stop()
+	interval := defaultOutboxPollInterval
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			if _, err := o.Tick(ctx); err != nil {
 				slog.Error("durable outbox: falha ao processar lote", "error", err)
+				interval *= 2
+				if interval > defaultOutboxMaxBackoff {
+					interval = defaultOutboxMaxBackoff
+				}
+			} else {
+				interval = defaultOutboxPollInterval
 			}
+			timer.Reset(interval)
 		}
 	}
 }
