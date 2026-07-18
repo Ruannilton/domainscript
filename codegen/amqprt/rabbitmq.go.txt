@@ -618,6 +618,16 @@ func (r *rabbitmqChannel) supervise() {
 		conn := r.conn
 		r.connMu.RUnlock()
 
+		// conn == nil (revisão da PR #25): reconnectLoop pode ter retornado
+		// SEM reconectar (stopCh fechou durante a janela de reconexão,
+		// Close() concorrente) — nesse caso r.conn continua nil e não há
+		// nada pra supervisionar; Close() já está em andamento (é a única
+		// forma de r.conn ficar nil depois de já ter conectado uma vez), então
+		// retornar aqui é sempre correto, nunca perde um close legítimo.
+		if conn == nil {
+			return
+		}
+
 		closeNotify := conn.NotifyClose(make(chan *amqp.Error, 1))
 		select {
 		case <-r.stopCh:
@@ -651,17 +661,24 @@ func (r *rabbitmqChannel) supervise() {
 // reconexão).
 func (r *rabbitmqChannel) reconnectLoop() {
 	r.connMu.Lock()
-	oldCh, oldChans := r.ch, r.consumeChans
+	oldConn, oldCh, oldChans := r.conn, r.ch, r.consumeChans
 	r.conn, r.ch, r.consumeChans = nil, nil, nil
 	r.connMu.Unlock()
 	// A conexão antiga já está morta (é por isso que supervise nos trouxe
 	// até aqui) — fecha o que sobrou best-effort, sem checar erro: o socket
-	// subjacente já foi derrubado pelo broker/rede.
+	// subjacente já foi derrubado pelo broker/rede. oldConn TAMBÉM é fechada
+	// explicitamente (revisão da PR #25) — mesmo já estando morta do lado do
+	// broker, Close() ainda libera recursos do lado do CLIENTE (sockets TCP
+	// residuais, goroutines internas do driver amqp091-go) que só um Close()
+	// de verdade encerra.
 	if oldCh != nil {
 		_ = oldCh.Close()
 	}
 	for _, c := range oldChans {
 		_ = c.Close()
+	}
+	if oldConn != nil {
+		_ = oldConn.Close()
 	}
 
 	backoff := reconnectInitialBackoff
@@ -685,6 +702,22 @@ func (r *rabbitmqChannel) reconnectLoop() {
 		}
 
 		r.connMu.Lock()
+		select {
+		case <-r.stopCh:
+			// Close() rodou concorrentemente enquanto dialAndSetup() estava
+			// em andamento (revisão da PR #25) — Close() já retornou sem
+			// saber desta conexão nova, então ninguém mais vai fechá-la;
+			// fecha AQUI, sob o lock, antes de devolvê-lo, pra nunca vazar o
+			// socket/canais recém-abertos.
+			r.connMu.Unlock()
+			for _, c := range consumeChans {
+				_ = c.Close()
+			}
+			_ = pubCh.Close()
+			_ = conn.Close()
+			return
+		default:
+		}
 		r.conn, r.ch, r.consumeChans = conn, pubCh, consumeChans
 		r.connMu.Unlock()
 		slog.Info("amqpruntime: reconectado com sucesso")
