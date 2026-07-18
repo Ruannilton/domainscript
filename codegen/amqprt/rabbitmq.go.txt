@@ -79,6 +79,9 @@ type envelope struct {
 
 // encodeEnvelope serializa ev no envelope de fio (task J3.1.b).
 func encodeEnvelope(ev runtime.Event) ([]byte, error) {
+	if ev == nil {
+		return nil, fmt.Errorf("amqpruntime: encodeEnvelope: ev nil")
+	}
 	payload, err := json.Marshal(ev)
 	if err != nil {
 		return nil, fmt.Errorf("amqpruntime: encodeEnvelope: %w", err)
@@ -100,10 +103,13 @@ func decodeEnvelope(data []byte, registry map[string]EventFactory) (runtime.Even
 		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: envelope malformado: %w", err)
 	}
 	factory, ok := registry[env.EventType]
-	if !ok {
+	if !ok || factory == nil {
 		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: tipo de evento desconhecido %q (registry incompleto? ver a doc do arquivo sobre contracts.EventRegistry(), REQ-43.5)", env.EventType)
 	}
 	ev := factory()
+	if ev == nil {
+		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: factory de %q devolveu nil (registry mal configurado)", env.EventType)
+	}
 	if err := json.Unmarshal(env.Payload, ev); err != nil {
 		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: payload de %q malformado: %w", env.EventType, err)
 	}
@@ -126,6 +132,14 @@ type rabbitmqChannel struct {
 	ch       *amqp.Channel
 	cfg      RabbitMQConfig
 	registry map[string]EventFactory
+
+	// pubMu serializa Publish (revisão da PR #23): *amqp.Channel NÃO é
+	// seguro para publicação concorrente por múltiplas goroutines (doc do
+	// driver amqp091-go) — Publish, ao contrário de Subscribe (só popula um
+	// map protegido por mu, abaixo), pode ser chamado concorrentemente por
+	// vários UseCases/Policies deste processo publicando ao mesmo tempo no
+	// MESMO canal AMQP.
+	pubMu sync.Mutex
 
 	mu       sync.RWMutex
 	handlers map[string][]func(ctx context.Context, ev runtime.Event) error
@@ -201,10 +215,34 @@ func (r *rabbitmqChannel) Publish(ctx context.Context, ev runtime.Event) error {
 	if err != nil {
 		return err
 	}
+	// pubMu (revisão da PR #23): serializa o acesso ao *amqp.Channel — ver a
+	// doc do campo em rabbitmqChannel.
+	r.pubMu.Lock()
+	defer r.pubMu.Unlock()
 	return r.ch.PublishWithContext(ctx, r.cfg.Exchange, "", false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        body,
 	})
+}
+
+// Close libera a conexão/canal AMQP abertos por NewRabbitMQChannel (revisão
+// da PR #23) — o wiring gerado (task J3.4/J6.2, "func run() error" com
+// "defer Close()" por recurso, §design infra-providers "wiring
+// multi-recurso fail-closed") chama isto no unwind. conn/ch nunca mudam
+// depois da construção (só lidos, nunca reatribuídos), então Close não
+// precisa de nenhum mutex para lê-los com segurança.
+func (r *rabbitmqChannel) Close() error {
+	var errs []error
+	if err := r.ch.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := r.conn.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("amqpruntime: Close: %v", errs)
+	}
+	return nil
 }
 
 // consume roda pela vida inteira de rabbitmqChannel, entregando cada
