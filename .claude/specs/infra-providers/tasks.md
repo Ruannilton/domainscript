@@ -181,7 +181,7 @@
     (`decl_policy.go`/`generateCmdMainFile`), tarefa de **J3.4** — esta task
     não seleciona nem constrói `rabbitmqChannel` a partir de nenhum `.ds`
     ainda (`channel.go` continua sempre in-memory, NFR-21 intacto).
-- [ ] **J3.2** **(R6)** Ordenação por partição + poison pill.
+- [x] **J3.2** **(R6)** Ordenação por partição + poison pill.
   - a. `orderBy` declarado ⇒ **exchange consistent-hash** por `hash(chave)` →
     N filas de partição, um consumidor por partição (ordem por chave, paralelo
     entre chaves = `workers.concurrency`); sem `orderBy` ⇒ work-queue prefetch =
@@ -190,6 +190,14 @@
     broker incrementa `x-death`); esgotado `circuitBreaker.threshold` ⇒ DLQ
     final. (REQ-43.4, §design 3.3).
   - c. Teste unit da montagem de exchange consistent-hash/DLX/binding.
+  - **Desvio documentado (item a):** "work-queue prefetch = concurrency" foi
+    implementado como `Concurrency` consumidores DISTINTOS (cada um com seu
+    próprio `*amqp.Channel`, "competing consumers" sobre a MESMA fila) em vez
+    de um único consumidor com `Qos(prefetch=Concurrency)` + pool de
+    goroutines compartilhando um canal — mesmo teto de mensagens em voo,
+    sem precisar de mutex extra pra Ack/Nack concorrente sobre um canal
+    compartilhado (cada canal é dono de uma única goroutine). Ver a doc do
+    arquivo.
 - [ ] **J3.3** Reconexão.
   - a. Supervisão de `Connection.NotifyClose`/`Channel.NotifyClose` com loop de
     reconnect+backoff, re-declarando exchanges/filas/consumidores; publish na

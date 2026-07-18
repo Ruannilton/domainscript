@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.3 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -662,11 +662,84 @@ test ./...` (suíte inteira) verde, incluindo `TestActiveProviderDeps*`/
 mudou, NFR-21/23 intactos: nenhum dos dois declara canal `provider:
 "rabbitmq"`).
 
-Próxima: **J3.2** — **(R6)** Ordenação por partição + poison pill:
-exchange consistent-hash quando `orderBy` declarado (N filas de partição,
-um consumidor cada); `ack` no sucesso, `nack requeue=false` → DLX+
-retry-queue(TTL) → DLQ final esgotado `circuitBreaker.threshold`. Teste
-unit da montagem de exchange/DLX/binding.
+Concluído: **J3.2** — **(R6)** Ordenação por partição + poison pill
+(REQ-43.3/43.4). `RabbitMQConfig` ganha `KeyFunc runtime.KeyFunc` (mesmo
+tipo exportado de `rtsrc/channel.go.txt`, reusado direto — nil = sem
+`orderBy`), `Concurrency`/`MaxAttempts`/`RetryTTL` (com defaults via
+`effectiveConcurrency`/`effectiveMaxAttempts`/`effectiveRetryTTL`, cada uma
+uma função pura clampando `<1`/`<=0`).
+
+Ordenação (REQ-43.3, R6, mesma regra do `QueueChannel` in-memory,
+`rtsrc/channel.go.txt`, agora cross-process): `KeyFunc != nil` ⇒ a exchange
+principal é declarada `"x-consistent-hash"` em vez de `"fanout"`,
+`Concurrency` filas de partição (`partitionQueueNames`, `"<base>-p0"..
+"<base>-p(n-1)"`), cada uma ligada com a MESMA `consistentHashBindingKey()`
+(peso uniforme "10") e consumida por exatamente UM `*amqp.Channel`/goroutine
+próprios (`Qos(1)`) — `Publish` roteia com routing key = `KeyFunc(ev)`,
+que a exchange consistent-hash hasheia deterministicamente pra sempre cair
+na MESMA partição (ordem preservada). `KeyFunc == nil` ⇒ exchange `fanout`
+de sempre, UMA fila, mas `Concurrency` consumidores DISTINTOS (canais
+próprios) competindo pela MESMA fila ("competing consumers" do RabbitMQ) —
+**desvio documentado** do literal "um consumidor com `Qos(prefetch=
+Concurrency)`" do design: mesmo teto de mensagens em voo, sem precisar de
+mutex extra pra Ack/Nack concorrente sobre um canal compartilhado (cada
+canal AMQP é dono de exatamente uma goroutine — nem Subscribe/Publish nem
+Ack/Nack cruzam goroutines).
+
+Poison pill / DLX+retry+DLQ final (REQ-43.4, substitui o
+`nack(requeue=false)`-descarta-direto de J3.1): TODA fila principal
+(partição ou única) declara `x-dead-letter-exchange` apontando pra uma DLX
+de retry PRÓPRIA do canal (`retryExchangeName`) — `nack(requeue=false)`
+agora roteia pra lá em vez de descartar. A DLX de retry alimenta UMA retry
+queue (`retryQueueName`) com `x-message-ttl` (`effectiveRetryTTL`) +
+`x-dead-letter-exchange` apontando de VOLTA pra exchange ORIGINAL: ao
+expirar o TTL (sem consumidor nenhum na retry queue — ela só segura a
+mensagem), o broker reencaminha pra exchange original preservando a routing
+key (nem a fila principal nem a retry queue setam
+`x-dead-letter-routing-key`), então uma mensagem particionada volta pra
+MESMA partição depois de reencaminhada — e incrementa `x-death` a cada
+passagem. `xDeathCount` (função pura sobre `amqp.Table`, soma o campo
+`"count"` de cada entrada do header `x-death`) diz ao consumidor quantas
+vezes a mensagem já deu a volta; ao atingir
+`effectiveMaxAttempts(cfg.MaxAttempts)` — REQ-43.4 reusa o CAMPO
+`circuitBreaker.threshold` do canal como contador de tentativas, deliberada
+e documentadamente DIFERENTE da máquina de estados open/half-open/closed de
+`runtime.CircuitBreaker` (que resolve um problema diferente: um breaker
+por-canal global guardando TODA entrega, não um contador por-mensagem) —, o
+consumidor publica o corpo direto na DLQ final (`dlqName`, via exchange
+default `""`, routing direto por nome de fila) e dá `ack` na mensagem
+original, removendo-a do ciclo. Uma falha de DECODIFICAÇÃO (evento
+desconhecido/payload malformado) passa pelo MESMO ciclo — nenhum caminho
+especial "permanente direto pra DLQ": mais simples, e ainda limitado (nunca
+gira pra sempre, `effectiveMaxAttempts` sempre a manda pra DLQ eventualmente).
+
+`Close()` (da revisão da PR #23) passou a liberar TODOS os canais de
+consumo abertos (um por partição/consumidor), não só o de publish.
+
+Testes novos: `codegen/amqp_topology_test.go` (mesmo padrão de
+`amqp_envelope_test.go`/J3.1.e — `package codegen`, fixture via
+`gentest.WriteFiles`/`RunTests` sobre `buildAMQPRuntimeProjectFiles`, teste
+embutido `package amqpruntime` white-box, SEM nenhuma conexão AMQP real):
+`TestAMQPTopologyAssembly` roda `TestPartitionQueueNames`,
+`TestRetryTopologyNames` (os três recursos extras não colidem entre si nem
+com a exchange original), `TestMainQueueArgsPointsToRetryExchange`,
+`TestRetryQueueArgsPointsBackToMainExchangeWithTTL` (TTL em milissegundos,
+`x-dead-letter-exchange` aponta pra exchange ORIGINAL, nunca de volta pra
+DLX de retry — senão giraria em círculo sem nunca voltar à fila principal),
+`TestConsistentHashBindingKeyIsNumeric`, `TestXDeathCountSumsAcrossEntries`
+e `TestEffectiveMaxAttemptsAndRetryTTLDefaults` (clamping `<1`/`<=0`).
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go
+test ./...` (suíte inteira) verde, incluindo `TestAMQPEnvelopeRoundTrip`
+(J3.1, ainda passa sobre o rabbitmq.go.txt reescrito) e `TestGenerate*`
+(`driver`, wallet/shop e2e — nenhum byte mudou).
+
+Próxima: **J3.3** — Reconexão: supervisão de
+`Connection.NotifyClose`/`Channel.NotifyClose` com loop de
+reconnect+backoff, re-declarando toda a topologia (exchanges/filas/
+consumidores) desta task; `Publish` na janela de reconexão retorna erro (o
+relay do outbox re-tenta). Teste unit: fechar o canal fake ⇒ o supervisor
+tenta reabrir.
 
 ## Issues em aberto
 
