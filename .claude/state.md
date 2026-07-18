@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.3 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.4 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -402,9 +402,59 @@ teste de integração Postgres sob `-tags=integration`, que segue compilando
 e pulando sem `PG_URL`) e `TestGenerate*` (`driver`) seguem verdes — a
 interface `Dialect` estendida (agora com 8 métodos) não quebra nenhum
 consumidor existente. `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
-Próxima: **J2.3** (`DurableOutbox` + relay: `Start(ctx)` com backoff,
-consumindo `ScanUndelivered`/`MarkDelivered` de verdade contra um `*sql.DB`
-sqlite `:memory:`, incl. teste de crash simulado — não marca ⇒ re-entrega).
+Concluído: **J2.3** — `DurableOutbox` + relay (REQ-42.2/42.3). Seam novo em
+`codegen/rtsrc/outbox.go.txt` (ao lado de `memoryOutbox`, MESMA interface
+`Outbox`): `OutboxRow`/`OutboxStore` (interface — `ProcessBatch(ctx, batch,
+deliver func(OutboxRow) error) (processed int, err error)`, dialeto-agnóstica
+de propósito, para o núcleo `runtime` nunca importar `database/sql` —
+NFR-12/21) e `EventFactory` (alias `func() Event`, mesma forma de
+`sqlruntime.EventFactory` — zero conversão ao passar `EventRegistry()`).
+`DurableOutbox` implementa `Subscribe` (mesmo formato de `memoryOutbox`) +
+`Start(ctx)` (loop ticker/select, mesma forma de um worker periódico gerado
+como `StartIdempotencyCleanup`) + `Tick(ctx)` (exportado, um lote só — o
+gancho de teste direto sem esperar o ticker). `deliver` decodifica o
+payload via a registry e roda os handlers assinados; falha de decode/tipo
+desconhecido é tratada como PERMANENTE (marca entregue mesmo assim — nunca
+entra num retry infinito por uma linha malformada, mesmo espírito do
+poison-pill do RabbitMQ, §design 3.3); falha de HANDLER é retentável
+(propaga, `ProcessBatch` incrementa `attempts` em vez de marcar).
+
+`codegen/sqlrt/outbox.go.txt` (novo): `outboxStore`/`NewOutboxStore(db,
+dialect) runtime.OutboxStore` — a implementação real de `ProcessBatch`:
+abre UMA `*sql.Tx` para o lote inteiro (Scan + todo Mark/Increment +
+Commit), porque a trava de linha do Postgres (`FOR UPDATE SKIP LOCKED`,
+J2.2) só vale enquanto ESSA tx está aberta — comitar o SELECT sozinho cedo
+demais liberaria a trava antes da entrega terminar, permitindo que outra
+réplica pegasse o MESMO lote. **Achado sutil (documentado no arquivo):**
+`Dialect.MarkDelivered(idPlaceholder, timePlaceholder)` monta o texto
+SEMPRE como `"...delivered_at = <timePlaceholder> WHERE id = <idPlaceholder>"`
+(timePlaceholder aparece PRIMEIRO no texto, apesar de vir depois na lista
+de parâmetros) — para bater com isso nos dois esquemas de binding
+(Postgres numerado por `$N`, sqlite posicional por ordem textual de `?`),
+o chamador precisa passar `Placeholder(1)` como `timePlaceholder`
+(aparece primeiro) e `Placeholder(2)` como `idPlaceholder` (aparece
+segundo), e executar com os argumentos NA MESMA ordem (`now, id`) — inverter
+essa ordem quebraria silenciosamente o sqlite (que não tem `$N` nomeado,
+só posição textual). Incremento de `attempts` é SQL ANSI simples, sem
+método próprio no `Dialect` (só `ScanUndelivered`/`MarkDelivered` têm forma
+que difere por banco).
+
+Testes novos (`codegen/sql_outbox_relay_test.go`, via
+`gentest.WriteFiles`/`RunTests` sobre sqlite real):
+`TestDurableOutboxDeliversAndMarks` (entrega ao handler assinado,
+`delivered_at` deixa de ser NULL, um 2º `Tick` não re-entrega a linha já
+marcada) e `TestDurableOutboxRetriesOnHandlerFailure` (o "crash simulado":
+handler falha na 1ª tentativa ⇒ `delivered_at` continua NULL, `attempts`
+sobe para 1, a MESMA linha é re-escaneada no próximo `Tick` ⇒ handler
+sucede na 2ª tentativa ⇒ entrega, at-least-once cumprido). Sem regressão:
+`TestSQL*`/`TestPostgres*`/`TestWallet*`/`TestLedger*`/`TestPolicy*`/
+`TestOutbox*`/`TestGentest*` (`codegen`, incl. integração Postgres sob
+`-tags=integration`, segue compilando/pulando) e `TestGenerate*` (`driver`)
+seguem verdes. `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
+Próxima: **J2.4** — `(R9)` o relay alimenta o canal cross-service: o
+`publisher` (transporte de saída, ex. `ChannelTransport`) passa a ser
+injetado em `NewDurableOutbox`, roteando por `event_type` (in-process vs.
+canal de saída via `producerChannelFor`) em vez do commit publicar direto.
 
 ## Issues em aberto
 

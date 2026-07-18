@@ -1,6 +1,12 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"sync"
+	"time"
+)
 
 // Outbox is the delivery seam for Policies declared with "delivery
 // AtLeastOnce" (Marco F1, REQ-23.1) — as opposed to Dispatcher, which is
@@ -9,15 +15,17 @@ import "context"
 // generated Policy handler registers on whichever seam its `delivery`
 // clause calls for without changing its own signature.
 //
-// Marco F5 ("outbox e canais de entrega de eventos") replaces the
-// implementation below with a real durable/retried one (backed by the event
-// store or a dedicated outbox table) behind this SAME interface — generated
-// code that calls Outbox.Subscribe today does not change when that lands.
+// Marco F5 shipped memoryOutbox, the in-process stopgap below. Marco J
+// (REQ-42.2/42.3, §design infra-providers 3.2) adds DurableOutbox, a real
+// durable/retried implementation behind this SAME interface — generated
+// code that calls Outbox.Subscribe does not change when a module switches
+// from memoryOutbox to DurableOutbox (task J2.5 decides which one the
+// generated wiring constructs).
 type Outbox interface {
 	// Subscribe registers handler to run for every event whose EventType()
 	// equals eventType, with the AtLeastOnce delivery guarantee (durable and
-	// retried once Marco F5 lands; in-process/best-effort until then — see
-	// the interface doc above).
+	// retried for DurableOutbox; in-process/best-effort for memoryOutbox —
+	// see each type's doc).
 	Subscribe(eventType string, handler func(ctx context.Context, ev Event) error)
 }
 
@@ -25,16 +33,17 @@ type Outbox interface {
 // the Dispatcher it wraps. It is NOT durable yet — a process crash between
 // Publish and handler execution loses the delivery, exactly like Dispatcher.
 // This exists so AtLeastOnce Policies are registrable and their generated
-// code compiles ahead of Marco F5's real implementation, without pretending
-// to a durability guarantee the runtime doesn't have yet (documented
-// deliberately, see the interface doc above).
+// code compiles ahead of a real implementation, without pretending to a
+// durability guarantee the runtime doesn't have yet (documented
+// deliberately, see the interface doc above). Selected by codegen (task
+// J2.5) for any module WITHOUT a real Database — DurableOutbox is opt-in.
 type memoryOutbox struct {
 	d Dispatcher
 }
 
 // NewOutbox creates the Marco F1 Outbox over d. Every AtLeastOnce Policy
 // subscribes through this seam instead of Dispatcher directly, so swapping
-// in the real Marco F5 implementation later is a change to this
+// in a real durable implementation later is a change to this
 // constructor/type only — no generated code changes.
 func NewOutbox(d Dispatcher) Outbox {
 	return &memoryOutbox{d: d}
@@ -43,4 +52,162 @@ func NewOutbox(d Dispatcher) Outbox {
 // Subscribe implements Outbox.
 func (o *memoryOutbox) Subscribe(eventType string, handler func(ctx context.Context, ev Event) error) {
 	o.d.Subscribe(eventType, handler)
+}
+
+// --- DurableOutbox (Marco J, REQ-42.2/42.3, §design infra-providers 3.2) ---
+
+// EventFactory constructs a new zero-value pointer of a concrete Event
+// type, ready for json.Unmarshal — the SAME shape sqlruntime.EventFactory
+// already uses (codegen/sqlrt/eventstore.go.txt, an alias too), so a
+// module's generated "EventRegistry()" (map[string]func() Event) passes
+// directly to NewDurableOutbox with zero conversion, same convention
+// NewEventStore/NewUnitOfWork already established for the SQL adapter.
+type EventFactory = func() Event
+
+// OutboxRow is one pending (or previously-failed) delivery scanned from
+// durable storage — the seam-level shape DurableOutbox works with,
+// independent of which SQL adapter backs it. Payload is the raw encoded
+// form (JSON, the same convention EventStore already uses); DurableOutbox
+// decodes it into a concrete Event via the registry it was constructed
+// with, so OutboxStore implementations never need to know about event
+// types.
+type OutboxRow struct {
+	ID        int64
+	EventType string
+	Payload   []byte
+	Attempts  int
+}
+
+// OutboxStore is the durable storage seam DurableOutbox polls (REQ-42.2/
+// 42.3): implemented by the SQL adapter (sqlruntime.NewOutboxStore,
+// codegen/sqlrt/outbox.go.txt) over the "outbox" table Tx.EnqueueOutbox
+// already writes to (task J2.1) — DurableOutbox itself never imports
+// database/sql or knows about a specific Dialect (NFR-12/21: the core stays
+// free of any driver).
+type OutboxStore interface {
+	// ProcessBatch scans up to batch undelivered rows (FIFO, row-locked for
+	// the whole batch so concurrent relay replicas never process the same
+	// row twice — see Dialect.ScanUndelivered, codegen/sqlrt, for how the
+	// lock is taken) and calls deliver once per row, INSIDE the same
+	// transaction that holds the lock: deliver returning nil marks that row
+	// delivered; a non-nil error leaves it undelivered with its attempts
+	// counter incremented, to be re-scanned on a later ProcessBatch call
+	// (at-least-once, REQ-42.2). Commits once every row in the batch has
+	// been processed — a crash mid-batch rolls back the WHOLE batch (every
+	// row stays exactly as it was before this call), never a partial mark.
+	ProcessBatch(ctx context.Context, batch int, deliver func(row OutboxRow) error) (processed int, err error)
+}
+
+// defaultOutboxPollInterval/defaultOutboxBatchSize are DurableOutbox's
+// unconfigured defaults — same order of magnitude as
+// idempotencyCleanupInterval (usecase_idempotency.go, a generated periodic
+// worker in the same spirit): frequent enough that AtLeastOnce delivery
+// feels near-real-time, infrequent enough not to hammer the database with
+// an empty-outbox poll every tick.
+const (
+	defaultOutboxPollInterval = time.Second
+	defaultOutboxBatchSize    = 50
+)
+
+// DurableOutbox is the Marco J real Outbox (REQ-42.2/42.3): Subscribe
+// registers handlers exactly like memoryOutbox, but delivery is driven by
+// Start's relay loop polling OutboxStore instead of an in-process
+// Dispatcher — a row enqueued by Tx.EnqueueOutbox (atomically with the
+// business transaction, task J2.1) survives a crash between commit and
+// delivery, because the row is still sitting in durable storage, undelivered,
+// for the NEXT ProcessBatch call to pick up.
+type DurableOutbox struct {
+	store    OutboxStore
+	registry map[string]EventFactory
+
+	mu       sync.Mutex
+	handlers map[string][]func(ctx context.Context, ev Event) error
+}
+
+// NewDurableOutbox creates a DurableOutbox over store, decoding rows via
+// registry (a module's generated "EventRegistry()", or a merge of several
+// when a service consumes events declared by more than one module — see
+// task J2.4/contracts.EventRegistry() for the cross-service case).
+func NewDurableOutbox(store OutboxStore, registry map[string]EventFactory) *DurableOutbox {
+	return &DurableOutbox{
+		store:    store,
+		registry: registry,
+		handlers: make(map[string][]func(ctx context.Context, ev Event) error),
+	}
+}
+
+// Subscribe implements Outbox: registers handler for eventType. Multiple
+// handlers for the SAME eventType (unusual but not forbidden) all run for
+// every delivered row of that type — the row is marked delivered only if
+// ALL of them succeed (mirrors memoryOutbox/Dispatcher's "all subscribers
+// see every event" semantics).
+func (o *DurableOutbox) Subscribe(eventType string, handler func(ctx context.Context, ev Event) error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.handlers[eventType] = append(o.handlers[eventType], handler)
+}
+
+// Start runs the relay loop until ctx is done (the same "ticker + select"
+// shape as a generated periodic worker, e.g. StartIdempotencyCleanup,
+// usecase_idempotency.go) — called once from the generated
+// cmd/<service>/main.go (task J2.5), alongside StartWorkers/Wire. A
+// ProcessBatch error is logged and the loop keeps going on the next tick —
+// a transient database hiccup never stops the relay permanently.
+func (o *DurableOutbox) Start(ctx context.Context) {
+	ticker := time.NewTicker(defaultOutboxPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := o.Tick(ctx); err != nil {
+				slog.Error("durable outbox: falha ao processar lote", "error", err)
+			}
+		}
+	}
+}
+
+// Tick processes one batch (defaultOutboxBatchSize rows) — exported so
+// tests (and any custom scheduler) can drive delivery directly without
+// waiting on Start's ticker.
+func (o *DurableOutbox) Tick(ctx context.Context) (delivered int, err error) {
+	return o.store.ProcessBatch(ctx, defaultOutboxBatchSize, func(row OutboxRow) error {
+		return o.deliver(ctx, row)
+	})
+}
+
+// deliver decodes row via the registry and runs every handler subscribed to
+// its event type. An unknown event type or a JSON decode failure is a
+// permanent, non-retriable condition (no future ProcessBatch call would
+// decode it any differently) — logged loudly and treated as delivered
+// (marked, not retried) so a single malformed/unrecognized row can never
+// wedge the relay in a tight retry loop forever (the poison-pill concern
+// §design infra-providers 3.3 raises for the RabbitMQ transport applies here
+// too, in spirit). A handler returning an error, in contrast, IS retriable
+// (transient — a downstream dependency being briefly unavailable, say), so
+// it propagates to ProcessBatch, which increments attempts instead of
+// marking delivered.
+func (o *DurableOutbox) deliver(ctx context.Context, row OutboxRow) error {
+	factory, ok := o.registry[row.EventType]
+	if !ok {
+		slog.Error("durable outbox: tipo de evento desconhecido, descartando linha", "eventType", row.EventType, "id", row.ID)
+		return nil
+	}
+	ev := factory()
+	if err := json.Unmarshal(row.Payload, ev); err != nil {
+		slog.Error("durable outbox: falha ao decodificar payload, descartando linha", "eventType", row.EventType, "id", row.ID, "error", err)
+		return nil
+	}
+
+	o.mu.Lock()
+	handlers := append([]func(ctx context.Context, ev Event) error(nil), o.handlers[row.EventType]...)
+	o.mu.Unlock()
+
+	for _, h := range handlers {
+		if err := h(ctx, ev); err != nil {
+			return err
+		}
+	}
+	return nil
 }
