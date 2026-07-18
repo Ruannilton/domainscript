@@ -433,7 +433,8 @@ func emitQueryCacheVar(e *emit.Emitter, decl *ast.QueryDecl, plan *queryCachePla
 		e.Block(fmt.Sprintf("if %s != nil", clientErrVar), func() {
 			e.Line("panic(%s)", clientErrVar)
 		})
-		e.Line("%s.Register(%s{})", gobAlias, returnGoType)
+		e.Line("var zero %s", returnGoType)
+		e.Line("%s.Register(zero)", gobAlias)
 	})
 	e.Line("")
 	e.Line("// %s: instância Redis (spec §15/REQ-44.4, G3/J4.3) — nunca compartilhada", varName)
