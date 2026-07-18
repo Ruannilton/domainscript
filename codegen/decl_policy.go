@@ -714,7 +714,17 @@ func emitOutboxRelayAndCleanupStarters(e *emit.Emitter, runtimeAlias string) {
 	e.Line("// REQ-42.2/42.3) — gerado automaticamente porque este módulo tem uma Policy")
 	e.Line("// AtLeastOnce e uma Database real; chamado por cmd/<service>/main.go na")
 	e.Line("// inicialização, ao lado de StartWorkers/Wire. Roda até ctx ser cancelado.")
+	e.Line("//")
+	e.Line("// A verificação \"o == nil\" é defensiva (revisão da PR #22): o wiring gerado")
+	e.Line("// SEMPRE atribui \"o\" dentro de Wire antes de chamar isto (cmd/<service>/")
+	e.Line("// main.go, ver emitOutboxDatabaseWiring), mas StartOutboxRelay é uma função")
+	e.Line("// EXPORTADA — um chamador externo (ex. um teste) que a invoque sem ter")
+	e.Line("// rodado Wire antes travaria a goroutine inteira num nil pointer panic.")
 	e.Block(fmt.Sprintf("func StartOutboxRelay(ctx %s.Context)", ctxAlias), func() {
+		e.Block("if o == nil", func() {
+			e.Line("%s.Error(%q)", slogAlias, "outbox: DurableOutbox não inicializado (Wire ainda não rodou) — relay não iniciado")
+			e.Line("return")
+		})
 		e.Line("o.Start(ctx)")
 	})
 
@@ -722,8 +732,13 @@ func emitOutboxRelayAndCleanupStarters(e *emit.Emitter, runtimeAlias string) {
 	e.Line("// StartOutboxCleanup roda o worker de limpeza de linhas do outbox já")
 	e.Line("// entregues além da janela de retenção (REQ-42.7, análogo a")
 	e.Line("// StartIdempotencyCleanup, usecase_idempotency.go) — sem isto a tabela")
-	e.Line("// outbox cresceria sem limite. Roda até ctx ser cancelado.")
+	e.Line("// outbox cresceria sem limite. Roda até ctx ser cancelado. Mesma verificação")
+	e.Line("// defensiva \"o == nil\" de StartOutboxRelay, acima, e pela mesma razão.")
 	e.Block(fmt.Sprintf("func StartOutboxCleanup(ctx %s.Context)", ctxAlias), func() {
+		e.Block("if o == nil", func() {
+			e.Line("%s.Error(%q)", slogAlias, "outbox: DurableOutbox não inicializado (Wire ainda não rodou) — limpeza não iniciada")
+			e.Line("return")
+		})
 		e.Line("ticker := %s.NewTicker(%s)", timeAlias, outboxCleanupTickInterval)
 		e.Line("defer ticker.Stop()")
 		e.Block("for", func() {

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -269,6 +270,12 @@ func (o *DurableOutbox) Tick(ctx context.Context) (delivered int, err error) {
 // StartIdempotencyCleanup (usecase_idempotency.go) a separate worker from
 // the request path it cleans up after.
 func (o *DurableOutbox) Cleanup(ctx context.Context, retention time.Duration) (purged int, err error) {
+	// o.store == nil só acontece se NewDurableOutbox foi chamado com store
+	// nil diretamente (revisão da PR #22) — um erro claro em vez de um nil
+	// pointer panic dentro do worker periódico gerado (StartOutboxCleanup).
+	if o.store == nil {
+		return 0, errors.New("runtime: DurableOutbox.Cleanup: store nil (NewDurableOutbox foi chamado sem um OutboxStore)")
+	}
 	return o.store.PurgeDelivered(ctx, time.Now().Add(-retention))
 }
 
