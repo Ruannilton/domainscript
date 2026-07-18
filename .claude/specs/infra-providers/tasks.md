@@ -161,7 +161,7 @@
 
 ### Fase J3 — RabbitMQ como transporte de canal cross-process (REQ-43)
 
-- [ ] **J3.1** Adapter `amqprt` + envelope + registro de contracts.
+- [x] **J3.1** Adapter `amqprt` + envelope + registro de contracts.
   - a. `codegen/amqprt/` (novo, espelha `sqlrt/`): `rabbitmq.go.txt` com
     `rabbitmqChannel` implementando `ChannelTransport` (`Subscribe`/`Publish`).
     `embed.go`/`Sources()`. (REQ-43.1).
@@ -173,6 +173,14 @@
   - d. Entrada `channelProviders["rabbitmq"]` (amqp091-go).
   - e. Teste unit do envelope (serialize→deserialize round-trip via contracts),
     sem infra.
+  - **Nota de escopo:** item (c) fechado no nível de MECANISMO —
+    `decodeEnvelope` recebe um registry pronto e não distingue de onde vem
+    cada factory (provado pelo teste com um registry mesclado local+
+    contracts). O CALL SITE que de fato monta `contracts.EventRegistry()` +
+    o registry do módulo e o passa a `NewRabbitMQChannel` é wiring
+    (`decl_policy.go`/`generateCmdMainFile`), tarefa de **J3.4** — esta task
+    não seleciona nem constrói `rabbitmqChannel` a partir de nenhum `.ds`
+    ainda (`channel.go` continua sempre in-memory, NFR-21 intacto).
 - [ ] **J3.2** **(R6)** Ordenação por partição + poison pill.
   - a. `orderBy` declarado ⇒ **exchange consistent-hash** por `hash(chave)` →
     N filas de partição, um consumidor por partição (ordem por chave, paralelo

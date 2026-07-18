@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"domainscript/codegen/amqprt"
 	"domainscript/program"
 )
 
@@ -33,7 +34,11 @@ type providerDep struct {
 // (J0.3): cada categoria registra sua entrada aqui quando implementa seu
 // adapter real (J1..J5), sem exigir nenhuma mudança em
 // generateProviderRuntimeFiles nem em activeProviderDeps.
-var providerSources = map[string]func() (map[string][]byte, error){}
+var providerSources = map[string]func() (map[string][]byte, error){
+	// "amqpruntime" (J3.1, REQ-43.1): a primeira entrada real deste registro
+	// — channelProviders["rabbitmq"], abaixo, aponta adapterDir aqui.
+	"amqpruntime": amqprt.Sources,
+}
 
 // channelProviders/cacheProviders/rateLimitProviders/fileProviders são os
 // registros únicos de provider real por categoria (REQ-46.1, §design 2.1) —
@@ -45,7 +50,17 @@ var providerSources = map[string]func() (map[string][]byte, error){}
 // activeProviderDeps devolve sempre vazio, e nenhum projeto gerado muda
 // (NFR-21).
 var (
-	channelProviders   = map[string]providerDep{}
+	// channelProviders["rabbitmq"] (J3.1, REQ-43.1/43.2, §design
+	// infra-providers 3.3): a primeira entrada real deste registro — um
+	// canal `via: queue provider: "rabbitmq"` da topologia resolve aqui
+	// (activeProviderDeps, abaixo). ctor documenta o construtor exportado
+	// por amqpruntime (informativo — nenhum código deste gerador ainda
+	// CHAMA ctor programaticamente; a seleção/wiring real, que emite
+	// "amqpruntime.NewRabbitMQChannel(...)" em vez de
+	// "runtime.NewQueueChannel(...)", é a task J3.4).
+	channelProviders = map[string]providerDep{
+		"rabbitmq": {module: amqpDriverModule, version: amqpDriverVersion, minGo: "", adapterDir: "amqpruntime", ctor: "NewRabbitMQChannel"},
+	}
 	cacheProviders     = map[string]providerDep{}
 	rateLimitProviders = map[string]providerDep{}
 	fileProviders      = map[string]providerDep{}

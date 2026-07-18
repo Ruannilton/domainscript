@@ -46,6 +46,19 @@ const (
 	// documental.
 	postgresMinGoVersion = "1.25"
 
+	// amqpDriverModule/amqpDriverVersion identificam o driver real que este
+	// gerador sabe vendorar atrás do adapter amqpruntime (J3.1, REQ-43.1,
+	// §design infra-providers 3.3): o fork oficial mantido
+	// github.com/rabbitmq/amqp091-go (o antigo streadway/amqp está
+	// arquivado/sem manutenção). Fixo (não "latest"), mesma razão de
+	// sqliteDriverVersion/postgresDriverVersion (determinismo, NFR-13). Seu
+	// próprio go.mod exige só "go 1.20" — abaixo do default "1.22" deste
+	// gerador — então, ao contrário de sqlite/postgres, não precisa de uma
+	// constante "MinGoVersion" própria (fica "" no providerDep, ver
+	// provider_registry.go).
+	amqpDriverModule  = "github.com/rabbitmq/amqp091-go"
+	amqpDriverVersion = "v1.12.0"
+
 	// grpcModule/grpcVersion identificam o ÚNICO par módulo/versão que este
 	// gerador sabe vendorar atrás do pacote de borda grpcedge (H1, NFR-12,
 	// REQ-29.2): fixado (não "latest") pela mesma razão de
