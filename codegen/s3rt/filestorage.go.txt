@@ -1,0 +1,351 @@
+package s3runtime
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/url"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
+	"domainscript/generated/runtime"
+)
+
+// filestorage.go.txt implementa runtime.FileStorage sobre um bucket S3 real
+// (Marco J, task J5.1, REQ-45.1/45.2, §design infra-providers 3.5): o
+// contraparte real de runtime.NewMemoryFileStorage (rtsrc/filestorage.go.txt,
+// que só vive dentro do processo) — atrás da MESMA interface que
+// store/signed_url/delete file/load File(ref) (codegen/lower/builtins.go) já
+// consomem, sem nenhuma mudança de codegen do lado que gera essas chamadas
+// (NFR-12). A seleção de QUANDO usar este adapter em vez do in-memory é a
+// task J5.2 (decl_filestorage.go) — este arquivo só implementa o adapter.
+//
+// --- Key ÚNICA por Store, não determinística por conteúdo ---
+//
+// Store gera um UUID v4 novo (runtime.UUID(), a MESMA fonte que
+// memoryFileStorage usa) a cada chamada e usa isso como key do objeto —
+// mesmo raciocínio de memoryFileStorage.Store: cada Store é uma entidade
+// nova ("upload", §2.5), nunca deduplicação implícita por hash de conteúdo
+// (§design infra-providers 3.5 corrige explicitamente essa nuance: seria uma
+// semântica DIFERENTE do in-memory, quebrando NFR-22).
+//
+// --- Name/Metadata do File preservados via S3 object metadata ---
+//
+// S3 não tem um campo "nome de arquivo" nativo — só Content-Type,
+// Content-Length e um mapa de metadata do usuário (os headers
+// "x-amz-meta-*"). File.Name é guardado sob a chave reservada
+// s3NameMetadataKey dentro desse mesmo mapa (mergeMetadataWithName no
+// Store), e separado de volta no Load (splitMetadataName) — o SDK normaliza
+// toda chave de metadata para minúsculo na leitura, então a chave reservada
+// também é minúscula para nunca colidir por diferença de caixa com uma
+// chave de usuário só por normalização. Os VALORES (Name e cada entrada de
+// Metadata) passam por url.PathEscape antes de virar header (e
+// url.PathUnescape de volta no Load): "x-amz-meta-*" só aceita US-ASCII —
+// um Name/Metadata com acento/cedilha/emoji quebraria a requisição ou
+// corromperia o dado sem esse escape (achado da revisão da PR #30).
+//
+// --- Load lê do S3, nunca confia nos campos do FileRef recebido ---
+//
+// Ao contrário de memoryFileStorage (que guarda o File inteiro em memória),
+// aqui só os BYTES + a key vivem em S3: Load busca o objeto por ref.ID e
+// reconstrói Name/ContentType/Size/Metadata a partir da resposta de verdade
+// do GetObject (nunca dos campos do FileRef de entrada, que podem estar
+// desatualizados ou vir de um FileRef construído à mão) — S3 é a fonte da
+// verdade.
+//
+// --- Delete é idempotente de graça ---
+//
+// DeleteObject do S3 já não retorna erro para uma key inexistente — a MESMA
+// idempotência que a doc de runtime.FileStorage exige (§2.5) vem de graça do
+// próprio backend, sem nenhum código extra (ao contrário de
+// memoryFileStorage.Delete, que precisa ignorar "not found" explicitamente
+// porque delete(map, ...) não erra, mas um DeleteObject de verdade contra um
+// backend que PODE reportar erro precisaria dessa checagem se o S3 não já
+// fosse idempotente aqui).
+//
+// --- SignedURL nunca retorna error (mesmo contrato do seam) ---
+//
+// A interface runtime.FileStorage.SignedURL não devolve error (ver a doc de
+// rtsrc/filestorage.go.txt) — presign é uma assinatura LOCAL (HMAC sobre a
+// URL, sem round-trip de rede), então falha é rara (só um erro estrutural de
+// config); mesmo assim, uma falha aqui é logada (log/slog, mesma convenção
+// de fail-open que os demais adapters da Fase J — redisrt/amqprt) e
+// devolve "" em vez de propagar um pânico ou um valor inválido disfarçado de
+// válido.
+//
+// --- FileStream: desvio documentado, fora do recorte desta task (REQ-45.3) ---
+//
+// runtime.FileStream (rtsrc/filestorage.go.txt) — a variante chunk-a-chunk
+// para arquivos grandes — não ganha nenhum método/adapter aqui: nenhuma
+// operação de codegen/lower/builtins.go emite hoje sobre FileStream (G1a
+// cobre só store/signed_url/delete file/load File(ref), todas sobre File/
+// FileRef inteiros em memória) — não há corpo Go gerado que chamaria um
+// método de FileStream deste adapter, então implementá-lo seria código morto
+// sem cobertura possível. Ampliar para FileStream é trabalho futuro
+// condicionado a builtins.go passar a emitir essas ops primeiro (§design
+// infra-providers 3.5).
+
+// s3NameMetadataKey é a chave reservada de metadata do objeto onde File.Name
+// é guardado (ver a doc do arquivo) — minúscula, porque o SDK normaliza toda
+// chave de metadata do usuário para minúsculo na leitura (GetObjectOutput.
+// Metadata), então comparar/gravar em minúsculo evita qualquer
+// inconsistência de caixa.
+const s3NameMetadataKey = "ds-name"
+
+// s3PutObjectAPI/s3GetObjectAPI/s3DeleteObjectAPI/s3PresignAPI são os
+// subconjuntos de *s3.Client/*s3.PresignClient que s3FileStorage de fato
+// usa — *s3.Client é uma struct concreta (mesma razão de *redis.Client em
+// redisrt/*.go.txt e *amqp.Connection em amqprt/*.go.txt), então um teste
+// sem infra real (item c da task J5.1) precisa de um dublê que só essas
+// interfaces tornam possível.
+type s3PutObjectAPI interface {
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+}
+
+type s3GetObjectAPI interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
+type s3DeleteObjectAPI interface {
+	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+}
+
+type s3PresignAPI interface {
+	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4PresignedHTTPRequest, error)
+}
+
+// v4PresignedHTTPRequest espelha só o campo (URL) de
+// github.com/aws/aws-sdk-go-v2/aws/signer/v4.PresignedHTTPRequest que
+// SignedURL de fato lê — declarado aqui (em vez de importar o pacote
+// "v4" só por causa do tipo de retorno da interface acima) para manter
+// s3PresignAPI testável com um dublê simples, sem puxar mais uma dependência
+// transitiva só para nomear um tipo de retorno.
+type v4PresignedHTTPRequest = struct {
+	URL string
+}
+
+// s3FileStorage implementa runtime.FileStorage sobre S3 (task J5.1). Uma
+// instância por FileStorage declarada no mod.ds (mesmo padrão "1 instância
+// por recurso" que Cache/RateLimit já estabeleceram na Fase J — aqui não há
+// conexão persistente para abrir/fechar, *s3.Client é sem estado de conexão
+// (HTTP por chamada), então não há um "OpenClient" equivalente a
+// sqlruntime.OpenPostgres/redisruntime.OpenClient: NewS3FileStorage só monta
+// os clientes, nunca falha por conectividade na construção.
+type s3FileStorage struct {
+	client    s3PutObjectAPI
+	getter    s3GetObjectAPI
+	deleter   s3DeleteObjectAPI
+	presigner s3PresignAPI
+	bucket    string
+}
+
+var _ runtime.FileStorage = (*s3FileStorage)(nil)
+
+// NewS3FileStorage monta uma FileStorage sobre bucket, na região region —
+// credenciais pela cadeia padrão do AWS SDK (config.LoadDefaultConfig,
+// REQ-47.1: nunca hardcoded aqui). Chamado pelo wiring gerado (task J5.2)
+// para cada FileStorage cujo provider é "s3" (§design infra-providers 3.5).
+func NewS3FileStorage(ctx context.Context, bucket, region string) (runtime.FileStorage, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, err
+	}
+	client := s3.NewFromConfig(cfg)
+	presignClient := s3.NewPresignClient(client)
+	return newS3FileStorage(client, client, client, presignAdapter{presignClient}, bucket), nil
+}
+
+// presignAdapter adapta *s3.PresignClient (cujo PresignGetObject devolve
+// *v4.PresignedHTTPRequest, o tipo real do SDK) para s3PresignAPI (que só
+// enxerga o campo URL, via v4PresignedHTTPRequest acima) — o único ponto que
+// precisa saber do tipo real do SDK.
+type presignAdapter struct {
+	client *s3.PresignClient
+}
+
+func (p presignAdapter) PresignGetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.PresignOptions)) (*v4PresignedHTTPRequest, error) {
+	req, err := p.client.PresignGetObject(ctx, params, optFns...)
+	if err != nil {
+		return nil, err
+	}
+	return &v4PresignedHTTPRequest{URL: req.URL}, nil
+}
+
+// newS3FileStorage é o construtor testável (item c da task J5.1): recebe as
+// 4 interfaces já resolvidas, sem nenhuma dependência de configuração/rede —
+// NewS3FileStorage (o construtor público) é a única chamadora fora dos
+// testes.
+func newS3FileStorage(putter s3PutObjectAPI, getter s3GetObjectAPI, deleter s3DeleteObjectAPI, presigner s3PresignAPI, bucket string) *s3FileStorage {
+	return &s3FileStorage{client: putter, getter: getter, deleter: deleter, presigner: presigner, bucket: bucket}
+}
+
+// mergeMetadataWithName monta o mapa de metadata do objeto S3 (ver a doc do
+// arquivo) — f.Metadata primeiro, a chave reservada s3NameMetadataKey por
+// cima (sempre vence, mesmo que o chamador já tenha essa chave em
+// f.Metadata: File.Name é a fonte de verdade do nome). Cada VALOR passa por
+// url.PathEscape: "x-amz-meta-*" só aceita US-ASCII (ver a doc do arquivo) —
+// sem isso, um Name/valor com acento/cedilha/emoji quebraria a requisição ou
+// corromperia o dado (achado da revisão da PR #30).
+func mergeMetadataWithName(name string, metadata map[string]string) map[string]string {
+	merged := make(map[string]string, len(metadata)+1)
+	for k, v := range metadata {
+		merged[k] = url.PathEscape(v)
+	}
+	merged[s3NameMetadataKey] = url.PathEscape(name)
+	return merged
+}
+
+// splitMetadataName separa a chave reservada s3NameMetadataKey (ver a doc do
+// arquivo) do resto do metadata do usuário — o inverso de
+// mergeMetadataWithName (incl. o url.PathUnescape simétrico; um valor
+// malformado — não deveria acontecer com dados escritos por esta MESMA
+// versão do adapter — passa através sem decodificar em vez de falhar o
+// Load inteiro por causa de 1 entry de metadata), usado por Load. metadata
+// devolvido é nil quando não sobra nenhuma chave de usuário (mesmo "sem
+// metadata" que File{} zero-value já representa).
+func splitMetadataName(raw map[string]string) (name string, metadata map[string]string) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	metadata = make(map[string]string, len(raw))
+	for k, v := range raw {
+		decoded, err := url.PathUnescape(v)
+		if err != nil {
+			decoded = v
+		}
+		if k == s3NameMetadataKey {
+			name = decoded
+			continue
+		}
+		metadata[k] = decoded
+	}
+	if len(metadata) == 0 {
+		metadata = nil
+	}
+	return name, metadata
+}
+
+// Store implementa runtime.FileStorage: PutObject com key ÚNICA (UUID v4,
+// ver a doc do arquivo), Content-Type + metadata (incl. Name, via
+// mergeMetadataWithName) preservados como object metadata. ContentLength é
+// explícito (len(f.Buffer) — evita o SDK precisar inferir via Seek);
+// ContentType vazio vira nil (deixa o S3/SDK aplicar seu próprio default em
+// vez de um header Content-Type vazio); o FileRef.Size devolvido cai para
+// len(f.Buffer) quando f.Size não foi declarado (0), para bater com o Size
+// que Load devolve depois (sempre de out.ContentLength, o tamanho real do
+// objeto — achados da revisão da PR #30).
+func (s *s3FileStorage) Store(ctx context.Context, f runtime.File) (runtime.FileRef, error) {
+	id := runtime.UUID()
+
+	var contentType *string
+	if f.ContentType != "" {
+		contentType = aws.String(f.ContentType)
+	}
+	size := f.Size
+	if size == 0 {
+		size = int64(len(f.Buffer))
+	}
+
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(id),
+		Body:          bytes.NewReader(f.Buffer),
+		ContentLength: aws.Int64(int64(len(f.Buffer))),
+		ContentType:   contentType,
+		Metadata:      mergeMetadataWithName(f.Name, f.Metadata),
+	})
+	if err != nil {
+		return runtime.FileRef{}, err
+	}
+	return runtime.FileRef{
+		ID:          id,
+		Name:        f.Name,
+		ContentType: f.ContentType,
+		Size:        size,
+		Metadata:    f.Metadata,
+		StoredAt:    runtime.Now(ctx),
+	}, nil
+}
+
+// Load implementa runtime.FileStorage: GetObject por ref.ID — Name/
+// ContentType/Size/Metadata reconstruídos da resposta de verdade do S3
+// (nunca dos campos de ref, ver a doc do arquivo). ref.ID vazio (um FileRef
+// zero-value, nunca produzido por Store) devolve runtime.ErrNotFound
+// diretamente, sem round-trip nenhum (achado da revisão da PR #30) — mesmo
+// resultado de um ID desconhecido (nunca armazenado, ou já removido via
+// Delete), mesmo contrato de memoryFileStorage.Load.
+func (s *s3FileStorage) Load(ctx context.Context, ref runtime.FileRef) (runtime.File, error) {
+	if ref.ID == "" {
+		return runtime.File{}, runtime.ErrNotFound
+	}
+
+	out, err := s.getter.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(ref.ID),
+	})
+	if err != nil {
+		var nsk *types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return runtime.File{}, runtime.ErrNotFound
+		}
+		return runtime.File{}, err
+	}
+	defer out.Body.Close()
+
+	buf, err := io.ReadAll(out.Body)
+	if err != nil {
+		return runtime.File{}, err
+	}
+
+	name, metadata := splitMetadataName(out.Metadata)
+	return runtime.File{
+		Name:        name,
+		ContentType: aws.ToString(out.ContentType),
+		Size:        aws.ToInt64(out.ContentLength),
+		Metadata:    metadata,
+		Buffer:      buf,
+	}, nil
+}
+
+// SignedURL implementa runtime.FileStorage: presigned GET real (REQ-45.2),
+// válida por expires. Deliberadamente sem error (ver a doc do arquivo) —
+// numa falha (rara, estrutural), loga e devolve "". ref.ID vazio devolve ""
+// direto, sem chamar o presigner por uma key que nunca poderia ter sido
+// armazenada (achado da revisão da PR #30).
+func (s *s3FileStorage) SignedURL(ctx context.Context, ref runtime.FileRef, expires time.Duration) string {
+	if ref.ID == "" {
+		return ""
+	}
+
+	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(ref.ID),
+	}, s3.WithPresignExpires(expires))
+	if err != nil {
+		slog.Warn("s3runtime: FileStorage.SignedURL: falha ao gerar URL assinada", "bucket", s.bucket, "key", ref.ID, "error", err)
+		return ""
+	}
+	return req.URL
+}
+
+// Delete implementa runtime.FileStorage: DeleteObject — idempotente de graça
+// (S3 não erra numa key inexistente, ver a doc do arquivo). ref.ID vazio
+// devolve nil direto, sem uma chamada de rede por uma key que nunca poderia
+// ter sido armazenada (achado da revisão da PR #30) — mesma idempotência.
+func (s *s3FileStorage) Delete(ctx context.Context, ref runtime.FileRef) error {
+	if ref.ID == "" {
+		return nil
+	}
+
+	_, err := s.deleter.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(ref.ID),
+	})
+	return err
+}

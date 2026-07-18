@@ -76,6 +76,30 @@ const (
 	// ainda precisa da versão certa).
 	redisMinGoVersion = "1.24"
 
+	// awsS3Module/awsS3Version e awsConfigModule/awsConfigVersion identificam
+	// os DOIS módulos reais que este gerador sabe vendorar atrás do adapter
+	// s3runtime (J5.1, REQ-45.1/45.2, §design infra-providers 3.5): o SDK
+	// oficial da AWS, v2. Ao contrário de sqlite/postgres/rabbitmq/redis (um
+	// único módulo cada), S3 precisa de DOIS módulos Go distintos importados
+	// diretamente pelo adapter (aws-sdk-go-v2/service/s3, o cliente; aws-sdk-
+	// go-v2/config, para resolver credenciais/região pela cadeia padrão da
+	// AWS) — EmitGoMod acrescenta a segunda linha "require" explicitamente
+	// quando fileProviders["s3"] está ativo (ver o bloco logo abaixo do loop
+	// de providerDeps), mesma técnica que otelModule/otelSDKModule/
+	// otelTraceModule/otelExporterModule já usam para "1 feature, N módulos".
+	// Fixos (não "latest"), mesma razão de sqliteDriverVersion/.../
+	// redisDriverVersion (determinismo, NFR-13); confirmados resolvíveis e
+	// compatíveis entre si (`go build`/`go vet` reais sobre um projeto de
+	// prova isolado).
+	awsS3Module      = "github.com/aws/aws-sdk-go-v2/service/s3"
+	awsS3Version     = "v1.105.2"
+	awsConfigModule  = "github.com/aws/aws-sdk-go-v2/config"
+	awsConfigVersion = "v1.32.30"
+	// s3MinGoVersion é a versão mínima de Go que awsS3Version/
+	// awsConfigVersion exigem (seus próprios go.mod declaram "go 1.24",
+	// confirmado no probe da task J5.1) — coincide com redisMinGoVersion.
+	s3MinGoVersion = "1.24"
+
 	// grpcModule/grpcVersion identificam o ÚNICO par módulo/versão que este
 	// gerador sabe vendorar atrás do pacote de borda grpcedge (H1, NFR-12,
 	// REQ-29.2): fixado (não "latest") pela mesma razão de
@@ -247,6 +271,15 @@ func EmitGoMod(opts Options, outDir string, sqlProviderKeys []string, grpcAdapte
 		}
 		seenModules[dep.module] = true
 		requires = append(requires, fmt.Sprintf("%s %s", dep.module, dep.version))
+		// awsConfigModule (J5.1, ver a doc de awsS3Module acima): o SEGUNDO
+		// módulo que o adapter s3runtime importa diretamente, não coberto
+		// pelo laço genérico acima (que só conhece 1 módulo por providerDep)
+		// — mesma técnica de "1 feature, N linhas de require" que o bloco
+		// otelAdapter já usa.
+		if dep.module == awsS3Module && !seenModules[awsConfigModule] {
+			seenModules[awsConfigModule] = true
+			requires = append(requires, fmt.Sprintf("%s %s", awsConfigModule, awsConfigVersion))
+		}
 	}
 
 	if len(requires) == 0 {

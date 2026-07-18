@@ -12,15 +12,16 @@ import (
 // activeProviderDeps devolve vazio diante de um Program que declara canal/
 // Cache/RateLimit/FileStorage com um "provider"/"backend" NÃO reconhecido em
 // nenhum dos quatro registros (channelProviders/cacheProviders/
-// rateLimitProviders/fileProviders) — fileProviders continua vazio até J5
-// popular alguma entrada, então "s3" serve de exemplo de provider
-// desconhecido para essa categoria; o canal usa "kafka" (nunca implementado
-// por este ciclo, ao contrário de "rabbitmq", real desde J3.1 —
-// channelProviders não está mais vazio, só "kafka" continua sendo um
+// rateLimitProviders/fileProviders) — o canal usa "kafka" (nunca
+// implementado por este ciclo, ao contrário de "rabbitmq", real desde J3.1
+// — channelProviders não está mais vazio, só "kafka" continua sendo um
 // provider não reconhecido); Cache/RateLimit usam "memcached" pela mesma
 // razão (cacheProviders/rateLimitProviders não estão mais vazios desde
 // J4.1/J4.2 — cacheProviders["redis"]/rateLimitProviders["redis"] são reais
-// — "memcached" continua sendo um backend não reconhecido pras duas).
+// — "memcached" continua sendo um backend não reconhecido pras duas);
+// FileStorage usa "gcs" (fileProviders não está mais vazio desde J5.1 —
+// fileProviders["s3"] é real — "gcs"/"azure" continuam fora de escopo deste
+// ciclo, §design infra-providers §5, então seguem não reconhecidos).
 // Quando duas categorias apontam para o MESMO provider (mesmo module E
 // mesmo adapterDir), a dedup (R5) colapsa as duas em uma única entrada.
 
@@ -41,7 +42,7 @@ func TestActiveProviderDepsUnrecognizedProvidersAreNoOp(t *testing.T) {
 					"Uploads": {
 						Name: "Uploads",
 						Decl: ast.NewConfigBlock("FileStorage", "Uploads", []ast.ConfigEntry{
-							{Key: "provider", Value: &ast.Literal{Kind: token.STRING, Value: "s3"}},
+							{Key: "provider", Value: &ast.Literal{Kind: token.STRING, Value: "gcs"}},
 						}, ast.Span{}),
 					},
 				},

@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J5.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J5.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1145,12 +1145,74 @@ determinismo, smoke, comportamental) continua verde SEM NENHUMA alteração
 1 byte); `TestGenerate*` (`driver`, wallet/shop e2e) idem; `go test ./...`
 (suíte inteira) verde.
 
-Próxima: **J5.1** — `s3FileStorage`: `codegen/s3rt/filestorage.go.txt`
-implementa `runtime.FileStorage` sobre S3 (`Store`→PutObject key UUID +
-metadata, `Load`→GetObject, `SignedURL`→presign GET real,
-`Delete`→DeleteObject), entrada `fileProviders["s3"]` (aws-sdk-go-v2
-config/s3/presign). Abre a Fase J5 (REQ-45), o último provider do
-5-provider slice de Marco J.
+Concluído: **J5.1** — `s3FileStorage`, abrindo a Fase J5 (REQ-45). Novo
+pacote `codegen/s3rt` (mesmo padrão `.go.txt` embutido de
+sqlrt/amqprt/redisrt): `s3rt/filestorage.go.txt` implementa
+`runtime.FileStorage` sobre `github.com/aws/aws-sdk-go-v2` — `Store`:
+`PutObject` com key ÚNICA (`runtime.UUID()`, nunca hash de conteúdo —
+§design infra-providers 3.5 corrige explicitamente essa nuance vs. uma
+leitura anterior de "determinística"), `Name`/`Metadata` preservados como
+object metadata do S3 sob uma chave reservada (`ds-name`,
+`mergeMetadataWithName`/`splitMetadataName`); `Load`: `GetObject`,
+reconstruindo `Name`/`ContentType`/`Size`/`Metadata` da resposta de
+VERDADE do S3 (nunca dos campos do `FileRef` de entrada — S3 é a fonte da
+verdade, diferente de `memoryFileStorage`, que guarda o `File` inteiro),
+`types.NoSuchKey` mapeado para `runtime.ErrNotFound`; `SignedURL`:
+presigned GET real (`s3.PresignClient`, REQ-45.2) — sem `error` (contrato
+do seam), uma falha de presign é logada (`log/slog`) e devolve `""`;
+`Delete`: `DeleteObject`, idempotente de graça (S3 não erra numa key
+ausente). `NewS3FileStorage(ctx, bucket, region)` resolve credenciais pela
+cadeia padrão do AWS SDK (`config.LoadDefaultConfig`, REQ-47.1 — nunca
+hardcoded). `s3PutObjectAPI`/`s3GetObjectAPI`/`s3DeleteObjectAPI`/
+`s3PresignAPI` isolam a superfície de chamadas usada (mesmo padrão
+`redisCmdable`/`redisScripter` de J4.1/J4.2, já que `*s3.Client` é uma
+struct concreta) — `newS3FileStorage` (construtor não-exportado) é o ponto
+de injeção de dublês nos testes.
+
+**(b) FileStream — desvio documentado (REQ-45.3):** nenhum método/adapter
+para `runtime.FileStream` — `codegen/lower/builtins.go` não emite hoje
+nenhuma operação sobre ele (G1a cobre só `File`/`FileRef` inteiros em
+memória), então não haveria corpo Go gerado capaz de exercitá-lo; registrado
+como trabalho futuro condicionado a `builtins.go` emitir essas ops primeiro.
+
+**(c)** `codegen/s3_filestorage_test.go` (novo, `package codegen` — mesmo
+padrão de `redis_cache_test.go`/J4.1.c): um `package s3runtime` white-box
+embutido como string, compilado e RODADO de verdade (`gentest.WriteFiles`/
+`RunTests`) dentro de um módulo Go efêmero (`rtsrc.Sources()` +
+`s3rt.Sources()`) — `fakeS3` (mapa + mutex, sem rede) prova round-trip
+Store→Load (metadata/Name preservados, chave reservada nunca vaza de
+volta), key ÚNICA em 2 `Store` com bytes idênticos, `NoSuchKey` →
+`ErrNotFound`, `Delete` idempotente, e o par de `SignedURL` (caminho feliz
++ falha do presigner devolvendo `""`, nunca propagando erro).
+
+Registro: `codegen/project.go` ganhou `awsS3Module`/`awsS3Version` +
+`awsConfigModule`/`awsConfigVersion` (S3 é o PRIMEIRO provider desta Fase J
+que precisa de DOIS módulos Go diretamente importados pelo adapter, não só
+um — `EmitGoMod` acrescenta a segunda linha `require` explicitamente quando
+`fileProviders["s3"]` está ativo, mesma técnica que o bloco `otelAdapter`
+já usa para seus 4 módulos) e `s3MinGoVersion = "1.24"`.
+`codegen/provider_registry.go` ganhou `fileProviders["s3"]` e
+`providerSources["s3runtime"]` — `activeProviderDeps`/
+`generateProviderRuntimeFiles` já eram genéricos o bastante desde J0 para
+não precisar de nenhuma mudança. `provider_registry_test.go` trocou seu
+exemplo de provider de `FileStorage` NÃO reconhecido de `"s3"` (agora real)
+para `"gcs"` (continua fora de escopo, §design infra-providers §5).
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...`/`go vet -tags=integration ./...` limpos; `go
+test ./codegen/... ./driver/...` verde (inclui `TestActiveProviderDeps*`
+ajustado); nenhum programa sem `FileStorage { provider: "s3" }` muda 1
+byte (NFR-21 — nenhuma fixture existente declara S3).
+
+Próxima: **J5.2** — **(R2)** Seleção + wiring: `decl_filestorage.go` ganha
+`fileStorageProvider(fs)` (lê `provider` de `fs.Decl.Entries`, R2);
+`codegen.go` (o loop `for _, name := range wt.fileStorages`, hoje
+incondicional em `NewMemoryFileStorage()`) troca para
+`NewS3FileStorage(ctx, bucket, region)` quando `"s3"` — bucket/região de
+`env(...)`, credenciais pela cadeia AWS padrão (já resolvida dentro do
+construtor de J5.1). Golden + smoke; sem s3 ⇒ byte-idêntico. Integração
+`//go:build integration` guardada por `S3_BUCKET` (put+get+presign+delete
+== in-memory, NFR-22/24). Fecha a Fase J5 (REQ-45 completo).
 
 ## Issues em aberto
 
