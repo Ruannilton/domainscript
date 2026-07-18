@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J2.5 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -495,13 +495,97 @@ cross-service é perdido). Sem regressão:
 `-tags=integration`) e `TestGenerate*` (`driver`) seguem verdes.
 `go build ./...`/`gofmt -l .`/`go vet ./...` limpos.
 
-Próxima: **J2.5** — cleanup + seleção/wiring: `StartOutboxCleanup(ctx)`
-(análogo a `StartIdempotencyCleanup`, purga entregues via `PurgeDelivered`,
-J2.2) + `codegen.go` decide `NewDurableOutbox(...)` vs. `NewOutbox(
-dispatcher)` por módulo (Database real ou não) e para de passar o canal
-direto ao publisher da `uow` quando o outbox durável está ativo (a
-reclassificação do item (b) de J2.4, acima) — fecha a Fase J2 (REQ-42
-completo).
+Concluído: **J2.5** — cleanup + seleção/wiring, fecha a Fase J2 (REQ-42
+completo). `runtime.OutboxStore` (`rtsrc/outbox.go.txt`) ganha um QUINTO
+método, `PurgeDelivered(ctx, cutoff) (int, error)` (apaga linhas entregues
+mais velhas que `cutoff`, sem transação própria — nada mais escreve na
+`outbox` durante a chamada), implementado em `sqlrt/outbox.go.txt:
+outboxStore.PurgeDelivered` sobre `Dialect.PurgeDelivered` (já existia desde
+J2.2, nunca consumido até agora). `DurableOutbox` ganha `Cleanup(ctx,
+retention) (int, error)` (delega a `store.PurgeDelivered`, mesmo espírito de
+`StartIdempotencyCleanup`/`Cleanup` do idempotency store).
+
+Seleção (REQ-42.5): `codegen/sql_wiring.go:moduleOutboxDatabaseName(prog,
+module)` devolve o Database real (primeiro em ordem alfabética,
+`recognizedSQLProvider`) do módulo, ou `""` — nenhum caso comum muda
+(wallet/shop/shipping incluídos: `shipping` tem Policy AtLeastOnce mas NENHUM
+Database próprio, então nunca dispara este caminho — achado desta task que
+zera o risco de regressão em cima do shop real que a task anterior tinha
+levantado por engano). `codegen/decl_policy.go:emitPolicyWireFunc` ganha o
+parâmetro `outboxDBName`: quando `""` (o caso comum), Go idêntico a antes
+desta task — `o := runtime.NewOutbox(d)` continua var LOCAL de `Wire`
+(NFR-21/23). Quando não-vazio E ao menos uma Policy AtLeastOnce local ("d",
+nunca uma cross-service via canal "queue" — fora do orçamento desta task,
+ver ISSUE-9) disputa o outbox: `o` vira var de PACOTE, tipo concreto
+`*runtime.DurableOutbox` (não a interface `Outbox` — só o tipo concreto
+expõe `Start`/`Cleanup`, que `StartOutboxRelay`/`StartOutboxCleanup`, novos,
+chamam); um novo par `var outboxStore runtime.OutboxStore` +
+`func WireOutboxStore(store runtime.OutboxStore)` (populado por
+`cmd/<service>/main.go` ANTES de `Wire`) alimenta
+`runtime.NewDurableOutbox(outboxStore, registry)` dentro de `Wire` — o
+`registry` é montado INLINE a partir só dos eventos que as Policies
+AtLeastOnce locais deste módulo consomem (nunca `EventRegistry()`, que só
+cobre Event/PublicEvent DECLARADOS pelo módulo — uma Policy cross-módulo
+como `NotifyShipping`, reagindo a um PublicEvent de Orders, não teria a
+entrada ali).
+
+Wiring em `main.go` (REQ-42.5): `codegen.go` ganha `moduleMarks.
+outboxDatabase` (calculado com `moduleNeedsDurableOutbox`, que reusa
+`resolvePolicyWireInfos` para bater EXATAMENTE a mesma decisão de
+`emitPolicyWireFunc` — uma divergência quebraria a compilação num lado ou no
+outro) e `modulesOutboxDatabase map[string]string` repassado a
+`generateCmdMainFile`. Um `wireTarget` com `outboxDatabase != ""` ganha, em
+`func main()`: `sqlruntime.Open<Provider>(...)` (mesma resolução de
+connection string de `emitXADatabaseWiring`, `databaseConnectionGo`, J1.3) +
+`sqlruntime.NewOutboxStore(db, dialect)` + `<pkg>.WireOutboxStore(...)`
+SEMPRE antes de `<pkg>.Wire(...)` (`Wire` lê `outboxStore` ao construir o
+`DurableOutbox`) + `go <pkg>.StartOutboxRelay(workerCtx)`/`go <pkg>.
+StartOutboxCleanup(workerCtx)`, nomes próprios ao lado de
+`StartWorkers`/`StartIdempotencyCleanup` (`emitOutboxDatabaseWiring`, novo,
+`sql_wiring.go`).
+
+**Desvio de escopo, registrado como ISSUE-9:** o item reclassificado de
+J2.4.b ("o publisher da uow deixa de receber o canal direto quando o outbox
+durável está ativo" — o lado PRODUTOR, `NewUnitOfWork(store, canal)` em
+`generateCmdMainFile`) NÃO foi fechado nesta task — só o lado CONSUMIDOR
+(Policy). Fechar o lado produtor exige que UseCase/Handle gerados chamem
+`tx.EnqueueOutbox` (nenhum emissor chama isso hoje — só os testes manuais de
+J2.1-J2.5 o exercitam), peça que `design.md` já reconhece como fechando de
+verdade só na fixture-âncora (J6, quando o transporte real de J3 estiver
+presente). shop/Orders EXERCITARIA esse caminho (Database postgres real +
+UseCase produzindo para o canal Orders→Shipping) mas seu `main.go` continua
+byte-idêntico a antes desta task (confirmado por `driver.TestGenerate*`
+sem nenhuma regeneração de golden) — não é uma regressão, é escopo ainda não
+fechado.
+
+Testes novos: `codegen/decl_policy_outbox_test.go` (fixture sintética nova,
+2 módulos sem topology.ds — Orders com UseCase+Database postgres decorativo,
+Shipping com Policy AtLeastOnce + Database próprio, provider variável)
+— `TestPolicyOutboxDurableWhenModuleHasRealDatabase` (provider `"sqlite"`
+reconhecido: policies.go tem `NewDurableOutbox`/`WireOutboxStore`/
+`StartOutboxRelay`/`StartOutboxCleanup`; `cmd/app/main.go` abre a conexão,
+chama `WireOutboxStore` ANTES de `Wire` — checado por índice de string — e
+sobe as duas goroutines; `gentest.SmokeCompile` builda de verdade) e
+`TestPolicyOutboxMemoryWhenNoRealDatabase` (provider `"pg"`, decorativo/não
+reconhecido: nenhum dos símbolos novos aparece em lugar nenhum, `o :=
+runtime.NewOutbox(d)` local intacto — prova NFR-21/23 nesta combinação nova).
+`codegen/sql_outbox_cleanup_test.go` (via `gentest.WriteFiles`/`RunTests`
+sobre sqlite real): `TestDurableOutboxCleanupPurgesOnlyOldDelivered` — três
+linhas (entregue há 10 dias, entregue agora, nunca entregue) — `Cleanup(ctx,
+7*24h)` apaga só a 1ª; uma 2ª chamada imediata não apaga nada a mais.
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go test
+./...` (suíte inteira) verde, incluindo `TestSQL*`/`TestPostgres*`/
+`TestWallet*`/`TestLedger*`/`TestActiveSQLProviders*`/`TestEmitGoMod*`/
+`TestPolicy*`/`TestOutbox*`/`TestGentest*` (`codegen`), a integração Postgres
+sob `-tags=integration` (compila e pula sem `PG_URL`) e `TestGenerate*`
+(`driver`, wallet/shop e2e — nenhum byte mudou, confirmando NFR-21/23 para
+os dois exemplos reais).
+
+Próxima: **J3.1** — RabbitMQ como transporte de canal cross-process
+(`codegen/amqprt/`, novo, espelha `sqlrt/`): adapter `rabbitmqChannel`
+implementando `ChannelTransport` + envelope + registro de contracts. Abre a
+Fase J3 (REQ-43).
 
 ## Issues em aberto
 

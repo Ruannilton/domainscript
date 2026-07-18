@@ -144,13 +144,20 @@
     provada nesta task no nível do relay (independe de qual publisher o
     uow também tenha): `TestDurableOutboxRetriesOnPublishFailure` simula a
     falha de `Publish` e confirma a re-entrega no próximo `Tick`.
-- [ ] **J2.5** Cleanup + seleção/wiring.
+- [x] **J2.5** Cleanup + seleção/wiring.
   - a. `StartOutboxCleanup(ctx)` (análogo a `StartIdempotencyCleanup`) purga
     entregues além da janela de retenção via `PurgeDelivered`. (REQ-42.7).
   - b. `NewDurableOutbox(db, dialect, dispatcher, publisher)` quando o módulo
     tem Database real, senão `NewOutbox(dispatcher)` de hoje; `Start(ctx)` do
     relay e do cleanup no `main.go`. (REQ-42.5).
   - c. Golden + smoke; sem Database real ⇒ wiring byte-idêntico (NFR-21/23).
+  - **Nota de escopo (ver ISSUE-9):** fechado o lado CONSUMIDOR (uma Policy
+    AtLeastOnce local com Database real). O lado PRODUTOR (parar de publicar
+    direto no commit de `NewUnitOfWork` quando um módulo produz para um canal
+    "queue" cross-service — o item reclassificado de J2.4.b) não foi tocado:
+    exige primeiro que UseCase/Handle chamem `tx.EnqueueOutbox`, peça que
+    `design.md` já reconhece como fechando de verdade só na fixture-âncora
+    (J6, quando o transporte real de J3 estiver presente).
 
 ### Fase J3 — RabbitMQ como transporte de canal cross-process (REQ-43)
 

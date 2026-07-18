@@ -113,6 +113,34 @@ func programNeedsSQLAdapter(prog *program.Program) bool {
 	return len(activeSQLProviders(prog)) > 0
 }
 
+// moduleOutboxDatabaseName devolve o nome do primeiro Database (ordem
+// alfabética, NFR-13) do módulo moduleName cujo provider é reconhecido como
+// SQL real (recognizedSQLProvider) — "" quando o módulo não declara nenhum
+// (o caso comum: REQ-42.5 mantém o memoryOutbox stopgap para ele).
+// emitPolicyWireFunc (decl_policy.go, task J2.5) usa isto para decidir se
+// promove o Outbox local ("d") de uma Policy AtLeastOnce para um
+// DurableOutbox real — um módulo que declare mais de um Database real (não
+// exercitado por wallet/shop hoje) usa o primeiro em ordem alfabética,
+// determinístico; a ambiguidade de "qual banco guarda o outbox" quando há
+// mais de um fica para quando um exemplo real precisar escolher.
+func moduleOutboxDatabaseName(prog *program.Program, moduleName string) string {
+	mod := prog.Modules[moduleName]
+	if mod == nil {
+		return ""
+	}
+	var names []string
+	for name, db := range mod.Databases {
+		if _, ok := recognizedSQLProvider(db.Provider); ok {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return names[0]
+}
+
 // generateSQLRuntimeFiles copia sqlrt.Sources() (verbatim, mesmo padrão de
 // generateRuntimeFiles) para sqlruntime/*.go — só chamado quando
 // programNeedsSQLAdapter devolve true.
@@ -207,6 +235,51 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 		e.Line("%s: %s,", strconv.Quote(dbName), storeVars[dbName])
 	}
 	e.Line("}))")
+	return nil
+}
+
+// emitOutboxDatabaseWiring emite, em cmd/<service>/main.go, a conexão real
+// que sustenta o outbox durável do módulo moduleName (task J2.5, REQ-42.5):
+// abre dbName (mesma resolução de connection string que emitXADatabaseWiring
+// já usa, databaseConnectionGo), monta um sqlruntime.OutboxStore sobre ela e
+// chama "<pkgAlias>.WireOutboxStore(...)" — SEMPRE antes de
+// "<pkgAlias>.Wire(...)" (o chamador, generateCmdMainFile, garante essa
+// ordem): Wire lê outboxStore ao construir o DurableOutbox na 1ª Policy
+// AtLeastOnce local do módulo (ver a doc de emitPolicyWireFunc,
+// decl_policy.go). Independente de qualquer conexão que
+// emitXADatabaseWiring abra para 2PC no MESMO módulo — um módulo que combine
+// os dois (não exercitado por wallet/shop hoje) abriria duas conexões
+// separadas para o mesmo Database; aceitável, generalizar fica para quando
+// um exemplo real precisar.
+func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias, dbName string) error {
+	mod := prog.Modules[moduleName]
+	if mod == nil {
+		return fmt.Errorf("módulo %s não encontrado no Program (bug de geração)", moduleName)
+	}
+	db := mod.Databases[dbName]
+	if db == nil {
+		return fmt.Errorf("Database %s não encontrado no módulo %s (bug de geração)", dbName, moduleName)
+	}
+	provider, ok := recognizedSQLProvider(db.Provider)
+	if !ok {
+		return fmt.Errorf("Database %s: provider %q não reconhecido (bug de geração — front-end já deveria ter barrado)", dbName, db.Provider)
+	}
+
+	logAlias := e.Import("log")
+	sqlRuntimeAlias := e.Import(path.Join(domainModuleRoot, "sqlruntime"))
+
+	varPrefix := strings.ToLower(moduleName[:1]) + moduleName[1:]
+	dbVar := varPrefix + "OutboxDB"
+	storeVar := varPrefix + "OutboxStore"
+
+	connGo, err := databaseConnectionGo(e, db)
+	if err != nil {
+		return fmt.Errorf("Database %s: %w", dbName, err)
+	}
+	e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, connGo)
+	e.Line("if err != nil { %s.Fatal(err) }", logAlias)
+	e.Line("%s := %s.NewOutboxStore(%s, %s.%s())", storeVar, sqlRuntimeAlias, dbVar, sqlRuntimeAlias, provider.dialectCtor)
+	e.Line("%s.WireOutboxStore(%s)", pkgAlias, storeVar)
 	return nil
 }
 
