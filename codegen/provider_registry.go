@@ -6,6 +6,7 @@ import (
 
 	"domainscript/codegen/amqprt"
 	"domainscript/codegen/redisrt"
+	"domainscript/codegen/s3rt"
 	"domainscript/program"
 )
 
@@ -42,6 +43,9 @@ var providerSources = map[string]func() (map[string][]byte, error){
 	// "redisruntime" (J4.1, REQ-44.1): cacheProviders["redis"], abaixo,
 	// aponta adapterDir aqui.
 	"redisruntime": redisrt.Sources,
+	// "s3runtime" (J5.1, REQ-45.1): fileProviders["s3"], abaixo, aponta
+	// adapterDir aqui.
+	"s3runtime": s3rt.Sources,
 }
 
 // channelProviders/cacheProviders/rateLimitProviders/fileProviders são os
@@ -88,7 +92,19 @@ var (
 	rateLimitProviders = map[string]providerDep{
 		"redis": {module: redisDriverModule, version: redisDriverVersion, minGo: redisMinGoVersion, adapterDir: "redisruntime", ctor: "NewRedisLimiter"},
 	}
-	fileProviders = map[string]providerDep{}
+	// fileProviders["s3"] (J5.1, REQ-45.1, §design infra-providers 3.5): a
+	// primeira entrada real deste registro — uma FileStorage do módulo com
+	// `provider: "s3"` resolve aqui (activeProviderDeps, abaixo). module
+	// aponta ao módulo do CLIENTE s3 (awsS3Module) — EmitGoMod acrescenta o
+	// segundo módulo (awsConfigModule) automaticamente quando esta dep está
+	// ativa (ver project.go). ctor documenta o construtor exportado por
+	// s3runtime (informativo — nenhum código deste gerador ainda CHAMA ctor
+	// programaticamente; a seleção/wiring real, que emite
+	// "s3runtime.NewS3FileStorage(...)" em vez de
+	// "runtime.NewMemoryFileStorage()", é a task J5.2).
+	fileProviders = map[string]providerDep{
+		"s3": {module: awsS3Module, version: awsS3Version, minGo: s3MinGoVersion, adapterDir: "s3runtime", ctor: "NewS3FileStorage"},
+	}
 )
 
 // activeProviderDeps varre prog por categoria (canal, Cache, RateLimit,

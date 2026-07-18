@@ -257,7 +257,7 @@
 
 ### Fase J5 — S3 como FileStorage provider real (REQ-45)
 
-- [ ] **J5.1** `s3FileStorage`.
+- [x] **J5.1** `s3FileStorage`.
   - a. `codegen/s3rt/filestorage.go.txt`: implementa `FileStorage`
     (`Store`→PutObject key UUID + metadata, `Load`→GetObject,
     `SignedURL`→presign GET real, `Delete`→DeleteObject). Entrada
