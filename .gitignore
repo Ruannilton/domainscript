@@ -12,6 +12,10 @@ coverage.*
 # Configuração local do Claude Code (pessoal, não versionada)
 .claude/settings.local.json
 
+# Worktrees isolados de subagentes em background (Claude Code) — efêmeros,
+# limpos automaticamente quando o agente termina, nunca conteúdo do repo.
+.claude/worktrees/
+
 # Caches de IDE / editor
 .idea/
 .vscode/
