@@ -96,6 +96,14 @@ type OutboxStore interface {
 	// been processed — a crash mid-batch rolls back the WHOLE batch (every
 	// row stays exactly as it was before this call), never a partial mark.
 	ProcessBatch(ctx context.Context, batch int, deliver func(row OutboxRow) error) (processed int, err error)
+
+	// PurgeDelivered deletes every row whose delivered_at is non-NULL and
+	// older than cutoff (task J2.5, REQ-42.7, §design infra-providers "boas
+	// práticas de limpeza/retenção") — without this, the outbox table grows
+	// without bound (every delivered row stays forever otherwise). Returns
+	// the number of rows deleted. See Dialect.PurgeDelivered (codegen/sqlrt)
+	// for the per-database SQL text.
+	PurgeDelivered(ctx context.Context, cutoff time.Time) (purged int, err error)
 }
 
 // defaultOutboxPollInterval/defaultOutboxBatchSize are DurableOutbox's
@@ -155,6 +163,21 @@ const (
 // is task J2.5's job (codegen.go/cmd/<service>/main.go), not this type's:
 // DurableOutbox itself just does whichever ONE thing it was constructed to
 // do.
+//
+// --- Seleção/wiring gerado (task J2.5, REQ-42.5/42.7) ---
+//
+// codegen/decl_policy.go constructs a DurableOutbox, instead of the
+// memoryOutbox stopgap above, only for a module whose Policy AtLeastOnce
+// subscribes on "d" (the local Dispatcher path, not a cross-service "queue"
+// channel — that case is unchanged, out of this task's scope) AND that owns
+// a real Database (recognizedSQLProvider, codegen/sql_wiring.go) — a module
+// without one keeps the memoryOutbox stopgap, so its generated wiring stays
+// byte-identical (NFR-21/23). The generated cmd/<service>/main.go opens that
+// Database's connection, builds a sqlruntime.OutboxStore over it, and calls
+// two generated entry points on the module package: StartOutboxRelay(ctx)
+// (this type's Start, above) and StartOutboxCleanup(ctx) (this type's
+// Cleanup, below, on a periodic ticker — mirrors StartIdempotencyCleanup,
+// usecase_idempotency.go).
 type DurableOutbox struct {
 	store     OutboxStore
 	registry  map[string]EventFactory
@@ -235,6 +258,18 @@ func (o *DurableOutbox) Tick(ctx context.Context) (delivered int, err error) {
 	return o.store.ProcessBatch(ctx, defaultOutboxBatchSize, func(row OutboxRow) error {
 		return o.deliver(ctx, row)
 	})
+}
+
+// Cleanup deletes every delivered row older than retention (task J2.5,
+// REQ-42.7) — delegates to OutboxStore.PurgeDelivered, which does the actual
+// per-database DELETE (Dialect.PurgeDelivered, codegen/sqlrt). Called
+// periodically by the generated StartOutboxCleanup(ctx), never inline in the
+// relay loop (Start above): cleanup and delivery are independent concerns
+// with independent cadences, the same reasoning that keeps
+// StartIdempotencyCleanup (usecase_idempotency.go) a separate worker from
+// the request path it cleans up after.
+func (o *DurableOutbox) Cleanup(ctx context.Context, retention time.Duration) (purged int, err error) {
+	return o.store.PurgeDelivered(ctx, time.Now().Add(-retention))
 }
 
 // deliver decodes row via the registry, then routes it to EXACTLY ONE

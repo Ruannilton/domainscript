@@ -346,7 +346,16 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 	}
 
 	e.Line("")
-	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg, needsEmitDispatcher); err != nil {
+	// outboxDBName (task J2.5, REQ-42.5): "" quando prog é nil (testes fora
+	// de um Program agregado, ex. decl_policy_test.go) ou quando o módulo não
+	// declara nenhum Database real — o caminho de sempre, memoryOutbox,
+	// nenhuma mudança de Go emitido (NFR-21/23). Ver a doc de
+	// moduleOutboxDatabaseName (sql_wiring.go) e de emitPolicyWireFunc abaixo.
+	var outboxDBName string
+	if prog != nil {
+		outboxDBName = moduleOutboxDatabaseName(prog, module)
+	}
+	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg, needsEmitDispatcher, outboxDBName); err != nil {
 		return nil, fmt.Errorf("codegen: Policy Wire: %w", err)
 	}
 
@@ -485,6 +494,28 @@ func resolvePolicyWireInfos(e *emit.Emitter, tab *symbols.SymbolTable, prog *pro
 	return infos, nil
 }
 
+// moduleNeedsDurableOutbox reporta se decls contém ao menos uma Policy
+// AtLeastOnce cujo alvo é "d" (o caminho local de sempre) — a MESMA condição
+// que emitPolicyWireFunc usa para decidir se emite o wiring de outbox
+// durável (ver a doc dele). generateModuleFiles (codegen.go) chama isto para
+// decidir moduleMarks.outboxDatabase, de forma que a decisão "este módulo
+// precisa do wiring de outbox durável em main.go" bata exatamente com a de
+// emitPolicyWireFunc — uma divergência deixaria generateCmdMainFile chamando
+// WireOutboxStore/StartOutboxRelay/StartOutboxCleanup num pacote de módulo
+// que nunca os gerou (erro de compilação), ou o oposto.
+func moduleNeedsDurableOutbox(tab *symbols.SymbolTable, prog *program.Program, module string, decls []*ast.PolicyDecl) (bool, error) {
+	infos, err := resolvePolicyWireInfos(emit.New("_"), tab, prog, module, decls)
+	if err != nil {
+		return false, err
+	}
+	for _, info := range infos {
+		if info.channel == nil && policyIsAtLeastOnce(info.decl) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // emitPolicyWireFunc emite "func Wire(d runtime.Dispatcher)": um
 // d.Subscribe/o.Subscribe por Policy, conforme a garantia de entrega de cada
 // uma (ver a doc do arquivo sobre Dispatcher vs. Outbox) — chamada por
@@ -518,11 +549,46 @@ func resolvePolicyWireInfos(e *emit.Emitter, tab *symbols.SymbolTable, prog *pro
 // diferentes); o var de canal é nomeado a partir do NOME da Policy
 // (garantidamente único dentro do módulo, mesma convenção de sourceVar em
 // decl_worker.go:emitContinuous).
-func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, needsEmitDispatcher bool) error {
+//
+// --- Outbox durável (task J2.5, REQ-42.5/42.7) ---
+//
+// outboxDBName ("" no caso comum — ver moduleOutboxDatabaseName,
+// sql_wiring.go) é o Database real deste módulo, quando houver um. Só entra
+// em jogo para uma Policy AtLeastOnce cujo alvo é "d" (o caminho local de
+// sempre) — uma Policy cross-service via canal "queue" continua com seu
+// PRÓPRIO Outbox em memória, inalterado (fora do orçamento desta task, ver a
+// doc do arquivo). Quando outboxDBName != "" E ao menos uma Policy cai nesse
+// caso, "o" (o Outbox local) é promovido de var LOCAL de Wire para var de
+// PACOTE, tipo concreto *runtime.DurableOutbox (não a interface
+// runtime.Outbox: StartOutboxRelay/StartOutboxCleanup, abaixo, chamam
+// Start/Cleanup, que só o tipo concreto expõe) — populada por
+// runtime.NewDurableOutbox em vez de runtime.NewOutbox(d), sobre uma store
+// que só existe depois que o cmd/<service>/main.go gerado chama
+// WireOutboxStore (nova função exportada, abaixo) com uma
+// sqlruntime.OutboxStore real, ANTES de Wire. Sem outboxDBName (o caso
+// comum, incl. o shipping do shop — Policy AtLeastOnce mas SEM Database
+// próprio), nada disto é emitido: "o := runtime.NewOutbox(d)" continua var
+// LOCAL de Wire, Go byte-idêntico ao de antes desta task (NFR-21/23).
+func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, needsEmitDispatcher bool, outboxDBName string) error {
 	infos, err := resolvePolicyWireInfos(e, tab, prog, module, decls)
 	if err != nil {
 		return err
 	}
+
+	// durableInfos: as Policy AtLeastOnce com alvo "d" — o subconjunto que
+	// disputa o outbox durável quando outboxDBName != "" (ver a doc acima).
+	// Calculado uma vez, ANTES do bloco de Wire, porque a decisão de emitir
+	// os vars de pacote (outboxStore/WireOutboxStore/o) precisa vir ANTES do
+	// "func Wire" que os usa.
+	var durableInfos []policyWireInfo
+	if outboxDBName != "" {
+		for _, info := range infos {
+			if info.channel == nil && policyIsAtLeastOnce(info.decl) {
+				durableInfos = append(durableInfos, info)
+			}
+		}
+	}
+	needsDurableOutbox := len(durableInfos) > 0
 
 	for _, info := range infos {
 		if info.channel == nil {
@@ -532,6 +598,27 @@ func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.Polic
 		e.Line("// queue, REQ-26.5) — só Wire (abaixo) escreve nele; var de pacote para um")
 		e.Line("// teste do mesmo pacote poder publicar direto e observar a Policy rodar.")
 		e.Line("var %s %s.ChannelTransport", info.varName, runtimeAlias)
+	}
+
+	if needsDurableOutbox {
+		e.Line("// outboxStore é a store SQL durável do outbox deste módulo (Database %s,", outboxDBName)
+		e.Line("// Marco J, REQ-42.5) — populada por WireOutboxStore (abaixo), chamada por")
+		e.Line("// cmd/<service>/main.go ANTES de Wire, porque este módulo tem uma Database")
+		e.Line("// real.")
+		e.Line("var outboxStore %s.OutboxStore", runtimeAlias)
+		e.Line("")
+		e.Line("// WireOutboxStore conecta este módulo à store SQL durável do outbox — ver a")
+		e.Line("// doc de outboxStore acima. Chamada por cmd/<service>/main.go antes de Wire.")
+		e.Block(fmt.Sprintf("func WireOutboxStore(store %s.OutboxStore)", runtimeAlias), func() {
+			e.Line("outboxStore = store")
+		})
+		e.Line("")
+		e.Line("// o é o runtime.Outbox de entrega AtLeastOnce local (\"d\") deste módulo —")
+		e.Line("// DurableOutbox de verdade (Marco J) desde que WireOutboxStore já tenha")
+		e.Line("// rodado; var de pacote para StartOutboxRelay/StartOutboxCleanup (abaixo)")
+		e.Line("// alcançarem a MESMA instância que Wire constrói.")
+		e.Line("var o *%s.DurableOutbox", runtimeAlias)
+		e.Line("")
 	}
 
 	e.Line("// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,")
@@ -566,7 +653,11 @@ func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.Polic
 			if policyIsAtLeastOnce(decl) {
 				if target == "d" {
 					if !outboxDeclared {
-						e.Line("o := %s.NewOutbox(d)", runtimeAlias)
+						if needsDurableOutbox {
+							emitDurableOutboxConstruction(e, runtimeAlias, durableInfos)
+						} else {
+							e.Line("o := %s.NewOutbox(d)", runtimeAlias)
+						}
 						outboxDeclared = true
 					}
 					e.Line("o.Subscribe(%q, %s)", decl.On, decl.Name)
@@ -580,5 +671,82 @@ func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.Polic
 			}
 		}
 	})
-	return funcErr
+	if funcErr != nil {
+		return funcErr
+	}
+
+	if needsDurableOutbox {
+		emitOutboxRelayAndCleanupStarters(e, runtimeAlias)
+	}
+	return nil
 }
+
+// emitDurableOutboxConstruction emite "o = runtime.NewDurableOutbox(outboxStore,
+// map[string]runtime.EventFactory{...})" — o registry inline monta só os
+// tipos de evento que ALGUMA Policy AtLeastOnce local ("d") deste módulo
+// consome (durableInfos), nunca EventRegistry() do módulo (que só cobre
+// Event/PublicEvent DECLARADOS por ele — uma Policy cross-módulo como o
+// shipping do shop, reagindo a um PublicEvent de Orders, não teria a entrada
+// ali). Atribuição "=", não ":=": "o" já foi declarado de pacote acima (ver
+// a doc de emitPolicyWireFunc).
+func emitDurableOutboxConstruction(e *emit.Emitter, runtimeAlias string, durableInfos []policyWireInfo) {
+	e.Line("o = %s.NewDurableOutbox(outboxStore, map[string]%s.EventFactory{", runtimeAlias, runtimeAlias)
+	for _, info := range durableInfos {
+		ctor := "&" + strings.TrimPrefix(info.evt.goPtrType, "*") + "{}"
+		e.Line("%q: func() %s.Event { return %s },", info.decl.On, runtimeAlias, ctor)
+	}
+	e.Line("})")
+}
+
+// emitOutboxRelayAndCleanupStarters emite StartOutboxRelay(ctx)/
+// StartOutboxCleanup(ctx) (task J2.5, REQ-42.5/42.7) — só chamado quando
+// needsDurableOutbox (ver a doc de emitPolicyWireFunc): nomes próprios, ao
+// lado de StartWorkers/StartIdempotencyCleanup (mesma razão de não reusar
+// "Wire", ver a doc do arquivo), chamados por cmd/<service>/main.go na
+// inicialização deste módulo.
+func emitOutboxRelayAndCleanupStarters(e *emit.Emitter, runtimeAlias string) {
+	ctxAlias := e.Import("context")
+	timeAlias := e.Import("time")
+	slogAlias := e.Import("log/slog")
+
+	e.Line("")
+	e.Line("// StartOutboxRelay roda o relay do outbox durável deste módulo (Marco J,")
+	e.Line("// REQ-42.2/42.3) — gerado automaticamente porque este módulo tem uma Policy")
+	e.Line("// AtLeastOnce e uma Database real; chamado por cmd/<service>/main.go na")
+	e.Line("// inicialização, ao lado de StartWorkers/Wire. Roda até ctx ser cancelado.")
+	e.Block(fmt.Sprintf("func StartOutboxRelay(ctx %s.Context)", ctxAlias), func() {
+		e.Line("o.Start(ctx)")
+	})
+
+	e.Line("")
+	e.Line("// StartOutboxCleanup roda o worker de limpeza de linhas do outbox já")
+	e.Line("// entregues além da janela de retenção (REQ-42.7, análogo a")
+	e.Line("// StartIdempotencyCleanup, usecase_idempotency.go) — sem isto a tabela")
+	e.Line("// outbox cresceria sem limite. Roda até ctx ser cancelado.")
+	e.Block(fmt.Sprintf("func StartOutboxCleanup(ctx %s.Context)", ctxAlias), func() {
+		e.Line("ticker := %s.NewTicker(%s)", timeAlias, outboxCleanupTickInterval)
+		e.Line("defer ticker.Stop()")
+		e.Block("for", func() {
+			e.Block("select", func() {
+				e.Line("case <-ctx.Done():")
+				e.Line("return")
+				e.Line("case <-ticker.C:")
+			})
+			e.Block(fmt.Sprintf("if _, err := o.Cleanup(ctx, %s); err != nil", outboxCleanupRetention), func() {
+				e.Line("%s.Error(%q, %q, err)", slogAlias, "outbox: falha na limpeza de linhas entregues", "error")
+			})
+		})
+	})
+}
+
+// outboxCleanupTickInterval/outboxCleanupRetention (REQ-42.7): mesmo espírito
+// de idempotencyCleanupInterval (usecase_idempotency.go) — nenhuma
+// declaração .ds controla isto hoje, sem um exemplo real que peça por uma
+// janela configurável. Uma hora entre varreduras é frequente o bastante para
+// a tabela outbox não crescer muito entre limpezas, sem martelar o banco; 7
+// dias de retenção dá folga generosa para qualquer investigação/auditoria
+// pós-entrega antes da linha sumir.
+const (
+	outboxCleanupTickInterval = "time.Hour"
+	outboxCleanupRetention    = "7 * 24 * time.Hour"
+)

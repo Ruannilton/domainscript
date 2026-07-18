@@ -170,3 +170,33 @@ Cada issue é um bloco novo, nesta forma:
   granularidade por Handle; (c) **itens §25** (avg/min/max/group by, aritmética
   estendida, marshalling FFI detalhado) — declarados planejado/a definir pelo
   spec, sem ação pendente deste lado.
+
+## ISSUE-9
+- SPEC: infra-providers
+- TASK: J2.5
+- DESCRIPTION: REQ-42.6/§design infra-providers 3.2a exige que "publicar
+  direto no commit (fora da tx) é PROIBIDO para destino cross-service" —
+  item reclassificado de J2.4 (mecanismo do relay) para J2.5 (decisão de
+  wiring). J2.5 fechou o lado CONSUMIDOR (uma Policy AtLeastOnce local com
+  Database real ganha DurableOutbox de verdade em vez de memoryOutbox — ver
+  `codegen/decl_policy.go:emitPolicyWireFunc`/`codegen/sql_wiring.go:
+  emitOutboxDatabaseWiring`). O lado PRODUTOR não foi tocado:
+  `generateCmdMainFile` (codegen.go) ainda constrói
+  `runtime.NewUnitOfWork(store, <canal>)` quando um módulo produz
+  PublicEvent para um canal "queue" (`producerChannel != nil`) — publish
+  direto no commit, exatamente o padrão que REQ-42.6 proíbe para um destino
+  cross-service. O exemplo real shop/Orders EXERCITA esse caminho hoje
+  (`Database MainDb { provider: "postgres" }` + `UseCase PlaceOrder` +
+  canal `Orders -> Shipping` via queue em topology.ds) — mas trocar esse
+  wiring por um outbox durável exigiria primeiro que o código gerado de
+  UseCase/Handle chamasse `tx.EnqueueOutbox` (nenhum emissor chama isso
+  hoje — só os testes de J2.1-J2.4/J2.5 o exercitam manualmente), uma peça
+  que a doc de design (`design.md`, seção sobre a fixture-âncora) já
+  reconhece como só fechando de verdade em **J6** ("a durabilidade
+  cross-service do outbox só se prova end-to-end com o transporte real de
+  J3 presente... por isso a fixture-âncora (J6) combina outbox durável +
+  rabbitmq"). Não bloqueou J2.5 (nenhum critério de aceite da task pede essa
+  mudança no lado produtor — só `NewDurableOutbox(...)`/`Start(ctx)` do lado
+  Policy) nem quebra NFR-21 (shop continua byte-idêntico, confirmado por
+  `driver.TestGenerateShopE2E*`/golden tests). Fica para J3.4 (RabbitMQ, R2)
+  ou J6 fechar de verdade.

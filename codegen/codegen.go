@@ -169,6 +169,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	modulesWithCachedQueries := make(map[string]bool, len(moduleNames)) // G3, REQ-21.3
 	modulesWithMetrics := make(map[string]bool, len(moduleNames))       // H3, REQ-30.3
 	modulesXADatabases := make(map[string][]string, len(moduleNames))   // G1, REQ-20.5
+	modulesOutboxDatabase := make(map[string]string, len(moduleNames))  // Marco J, REQ-42.5
 
 	for _, name := range moduleNames {
 		b := buckets[name]
@@ -185,6 +186,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 		modulesWithCachedQueries[name] = marks.hasCachedQueries
 		modulesWithMetrics[name] = marks.hasMetrics
 		modulesXADatabases[name] = marks.xaDatabases
+		modulesOutboxDatabase[name] = marks.outboxDatabase
 		allPublicEvents = append(allPublicEvents, b.pubEvents...)
 		for _, ev := range b.pubEvents {
 			publicEventModule[ev.Name] = name
@@ -200,7 +202,7 @@ func Generate(prog *program.Program, model *types.Model, tab *symbols.SymbolTabl
 	}
 
 	for _, group := range groups {
-		fs, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesWithMetrics, modulesXADatabases, buckets, model, tab)
+		fs, err := generateCmdMainFile(prog, group, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesWithMetrics, modulesXADatabases, modulesOutboxDatabase, buckets, model, tab)
 		if err != nil {
 			return nil, fmt.Errorf("codegen: cmd/%s: %w", group.dirName, err)
 		}
@@ -456,6 +458,16 @@ type moduleMarks struct {
 	// "<pkg>.WireMetrics(dispatcher)" — nome próprio, ao lado de
 	// WireQueryCache/StartWorkers/StartIdempotencyCleanup.
 	hasMetrics bool
+	// outboxDatabase (Marco J, task J2.5, REQ-42.5) é o Database real deste
+	// módulo (moduleOutboxDatabaseName, sql_wiring.go) — "" no caso comum
+	// (nenhum Database real, ou nenhuma Policy AtLeastOnce local o
+	// disputando). generateCmdMainFile usa isto para decidir se abre a
+	// conexão real, monta um sqlruntime.OutboxStore e chama
+	// "<pkg>.WireOutboxStore(...)" ANTES de "<pkg>.Wire(...)", e depois
+	// "go <pkg>.StartOutboxRelay(ctx)"/"go <pkg>.StartOutboxCleanup(ctx)" —
+	// nomes próprios, ao lado de StartWorkers/StartIdempotencyCleanup (ver
+	// decl_policy.go:emitPolicyWireFunc para o lado do módulo).
+	outboxDatabase string
 }
 
 // generateModuleFiles emite os arquivos Go de um único módulo (um arquivo
@@ -683,12 +695,24 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, "projections.go"), Content: content})
 	}
 
+	var outboxDatabase string
 	if hasPolicies {
 		content, err := EmitPolicies(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName, sharedCollectionVars)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
 		}
 		files = append(files, File{Path: path.Join(pkg, "policies.go"), Content: content})
+		if prog != nil {
+			if dbName := moduleOutboxDatabaseName(prog, moduleName); dbName != "" {
+				needs, err := moduleNeedsDurableOutbox(tab, prog, moduleName, b.policies)
+				if err != nil {
+					return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
+				}
+				if needs {
+					outboxDatabase = dbName
+				}
+			}
+		}
 	}
 
 	if hasWorkers {
@@ -790,7 +814,7 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 		files = append(files, File{Path: path.Join(pkg, pkg+"_test.go"), Content: content})
 	}
 
-	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries, hasMetrics: hasMetrics}, nil
+	return files, moduleMarks{hasUseCases: hasUseCases, hasPolicies: hasPolicies, hasWorkers: hasWorkers, xaDatabases: xaDatabases, fileStorages: fsNames, hasIdempotency: hasIdempotency, hasCachedQueries: hasCachedQueries, hasMetrics: hasMetrics, outboxDatabase: outboxDatabase}, nil
 }
 
 // emitValueObjectsAndEnums combina TODOS os ValueObject/Enum de um módulo
@@ -1000,7 +1024,7 @@ func defaultCmdDirName(modules []string) string {
 // precisa de Dispatcher algum (hook direto no código gerado da própria
 // Saga, decl_saga.go) — só entra em modulesWithMetrics quando o módulo tem
 // ao menos uma Metric do primeiro tipo.
-func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesWithMetrics map[string]bool, modulesXADatabases map[string][]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) ([]File, error) {
+func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCases, modulesWithPolicies, modulesWithWorkers, modulesWithIdempotency, modulesWithCachedQueries, modulesWithMetrics map[string]bool, modulesXADatabases map[string][]string, modulesOutboxDatabase map[string]string, buckets map[string]moduleBucket, model *types.Model, tab *symbols.SymbolTable) ([]File, error) {
 	e := emit.New("main")
 	runtimeAlias := e.Import(RuntimeImportPath)
 	fmtAlias := e.Import("fmt")
@@ -1019,24 +1043,27 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		hasMetrics       bool     // H3, REQ-30.3 — chama WireMetrics(dispatcher) (ver decl_metric.go)
 		xaDatabases      []string // G1, REQ-20.5 — nomes de Database a coordenar via 2PC (ver emitXADatabaseWiring)
 		fileStorages     []string // G1a, §2.5 — nomes de FileStorage a instanciar/injetar (ver WireFileStorage)
+		outboxDatabase   string   // Marco J, REQ-42.5 — Database real do outbox durável (ver emitOutboxDatabaseWiring); "" no caso comum
 	}
 	var wireTargets []wireTarget
 	needsDispatcher := false
 	anyUseCases := false
 	anyWorkers := false
 	anyIdempotency := false
+	anyOutboxDatabases := false
 	for _, m := range group.modules {
 		hu, hp, hw := modulesWithUseCases[m], modulesWithPolicies[m], modulesWithWorkers[m]
 		hi := modulesWithIdempotency[m]
 		hc := modulesWithCachedQueries[m] // G3
 		hm := modulesWithMetrics[m]       // H3
+		ob := modulesOutboxDatabase[m]    // Marco J, REQ-42.5
 		fsNames := moduleFileStorageNames(programModule(prog, m))
 		if !hu && !hp && !hw && !hc && !hm && len(fsNames) == 0 {
 			continue
 		}
 		pkg := goname.PackageName(m)
 		alias := e.Import(path.Join(domainModuleRoot, pkg))
-		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, hasCachedQueries: hc, hasMetrics: hm, xaDatabases: modulesXADatabases[m], fileStorages: fsNames})
+		wireTargets = append(wireTargets, wireTarget{alias: alias, pkg: pkg, module: m, hasUseCases: hu, hasPolicies: hp, hasWorkers: hw, hasIdempotency: hi, hasCachedQueries: hc, hasMetrics: hm, xaDatabases: modulesXADatabases[m], fileStorages: fsNames, outboxDatabase: ob})
 		if hp {
 			needsDispatcher = true
 		}
@@ -1054,6 +1081,9 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 		if hw {
 			anyWorkers = true
+		}
+		if ob != "" {
+			anyOutboxDatabases = true
 		}
 	}
 
@@ -1101,7 +1131,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	}
 
 	var ctxAlias string
-	if anyWorkers || anyXADatabases || anyIdempotency {
+	if anyWorkers || anyXADatabases || anyIdempotency || anyOutboxDatabases {
 		ctxAlias = e.Import("context")
 	}
 
@@ -1172,7 +1202,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		default:
 			e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
 		}
-		if anyWorkers || anyIdempotency {
+		if anyWorkers || anyIdempotency || anyOutboxDatabases {
 			e.Line("workerCtx := %s.Background()", ctxAlias)
 		}
 		e.Line("")
@@ -1180,6 +1210,15 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 			e.Line("_ = uow // nenhum módulo deste service declara UseCase/Policy/Worker ainda")
 		} else {
 			for _, wt := range wireTargets {
+				if wt.outboxDatabase != "" {
+					// ANTES de Wire (task J2.5, REQ-42.5): Wire lê outboxStore
+					// ao construir o DurableOutbox na 1ª Policy AtLeastOnce
+					// local (ver a doc de emitPolicyWireFunc, decl_policy.go).
+					if err := emitOutboxDatabaseWiring(e, prog, wt.module, wt.alias, wt.outboxDatabase); err != nil {
+						mainErr = fmt.Errorf("wiring do outbox durável do módulo %s: %w", wt.module, err)
+						return
+					}
+				}
 				var args []string
 				if wt.hasUseCases {
 					args = append(args, "uow")
@@ -1222,6 +1261,13 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				}
 				if wt.hasIdempotency {
 					e.Line("go %s.StartIdempotencyCleanup(workerCtx)", wt.alias)
+				}
+				if wt.outboxDatabase != "" {
+					// StartOutboxRelay/StartOutboxCleanup (task J2.5,
+					// REQ-42.5/42.7): nomes próprios, mesma razão de
+					// StartWorkers/StartIdempotencyCleanup.
+					e.Line("go %s.StartOutboxRelay(workerCtx)", wt.alias)
+					e.Line("go %s.StartOutboxCleanup(workerCtx)", wt.alias)
 				}
 			}
 			if !anyUseCases {
