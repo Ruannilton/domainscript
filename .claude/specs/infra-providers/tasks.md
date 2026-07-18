@@ -204,7 +204,7 @@
     janela de reconexão retorna erro (o relay do outbox re-tenta). (REQ-43.6,
     §design 3.3).
   - b. Teste unit: fechar o canal fake ⇒ o supervisor tenta reabrir.
-- [ ] **J3.4** Seleção + wiring + integração.
+- [x] **J3.4** Seleção + wiring + integração.
   - a. `channel.go`: `channelProvider(ch)` lê `provider` de `ch.Decl.Entries`
     (R2); produtor/consumidor trocam `NewQueueChannel` por
     `NewRabbitMQChannel(url, cfg, keyFunc)` quando `"rabbitmq"`; sem provider ⇒
@@ -213,6 +213,19 @@
   - c. Golden + smoke sobre fixture multi-service; integração `//go:build
     integration` guardada por `AMQP_URL` (publicar→consumir cross-process ==
     in-process, NFR-22/24).
+  - **Achado desta task (não previsto no design original):**
+    `RabbitMQConfig.ConsumeDisabled` (novo campo, `amqprt/rabbitmq.go.txt`) —
+    o lado PRODUTOR (`generateCmdMainFile`) só chama `Publish`, nunca
+    `Subscribe`, mas `NewRabbitMQChannel` sempre declarava fila(s) e subia
+    consumidores de verdade na construção; como a fila é um recurso
+    COMPARTILHADO no broker (ao contrário do `QueueChannel` in-memory, onde
+    cada processo tem sua cópia isolada), um consumidor espúrio do lado
+    produtor competiria pelas mensagens com o consumidor real do outro
+    service e as descartaria em silêncio (`deliver` roda zero handlers ⇒
+    sucesso vacuamente ⇒ `ack`). `ConsumeDisabled: true` faz
+    `declareTopology` só declarar a exchange (Publish precisa dela existir),
+    sem fila/DLX/retry/DLQ nem consumidor — corrigido dentro do orçamento
+    desta task (erro pertence ao escopo, CLAUDE.md).
 
 ### Fase J4 — Redis como backend de Cache e RateLimit (REQ-44)
 

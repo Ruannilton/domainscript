@@ -376,6 +376,20 @@ type RabbitMQConfig struct {
 	// RetryTTL é quanto tempo uma mensagem fica retida na retry queue antes
 	// de ser reencaminhada pra tentativa seguinte. <= 0 vira defaultRetryTTL.
 	RetryTTL time.Duration
+	// ConsumeDisabled (task J3.4, R2): true para a instância do lado
+	// PRODUTOR (cmd/<service>/main.go, generateCmdMainFile) — que só chama
+	// Publish, nunca Subscribe. Sem esta flag, declareTopology declararia
+	// fila(s)/DLX/retry/DLQ e dialAndSetup abriria consumidores de verdade
+	// para elas MESMO no lado que só publica — como a fila é um recurso
+	// COMPARTILHADO de verdade no broker (ao contrário do QueueChannel
+	// in-memory, onde cada processo tem sua PRÓPRIA cópia isolada), esse
+	// consumidor espúrio competiria pelas mensagens com o consumidor real do
+	// outro service (Policy.On do lado consumidor) e as descartaria em
+	// silêncio (deliver roda zero handlers ⇒ sucesso vacuamente ⇒ ack — a
+	// mensagem nunca chegaria no handler de verdade). Com ConsumeDisabled,
+	// declareTopology só declara a exchange (Publish precisa dela existir)
+	// e devolve nenhuma fila — dialAndSetup não abre nenhum consumeChan.
+	ConsumeDisabled bool
 }
 
 // rabbitmqChannel implementa runtime.ChannelTransport (task J3.1.a/J3.2/J3.3).
@@ -482,6 +496,12 @@ func NewRabbitMQChannel(url string, cfg RabbitMQConfig, registry map[string]Even
 // reconnectLoop (task J3.3): antes desta task esta lógica só existia inline
 // dentro de NewRabbitMQChannel; extraída aqui para nunca duplicar entre os
 // dois caminhos.
+//
+// cfg.ConsumeDisabled (task J3.4, ver a doc do campo) pula fila(s)/DLX/
+// retry/DLQ inteiramente — só a exchange principal é declarada (idempotente:
+// o lado consumidor pode declará-la de novo sem erro, "durable" bate) —
+// e devolve nil, então dialAndSetup nunca abre um consumeChan para esta
+// instância.
 func (r *rabbitmqChannel) declareTopology(conn *amqp.Connection) ([]string, error) {
 	cfg := r.cfg
 	concurrency := int(effectiveConcurrency(cfg.Concurrency))
@@ -491,6 +511,17 @@ func (r *rabbitmqChannel) declareTopology(conn *amqp.Connection) ([]string, erro
 		return nil, fmt.Errorf("setup channel: %w", err)
 	}
 	defer setupCh.Close()
+
+	if cfg.ConsumeDisabled {
+		exchangeKind := "fanout"
+		if cfg.KeyFunc != nil {
+			exchangeKind = "x-consistent-hash"
+		}
+		if err := setupCh.ExchangeDeclare(cfg.Exchange, exchangeKind, true, false, false, false, nil); err != nil {
+			return nil, fmt.Errorf("exchange declare (%s, ConsumeDisabled): %w", exchangeKind, err)
+		}
+		return nil, nil
+	}
 
 	retryExchange := retryExchangeName(cfg.Exchange)
 	retryQueue := retryQueueName(cfg.Exchange)
