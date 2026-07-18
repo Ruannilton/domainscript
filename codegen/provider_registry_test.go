@@ -12,14 +12,17 @@ import (
 // activeProviderDeps devolve vazio diante de um Program que declara canal/
 // Cache/RateLimit/FileStorage com um "provider"/"backend" NÃO reconhecido em
 // nenhum dos quatro registros (channelProviders/cacheProviders/
-// rateLimitProviders/fileProviders) — cacheProviders/rateLimitProviders/
-// fileProviders continuam vazios até J4/J5 popularem alguma entrada, então
-// "redis"/"s3" servem de exemplo de provider desconhecido para as três; o
-// canal usa "kafka" (nunca implementado por este ciclo, ao contrário de
-// "rabbitmq", real desde J3.1 — channelProviders não está mais vazio, só
-// "kafka" continua sendo um provider não reconhecido). Quando duas categorias
-// apontam para o MESMO provider (mesmo module E mesmo adapterDir), a dedup
-// (R5) colapsa as duas em uma única entrada.
+// rateLimitProviders/fileProviders) — rateLimitProviders/fileProviders
+// continuam vazios até J4.2/J5 popularem alguma entrada, então "redis"/"s3"
+// servem de exemplo de provider desconhecido para essas duas; o canal usa
+// "kafka" (nunca implementado por este ciclo, ao contrário de "rabbitmq",
+// real desde J3.1 — channelProviders não está mais vazio, só "kafka"
+// continua sendo um provider não reconhecido); Cache usa "memcached" pela
+// mesma razão (cacheProviders não está mais vazio desde J4.1 —
+// cacheProviders["redis"] é real — "memcached" continua sendo um backend de
+// Cache não reconhecido). Quando duas categorias apontam para o MESMO
+// provider (mesmo module E mesmo adapterDir), a dedup (R5) colapsa as duas em
+// uma única entrada.
 
 func TestActiveProviderDepsUnrecognizedProvidersAreNoOp(t *testing.T) {
 	prog := &program.Program{
@@ -28,7 +31,7 @@ func TestActiveProviderDepsUnrecognizedProvidersAreNoOp(t *testing.T) {
 				Name: "Shop",
 				Decl: ast.NewModuleDecl("Shop", nil, []*ast.ConfigBlock{
 					ast.NewConfigBlock("Cache", "", []ast.ConfigEntry{
-						{Key: "backend", Value: &ast.Literal{Kind: token.STRING, Value: "redis"}},
+						{Key: "backend", Value: &ast.Literal{Kind: token.STRING, Value: "memcached"}},
 					}, ast.Span{}),
 					ast.NewConfigBlock("RateLimit", "", []ast.ConfigEntry{
 						{Key: "backend", Value: &ast.Literal{Kind: token.STRING, Value: "redis"}},

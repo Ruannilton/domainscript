@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"domainscript/codegen/amqprt"
+	"domainscript/codegen/redisrt"
 	"domainscript/program"
 )
 
@@ -38,6 +39,9 @@ var providerSources = map[string]func() (map[string][]byte, error){
 	// "amqpruntime" (J3.1, REQ-43.1): a primeira entrada real deste registro
 	// — channelProviders["rabbitmq"], abaixo, aponta adapterDir aqui.
 	"amqpruntime": amqprt.Sources,
+	// "redisruntime" (J4.1, REQ-44.1): cacheProviders["redis"], abaixo,
+	// aponta adapterDir aqui.
+	"redisruntime": redisrt.Sources,
 }
 
 // channelProviders/cacheProviders/rateLimitProviders/fileProviders são os
@@ -61,7 +65,16 @@ var (
 	channelProviders = map[string]providerDep{
 		"rabbitmq": {module: amqpDriverModule, version: amqpDriverVersion, minGo: "", adapterDir: "amqpruntime", ctor: "NewRabbitMQChannel"},
 	}
-	cacheProviders     = map[string]providerDep{}
+	// cacheProviders["redis"] (J4.1, REQ-44.1, §design infra-providers 3.4):
+	// a primeira entrada real deste registro — um bloco Cache do módulo com
+	// `backend: "redis"` resolve aqui (activeProviderDeps, abaixo). ctor
+	// documenta o construtor exportado por redisruntime (informativo — nenhum
+	// código deste gerador ainda CHAMA ctor programaticamente; a
+	// seleção/wiring real, que emite "redisruntime.NewRedisQueryCache(...)"
+	// em vez de "runtime.NewMemoryQueryCache()", é a task J4.3).
+	cacheProviders = map[string]providerDep{
+		"redis": {module: redisDriverModule, version: redisDriverVersion, minGo: redisMinGoVersion, adapterDir: "redisruntime", ctor: "NewRedisQueryCache"},
+	}
 	rateLimitProviders = map[string]providerDep{}
 	fileProviders      = map[string]providerDep{}
 )

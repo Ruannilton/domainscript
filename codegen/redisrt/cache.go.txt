@@ -1,0 +1,352 @@
+package redisruntime
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/gob"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"sync"
+	"time"
+
+	redis "github.com/redis/go-redis/v9"
+
+	"domainscript/generated/runtime"
+)
+
+// cache.go.txt implementa runtime.QueryCache sobre um Redis real (Marco J,
+// task J4.1, REQ-44.1/44.5, §design infra-providers 3.4) — o contraparte
+// distribuído de runtime.NewMemoryQueryCache (rtsrc/querycache.go.txt, que só
+// vale DENTRO do mesmo processo, spec §15, Marco G3). Selecionado pelo
+// wiring gerado (task J4.3, decl_query_cache.go) quando o Cache do módulo
+// declara `backend: "redis"`; sem esse backend, o memoryQueryCache
+// in-memory de sempre continua (NFR-21) — nenhuma mudança de call site
+// (Get/Set/SetErr/InvalidateAll/Coalesce continuam a MESMA interface,
+// runtime.QueryCache).
+//
+// --- Serialização type-preserving via encoding/gob (não json) ---
+//
+// Get devolve "value any" que o wrapper gerado (emitQueryCacheWrapper,
+// codegen/decl_query_cache.go) faz um type assertion DIRETO e SEM CHECAGEM
+// para o tipo concreto de retorno da Query ("v.(%s)") — um Unmarshal via
+// encoding/json num "any" reconstruiria só map[string]interface{}/
+// float64/etc, o que faria esse type assertion PANICAR em runtime.
+// encoding/gob, ao contrário, preserva o tipo concreto através de um campo
+// de interface (interface{}/error) DESDE QUE esse tipo concreto tenha sido
+// registrado via gob.Register ANTES do primeiro Decode — daí o campo Value
+// de cachePayload (abaixo) ser "any": um struct value com um campo de tipo
+// de interface é exatamente a forma que o pacote gob exige para gravar o
+// nome do tipo concreto no stream (gob.Encode de um valor cujo tipo
+// ESTÁTICO já é a interface, não um valor já "achatado").
+//
+// NewRedisQueryCache NÃO registra nada — quem seleciona este backend para
+// uma Query cacheada específica (task J4.3, wiring de decl_query_cache.go)
+// DEVE chamar gob.Register(<TipoDeRetornoDaQuery>{}) uma vez por tipo de
+// retorno distinto, antes de qualquer Get/Set daquela instância. Sem esse
+// Register, gob.Decode falha — e, por causa do fail-open desta task (ver
+// abaixo), Get simplesmente devolve hit=false (nunca um pânico, nunca um
+// erro propagado): a query roda de novo, sem cache, exatamente como um
+// cache miss comum. cachePayload.Err (usado por SetErr, negativeCacheTtl,
+// spec §15) segue a MESMA regra: um erro de negócio concreto cacheado
+// também precisa estar registrado.
+//
+// --- Fail-open (spec §15: "Falha do backend: Fail-open", REQ-44.1/44.5) ---
+//
+// Get nunca devolve um erro distinto de "miss": qualquer falha — conexão
+// Redis fora do ar, timeout, GET que devolve redis.Nil (chave inexistente,
+// miss normal) OU um gob.Decode malformado/tipo não registrado — colapsa em
+// hit=false. Set/SetErr/InvalidateAll também nunca retornam erro (mesma
+// forma da interface): uma falha aí só é logada (log/slog, mesma convenção
+// de amqprt/rabbitmq.go.txt e sqlrt) e a chamada retorna — uma escrita de
+// cache que falha não é fatal, o resultado da query simplesmente não fica
+// cacheado desta vez.
+//
+// --- Invalidação por geração-no-prefixo (item b, §design infra-providers
+// 3.4) ---
+//
+// InvalidateAll é O(1): NUNCA faz SCAN+DEL. Cada namespace (um por
+// instância — ver a doc de "uma instância por Query cacheada" em
+// rtsrc/querycache.go.txt) mantém um contador de geração em
+// "<ns>:gen" (um inteiro incrementado via INCR). Toda chave de DADOS é
+// escrita como "<ns>:<geração-no-momento-da-escrita>:<hash(key)>" — SEMPRE
+// com o TTL (`ttl`/`negativeCacheTtl`, spec §15; ttl<=0 nunca cacheia,
+// mesma regra do memoryQueryCache) recebido de Set/SetErr, nunca sem
+// expiração. InvalidateAll(), portanto, é só "INCR <ns>:gen": todo Get
+// SEGUINTE lê a geração NOVA (vazia), e as chaves de dados da geração
+// antiga não são apagadas — ficam no Redis até expirar sozinhas via seu
+// próprio TTL (custo aceito por design, ver §design infra-providers 3.4,
+// "Custo da geração-no-prefixo").
+//
+// A chave de geração em si ("<ns>:gen") NUNCA recebe TTL/expiração — INCR
+// nunca seta expiração num key novo, e este adapter jamais chama
+// EXPIRE/SETEX sobre ela. Se ela expirasse, o contador reiniciaria em 0 e
+// invalidaria ACIDENTALMENTE todo o cache vivo daquele namespace (as chaves
+// de dados ainda vivas ficariam com um prefixo de geração incompatível com
+// o novo "0" implícito) — persistente por design, exatamente o oposto do
+// tratamento das chaves de dados.
+//
+// --- Coalescing (stampede protection) continua local por processo ---
+//
+// Igual a memoryQueryCache: Coalesce só evita chamadas concorrentes
+// DUPLICADAS de runFn DENTRO deste processo para a mesma key — cruzar
+// réplicas não é exigido (spec §15 não pede stampede protection
+// cross-processo; o Redis aqui só serve como camada de armazenamento
+// compartilhado, não como coordenador de concorrência).
+
+// redisCmdable é a superfície mínima de comandos Redis que este adapter
+// precisa (GET/SET/INCR) — um subconjunto deliberadamente pequeno da
+// interface gigante redis.Cmdable (que cobre centenas de comandos), com as
+// MESMAS assinaturas dos métodos promovidos por *redis.Client (embedding de
+// cmdable) — qualquer *redis.Client real satisfaz redisCmdable sem
+// nenhuma mudança de código. Existir como um tipo À PARTE (em vez de campo
+// *redis.Client direto) é o que permite ao teste (task J4.1.c) injetar um
+// client fake sem abrir nenhuma conexão de rede real: *redis.Client é uma
+// struct concreta em go-redis/v9, não uma interface, então só um campo de
+// interface — como este — pode ser substituído por um dublê de teste.
+type redisCmdable interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	Incr(ctx context.Context, key string) *redis.IntCmd
+}
+
+// cachePayload é o envelope gob-serializado gravado no Redis: SÓ um dos dois
+// campos de interface (Value XOR Err) é preenchido por vez — mesmo shape de
+// exclusão mútua que cacheEntry (rtsrc/querycache.go.txt) já usa in-memory.
+// HasErr distingue "SetErr gravou um erro de negócio" de "Value é
+// literalmente nil" (um zero value de ponteiro/slice/map cacheado de
+// verdade), já que um gob.Decode de um campo de interface nunca preenchida
+// simplesmente fica nil dos dois lados — sem HasErr, não haveria como
+// diferenciar as duas situações depois do Decode.
+type cachePayload struct {
+	Value  any
+	Err    error
+	HasErr bool
+}
+
+// encodePayload serializa p via gob (ver a doc do arquivo sobre por que gob,
+// não json).
+func encodePayload(p cachePayload) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(p); err != nil {
+		return nil, fmt.Errorf("redisruntime: encodePayload: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// decodePayload desserializa data via gob — um erro aqui (tipo concreto não
+// registrado via gob.Register, ou stream corrompido) é tratado pelo
+// CHAMADOR (Get) como fail-open/miss, nunca propagado como um erro "real" da
+// interface QueryCache (ver a doc do arquivo).
+func decodePayload(data []byte) (cachePayload, error) {
+	var p cachePayload
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&p); err != nil {
+		return cachePayload{}, fmt.Errorf("redisruntime: decodePayload: %w", err)
+	}
+	return p, nil
+}
+
+// queryCacheFlight espelha o mesmo shape de single-flight do
+// memoryQueryCache (rtsrc/querycache.go.txt) — coalescing continua
+// local-por-processo mesmo com um backend Redis (ver a doc do arquivo).
+type queryCacheFlight struct {
+	done  chan struct{}
+	value any
+	err   error
+}
+
+// redisQueryCache implementa runtime.QueryCache sobre Redis (task J4.1). Uma
+// instância por Query cacheada (mesma convenção documentada em
+// rtsrc/querycache.go.txt), cada uma com seu PRÓPRIO namespace — daí
+// InvalidateAll (um "INCR <ns>:gen") já bastar para invalidar exatamente as
+// entradas desta Query, sem tocar nas de nenhuma outra instância/namespace.
+type redisQueryCache struct {
+	client redisCmdable
+	ns     string
+
+	mu      sync.Mutex
+	flights map[string]*queryCacheFlight
+}
+
+var _ runtime.QueryCache = (*redisQueryCache)(nil)
+
+// NewRedisQueryCache constrói um QueryCache sobre client, isolado sob
+// namespace (task J4.3, o wiring gerado, escolhe um namespace por Query
+// cacheada — tipicamente o nome da própria Query, único dentro do módulo).
+// namespace é um argumento explícito do construtor (não é extraído de key em
+// Get/Set) porque cada instância já é dona de UM único namespace pela vida
+// inteira (ver a doc do arquivo sobre "uma instância por Query").
+//
+// IMPORTANTE (ver a doc do arquivo sobre gob): antes de qualquer Get/Set
+// desta instância, o chamador DEVE ter registrado, via
+// gob.Register(<TipoDeRetornoDaQuery>{}), o tipo concreto que esta Query
+// devolve (e, se a Query usa negativeCacheTtl, o(s) tipo(s) concreto(s) de
+// erro de negócio que SetErr vai cachear). Essa chamada de Register é
+// responsabilidade do wiring gerado (task J4.3), não desta função.
+func NewRedisQueryCache(client *redis.Client, namespace string) runtime.QueryCache {
+	return newRedisQueryCache(client, namespace)
+}
+
+// newRedisQueryCache é a construção interna usada tanto por
+// NewRedisQueryCache (client real, *redis.Client) quanto pelo teste da task
+// J4.1.c (client fake, satisfazendo só redisCmdable — ver a doc do tipo).
+func newRedisQueryCache(client redisCmdable, namespace string) *redisQueryCache {
+	return &redisQueryCache{
+		client:  client,
+		ns:      namespace,
+		flights: make(map[string]*queryCacheFlight),
+	}
+}
+
+// genKey é a chave de geração deste namespace — NUNCA recebe TTL (ver a doc
+// do arquivo).
+func (c *redisQueryCache) genKey() string {
+	return c.ns + ":gen"
+}
+
+// currentGeneration lê a geração atual do namespace: ausência da chave
+// (redis.Nil, nunca invalidado ainda) é a geração 0, não um erro. Qualquer
+// OUTRA falha (conexão, timeout, valor não-numérico corrompido) é devolvida
+// para o chamador decidir o fail-open apropriado (Get vira miss; Set/SetErr
+// pulam a escrita).
+func (c *redisQueryCache) currentGeneration(ctx context.Context) (int64, error) {
+	s, err := c.client.Get(ctx, c.genKey()).Result()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	gen, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("redisruntime: currentGeneration: valor não numérico em %q: %w", c.genKey(), err)
+	}
+	return gen, nil
+}
+
+// dataKey monta a chave de dados prefixada pela geração — a "geração no
+// prefixo" que torna InvalidateAll O(1) (ver a doc do arquivo). key (de
+// runtime.CacheKey) é hasheada (sha256) só para manter um tamanho de chave
+// previsível/limitado no Redis; o conteúdo de key em si já é opaco e
+// determinístico (tenant|query|argsJSON).
+func (c *redisQueryCache) dataKey(gen int64, key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("%s:%d:%x", c.ns, gen, sum)
+}
+
+// Get implementa runtime.QueryCache — fail-open total (ver a doc do
+// arquivo): NENHUM caminho de falha (Redis indisponível, chave ausente,
+// gob.Decode malformado/tipo não registrado) devolve algo diferente de
+// hit=false.
+func (c *redisQueryCache) Get(ctx context.Context, key string) (any, error, bool) {
+	gen, err := c.currentGeneration(ctx)
+	if err != nil {
+		slog.Error("redisruntime: QueryCache.Get: falha ao ler a geração, tratado como miss (fail-open)", "namespace", c.ns, "error", err)
+		return nil, nil, false
+	}
+
+	raw, err := c.client.Get(ctx, c.dataKey(gen, key)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil, false
+	}
+	if err != nil {
+		slog.Error("redisruntime: QueryCache.Get: falha no Redis, tratado como miss (fail-open)", "namespace", c.ns, "error", err)
+		return nil, nil, false
+	}
+
+	payload, err := decodePayload(raw)
+	if err != nil {
+		// Tipicamente um tipo concreto ainda não registrado via
+		// gob.Register (ver a doc do arquivo) — nunca um pânico, sempre um
+		// miss silencioso (a query roda de novo, sem cache).
+		slog.Warn("redisruntime: QueryCache.Get: falha ao decodificar (tipo não registrado via gob.Register?), tratado como miss (fail-open)", "namespace", c.ns, "error", err)
+		return nil, nil, false
+	}
+
+	if payload.HasErr {
+		return nil, payload.Err, true
+	}
+	return payload.Value, nil, true
+}
+
+// Set implementa runtime.QueryCache. ttl<=0 nunca cacheia (mesma regra de
+// memoryQueryCache) — nem sequer tenta ler a geração ou escrever no Redis.
+func (c *redisQueryCache) Set(ctx context.Context, key string, value any, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	c.write(ctx, key, cachePayload{Value: value}, ttl)
+}
+
+// SetErr implementa runtime.QueryCache (negativeCacheTtl, spec §15). ttl<=0
+// ou err nil nunca cacheia (mesma regra de memoryQueryCache).
+func (c *redisQueryCache) SetErr(ctx context.Context, key string, err error, ttl time.Duration) {
+	if ttl <= 0 || err == nil {
+		return
+	}
+	c.write(ctx, key, cachePayload{Err: err, HasErr: true}, ttl)
+}
+
+// write centraliza a escrita fail-open de Set/SetErr: qualquer falha (leitura
+// da geração, encode gob, SETEX) só é logada — uma escrita de cache que
+// falha nunca é fatal para o chamador (spec §15).
+func (c *redisQueryCache) write(ctx context.Context, key string, payload cachePayload, ttl time.Duration) {
+	gen, err := c.currentGeneration(ctx)
+	if err != nil {
+		slog.Error("redisruntime: QueryCache.Set/SetErr: falha ao ler a geração, escrita descartada", "namespace", c.ns, "error", err)
+		return
+	}
+
+	data, err := encodePayload(payload)
+	if err != nil {
+		slog.Error("redisruntime: QueryCache.Set/SetErr: falha ao serializar (gob), escrita descartada", "namespace", c.ns, "error", err)
+		return
+	}
+
+	if err := c.client.Set(ctx, c.dataKey(gen, key), data, ttl).Err(); err != nil {
+		slog.Error("redisruntime: QueryCache.Set/SetErr: falha no Redis, escrita descartada", "namespace", c.ns, "error", err)
+	}
+}
+
+// InvalidateAll implementa runtime.QueryCache — O(1), sem SCAN (ver a doc do
+// arquivo): um único INCR na chave de geração. Nunca recebe/propaga erro
+// (mesma forma da interface); uma falha aqui só é logada — o cache antigo
+// simplesmente continua sendo servido até expirar via TTL (pior caso: uma
+// invalidação perdida, nunca um pânico ou uma corrida de SCAN+DEL parcial).
+func (c *redisQueryCache) InvalidateAll() {
+	if err := c.client.Incr(context.Background(), c.genKey()).Err(); err != nil {
+		slog.Error("redisruntime: QueryCache.InvalidateAll: falha no Redis ao incrementar a geração", "namespace", c.ns, "error", err)
+	}
+}
+
+// Coalesce implementa runtime.QueryCache — local por processo (ver a doc do
+// arquivo), mesmo mecanismo single-flight de memoryQueryCache.Coalesce.
+func (c *redisQueryCache) Coalesce(key string, fn func() (any, error)) (any, error) {
+	c.mu.Lock()
+	if fl, inFlight := c.flights[key]; inFlight {
+		c.mu.Unlock()
+		<-fl.done
+		return fl.value, fl.err
+	}
+	fl := &queryCacheFlight{done: make(chan struct{})}
+	c.flights[key] = fl
+	c.mu.Unlock()
+
+	// defer (revisão da PR #26): se fn() panica, a limpeza e o close(fl.done)
+	// ainda precisam rodar — sem isso, toda goroutine concorrente/futura
+	// bloqueada em "<-fl.done" (acima) travaria pra sempre (vazamento de
+	// goroutine + a MESMA key nunca mais coalesce de novo, já que nunca sai
+	// de c.flights). O panic original continua propagando normalmente depois
+	// do defer (nenhum recover aqui).
+	defer func() {
+		c.mu.Lock()
+		delete(c.flights, key)
+		c.mu.Unlock()
+		close(fl.done)
+	}()
+
+	fl.value, fl.err = fn()
+	return fl.value, fl.err
+}
