@@ -1,0 +1,38 @@
+package redisruntime
+
+import (
+	"context"
+	"time"
+
+	redis "github.com/redis/go-redis/v9"
+)
+
+// pingTimeout limita a checagem inicial de conectividade em OpenClient —
+// fail-closed no startup (mesmo raciocínio de sqlruntime.OpenPostgres,
+// sqlrt/open_postgres.go.txt): um Redis inalcançável (rede/credencial
+// errada) falha o processo logo na inicialização, em vez de só aparecer no
+// primeiro Get/Set em produção.
+const pingTimeout = 10 * time.Second
+
+// OpenClient interpreta url (ex. "redis://user:pass@host:6379/0") e abre um
+// *redis.Client, com um Ping de verificação antes de devolver — chamado pelo
+// wiring gerado para Cache{backend:"redis"}/RateLimit{backend:"redis"}
+// (task J4.3, codegen/decl_query_cache.go / codegen/ratelimit.go): cada var
+// de cache/limitador Redis abre sua PRÓPRIA conexão (mesmo princípio de "1
+// instância de runtime.QueryCache por Query cacheada, nunca compartilhada"
+// já estabelecido em rtsrc/querycache.go.txt/decl_query_cache.go — aqui
+// generalizado para a conexão que a suporta).
+func OpenClient(url string) (*redis.Client, error) {
+	opts, err := redis.ParseURL(url)
+	if err != nil {
+		return nil, err
+	}
+	client := redis.NewClient(opts)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}

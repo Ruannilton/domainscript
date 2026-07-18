@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J4.3 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J5.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1080,13 +1080,77 @@ test ./...` (suíte inteira) verde; `TestGenerate*` (`driver`, wallet/shop
 e2e) — nenhum byte mudou (nenhum dos dois declara `RateLimit { backend:
 "redis" }`).
 
-Próxima: **J4.3** — **(R2/R3)** Seleção + wiring: `decl_query_cache.go`/
-`ratelimit.go` trocam o construtor in-memory pelo redis quando
-`Cache{backend:redis}`/`RateLimit{backend:redis}` (lidos dos ConfigBlocks
-de módulo, incl. as chamadas `gob.Register` que J4.1 documentou como
-responsabilidade do wiring); URL de `env(...)`; teste de fixture confirma
-que `url:`/`connection: env(...)` chega em `Decl.Entries`; golden + smoke;
-sem `backend: redis` ⇒ byte-idêntico. Fecha a Fase J4 (REQ-44 completo).
+Concluído: **J4.3** — **(R2/R3)** Seleção + wiring, fechando a Fase J4
+(REQ-44 completo). `codegen/decl_query_cache.go`: `cacheBackendKind(mod)`
+lê `Cache.backend` do mod.ds via `configStringLitEntry` (mesma chave/forma
+que `activeProviderDeps` já lia desde J4.1 — nenhuma reinvenção) contra
+`cacheProviders` (J4.1); `cacheConnectionGo(e, mod)` traduz
+`connection`/`url` para `os.Getenv(...)` (`env(...)`, R1) ou um literal —
+mesmo padrão de `channelConnectionGo`/`databaseConnectionGo`.
+`emitQueryCacheVar` agora recebe `mod`+`returnGoType`: sem `Cache {
+backend: "redis" }` continua emitindo exatamente
+`runtime.NewMemoryQueryCache()` (byte-idêntico, NFR-21); com o backend
+selecionado, cada Query cacheada abre sua PRÓPRIA conexão
+(`redisruntime.OpenClient(os.Getenv(...))` — novo `redisrt/open.go.txt`,
+`ParseURL`+`NewClient`+`Ping` com timeout, mesmo padrão de fail-closed no
+startup que `sqlruntime.OpenPostgres` já estabeleceu; nunca compartilhada
+entre Queries — generaliza o princípio "1 instância por Query" que já
+regia o backend in-memory), um `func init()` que faz `panic` se a conexão
+falhar e chama `gob.Register(<TipoDeRetorno>{})` (a responsabilidade que
+J4.1 documentou como pertencente a esta task), e
+`redisruntime.NewRedisQueryCache(client, "<NomeDaQuery>")` no lugar do
+in-memory. `codegen/ratelimit.go` ganhou o mesmo tratamento, generalizado
+para `routeRateLimitPlan.backend` (resolvido em `planRouteRateLimit` via
+`rateLimitBackendKind(modBlock)`) e `pendingRateLimitPlan.modBlock` (para
+`rateLimitConnectionGo` resolver a URL só na hora da emissão, já que
+`planRouteRateLimit` não tem `*emit.Emitter` em mãos): cada var de
+`Limiter` (flat ou por-tier) ganha sua própria conexão Redis do mesmo
+jeito, e `emitRateLimitLimiterVar` passa a emitir
+`redisruntime.NewRedisLimiter(client, <varName>, algoritmo, limit, período,
+burst)` no lugar de `runtime.NewLimiter(...)` quando `backend == "redis"`.
+`emitRouteRateLimitChecks` (e portanto `generateCmdMainFile`, que já
+propagava erro) passou a devolver `error` — a resolução de `connection`
+pode falhar de forma clara (fail-closed) quando `backend: "redis"` está
+declarado sem `connection`/`url`.
+
+**(R3)** `TestCacheModuleBlockAcceptsEnvConnection`
+(`codegen/redis_provider_wiring_test.go`, novo arquivo): confirma
+diretamente, inspecionando o AST devolvido por `driver.CheckProject`, que
+`connection: env("REDIS_URL")` dentro de `Cache { ... }` chega em
+`ConfigBlock.Entries` como um `*ast.CallExpr` de `env` com 1 argumento
+STRING — nenhuma mudança de front-end foi necessária (o parser já aceita
+config de módulo livre, confirmando a pré-condição do §design 7). Golden:
+`TestEmitQueryCacheRedisBackendGolden` (as 2 Queries cacheadas da fixture
+Widget — reaproveitada de J3/`decl_query_cache_test.go` — trocam para o
+backend redis, com `OpenClient`/`gob.Register`/`NewRedisQueryCache` por
+Query e nenhum `NewMemoryQueryCache()` residual) e
+`TestGenerateRateLimitRedisBackendGolden` (nova fixture mínima Orders/
+PlaceOrder, 1 rota `perIp`, `RateLimit { backend: "redis" }` — mesma
+`FailOpen`/headers/checks que o caminho in-memory já provava, só o
+construtor do `Limiter` muda). Smoke:
+`TestGenerateCacheRedisBackendSmokeCompile`/
+`TestGenerateRateLimitRedisBackendSmokeCompile` rodam o pipeline
+`codegen.Generate` completo (não uma `EmitX` isolada) + `gentest.
+SmokeCompile` sobre os bytes de fato escritos — prova que `go.mod`/
+`redisruntime/*.go` vendorados por `activeProviderDeps`/J0 (nenhuma mudança
+necessária ali — já eram genéricos desde J4.1/J4.2) mais o wiring novo
+compilam de verdade contra `github.com/redis/go-redis/v9`, sem abrir
+conexão nenhuma.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...`/`go vet -tags=integration ./...` limpos; a
+suíte completa de `decl_query_cache_test.go`/`ratelimit_test.go` (golden,
+determinismo, smoke, comportamental) continua verde SEM NENHUMA alteração
+— a prova viva de NFR-21/23 (nenhum programa sem `backend: "redis"` muda
+1 byte); `TestGenerate*` (`driver`, wallet/shop e2e) idem; `go test ./...`
+(suíte inteira) verde.
+
+Próxima: **J5.1** — `s3FileStorage`: `codegen/s3rt/filestorage.go.txt`
+implementa `runtime.FileStorage` sobre S3 (`Store`→PutObject key UUID +
+metadata, `Load`→GetObject, `SignedURL`→presign GET real,
+`Delete`→DeleteObject), entrada `fileProviders["s3"]` (aws-sdk-go-v2
+config/s3/presign). Abre a Fase J5 (REQ-45), o último provider do
+5-provider slice de Marco J.
 
 ## Issues em aberto
 

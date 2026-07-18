@@ -1344,7 +1344,9 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	if len(rlPending) > 0 {
 		emitRateLimitHelpers(e, runtimeAlias, httpAlias)
 		for _, p := range rlPending {
-			emitRouteRateLimitChecks(e, p, runtimeAlias, httpAlias)
+			if err := emitRouteRateLimitChecks(e, p, runtimeAlias, httpAlias); err != nil {
+				return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, err)
+			}
 		}
 	}
 	// Versionamento de API (G6, spec §17) — resolveAPIVersion/apiVersionGate +

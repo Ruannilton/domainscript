@@ -2,7 +2,9 @@ package codegen
 
 import (
 	"fmt"
+	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	"domainscript/ast"
@@ -11,6 +13,7 @@ import (
 	"domainscript/codegen/lower"
 	"domainscript/program"
 	"domainscript/symbols"
+	"domainscript/token"
 	"domainscript/types"
 )
 
@@ -289,6 +292,66 @@ func moduleCacheBlock(mod *program.Module) *ast.ConfigBlock {
 	return nil
 }
 
+// cacheBackendKind devolve "redis" quando o bloco Cache do mod.ds de mod
+// declara `backend: "redis"` (task J4.3, REQ-44.4, R1) — mesmo padrão de
+// channelProviderKind (channel_rabbitmq.go): "" (sem erro) quando o bloco
+// está ausente, a chave "backend" está ausente, ou o valor não é reconhecido
+// (cacheProviders, provider_registry.go) — o caminho in-memory de sempre
+// permanece byte-idêntico (NFR-21), nunca um erro de geração por um rótulo
+// que o front-end já aceita livremente. Mesma chave ("backend", literal
+// STRING via configStringLitEntry) já lida por activeProviderDeps
+// (provider_registry.go) — reaproveitada aqui, não reinventada.
+func cacheBackendKind(mod *program.Module) (string, error) {
+	block := moduleCacheBlock(mod)
+	if block == nil {
+		return "", nil
+	}
+	backend, ok, err := configStringLitEntry(block.Entries, "backend")
+	if err != nil {
+		return "", fmt.Errorf("mod.ds Cache.backend: %w", err)
+	}
+	if !ok {
+		return "", nil
+	}
+	if _, known := cacheProviders[strings.ToLower(backend)]; known {
+		return strings.ToLower(backend), nil
+	}
+	return "", nil
+}
+
+// cacheConnectionGo traduz a connection string do bloco Cache do mod.ds de
+// mod para uma expressão Go (task J4.3, R1, §design infra-providers 3.4) —
+// mesmo padrão de channelConnectionGo (channel_rabbitmq.go)/
+// databaseConnectionGo (sql_wiring.go): a chave "connection" tem prioridade;
+// "url" é aceita como sinônimo. "env(VAR)" vira "os.Getenv(VAR)"; um literal
+// STRING vira ele mesmo, entre aspas Go. Só chamada quando cacheBackendKind
+// já confirmou "redis" — nenhuma das duas chaves presentes é um erro de
+// geração claro (fail-closed), não uma string vazia silenciosa.
+func cacheConnectionGo(e *emit.Emitter, mod *program.Module) (string, error) {
+	block := moduleCacheBlock(mod)
+	var entries []ast.ConfigEntry
+	if block != nil {
+		entries = block.Entries
+	}
+
+	expr, ok := findConfigEntryExpr(entries, "connection")
+	if !ok {
+		expr, ok = findConfigEntryExpr(entries, "url")
+	}
+	if !ok {
+		return "", fmt.Errorf(`mod.ds Cache: backend "redis" exige "connection" ou "url" (ex. connection: env("REDIS_URL"))`)
+	}
+
+	if key, isEnv := envCallKey(expr); isEnv {
+		osAlias := e.Import("os")
+		return fmt.Sprintf("%s.Getenv(%q)", osAlias, key), nil
+	}
+	if lit, isLit := expr.(*ast.Literal); isLit && lit.Kind == token.STRING {
+		return strconv.Quote(lit.Value), nil
+	}
+	return "", fmt.Errorf(`mod.ds Cache: connection: forma não suportada (%T) — esperava env("VAR") ou um literal string`, expr)
+}
+
 // --- 2. Nomes derivados (mesma convenção de unexportedRunName, G2). ---
 
 // unexportedQueryRunName devolve o nome privado da função que carrega o
@@ -329,14 +392,56 @@ func queryParamNames(params []*ast.Field) []string {
 
 // emitQueryCacheVar emite a var de pacote do cache de uma Query
 // (auto-inicializada, sem Wire — mesmo padrão de "var idem",
-// usecase_idempotency.go).
-func emitQueryCacheVar(e *emit.Emitter, decl *ast.QueryDecl, plan *queryCachePlan, runtimeAlias string) {
+// usecase_idempotency.go). Sem `Cache { backend: "redis" }` no mod.ds de mod
+// (o caso comum, NFR-21), emite exatamente o que emitia antes de J4.3:
+// runtime.NewMemoryQueryCache() — byte-idêntico. Com o backend redis
+// selecionado (task J4.3, REQ-44.4), emite uma conexão PRÓPRIA (OpenClient,
+// nunca compartilhada entre Queries — mesmo princípio de instância isolada
+// já documentado acima), um gob.Register do tipo de retorno (exigido por
+// redisruntime.NewRedisQueryCache — ver a doc de rtsrc/cache.go.txt/
+// redisrt/cache.go.txt) e redisruntime.NewRedisQueryCache no lugar do
+// in-memory. mod pode ser nil (nenhum backend redis possível, mesmo efeito
+// de mod.ds sem Cache{}).
+func emitQueryCacheVar(e *emit.Emitter, decl *ast.QueryDecl, plan *queryCachePlan, returnGoType, runtimeAlias string, mod *program.Module) error {
 	varName := queryCacheVarName(decl.Name)
 	e.Line("")
 	e.Line("// %s é o cache da Query %s (spec §15, G3): invalidado (in-process,", varName, decl.Name)
 	e.Line("// imediatamente após emit, antes de qualquer fila externa) pelos eventos")
 	e.Line("// [%s] — %s.", strings.Join(plan.invalidateOn, ", "), plan.invalidationSourceNote())
-	e.Line("var %s = %s.NewMemoryQueryCache()", varName, runtimeAlias)
+
+	backend, err := cacheBackendKind(mod)
+	if err != nil {
+		return fmt.Errorf("codegen: Query %s: %w", decl.Name, err)
+	}
+	if backend != "redis" {
+		e.Line("var %s = %s.NewMemoryQueryCache()", varName, runtimeAlias)
+		return nil
+	}
+
+	connGo, err := cacheConnectionGo(e, mod)
+	if err != nil {
+		return fmt.Errorf("codegen: Query %s: %w", decl.Name, err)
+	}
+	redisAlias := e.Import(path.Join(domainModuleRoot, "redisruntime"))
+	gobAlias := e.Import("encoding/gob")
+
+	clientVar := varName + "RedisClient"
+	clientErrVar := varName + "RedisClientErr"
+	e.Line("var %s, %s = %s.OpenClient(%s)", clientVar, clientErrVar, redisAlias, connGo)
+	e.Line("")
+	e.Block("func init()", func() {
+		e.Block(fmt.Sprintf("if %s != nil", clientErrVar), func() {
+			e.Line("panic(%s)", clientErrVar)
+		})
+		e.Line("var zero %s", returnGoType)
+		e.Line("%s.Register(zero)", gobAlias)
+	})
+	e.Line("")
+	e.Line("// %s: instância Redis (spec §15/REQ-44.4, G3/J4.3) — nunca compartilhada", varName)
+	e.Line("// com outra Query cacheada (mesmo princípio de \"1 instância por Query\" já")
+	e.Line("// estabelecido acima para o backend in-memory).")
+	e.Line("var %s = %s.NewRedisQueryCache(%s, %q)", varName, redisAlias, clientVar, decl.Name)
+	return nil
 }
 
 // cachedQueryWire é o que EmitQueries acumula, por Query cacheada, para

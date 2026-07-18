@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -208,6 +209,61 @@ func resolveRateLimitAlgorithm(modBlock *ast.ConfigBlock) (string, error) {
 	}
 }
 
+// rateLimitBackendKind devolve "redis" quando modBlock (o bloco RateLimit do
+// mod.ds do módulo ALVO da rota) declara `backend: "redis"` (task J4.3,
+// REQ-44.4, R1) — mesmo padrão de cacheBackendKind (decl_query_cache.go)/
+// channelProviderKind (channel_rabbitmq.go): "" (sem erro) quando modBlock é
+// nil, a chave "backend" está ausente, ou o valor não é reconhecido
+// (rateLimitProviders, provider_registry.go) — o caminho in-memory de
+// sempre permanece byte-idêntico (NFR-21).
+func rateLimitBackendKind(modBlock *ast.ConfigBlock) (string, error) {
+	if modBlock == nil {
+		return "", nil
+	}
+	backend, ok, err := configStringLitEntry(modBlock.Entries, "backend")
+	if err != nil {
+		return "", fmt.Errorf("mod.ds RateLimit.backend: %w", err)
+	}
+	if !ok {
+		return "", nil
+	}
+	if _, known := rateLimitProviders[strings.ToLower(backend)]; known {
+		return strings.ToLower(backend), nil
+	}
+	return "", nil
+}
+
+// rateLimitConnectionGo traduz a connection string do bloco RateLimit
+// (modBlock) para uma expressão Go (task J4.3, R1) — mesmo padrão de
+// cacheConnectionGo (decl_query_cache.go)/channelConnectionGo
+// (channel_rabbitmq.go): "connection" tem prioridade, "url" é sinônimo;
+// "env(VAR)" vira "os.Getenv(VAR)"; um literal STRING vira ele mesmo. Só
+// chamada quando rateLimitBackendKind já confirmou "redis" — nenhuma das
+// duas chaves presentes é um erro de geração claro (fail-closed).
+func rateLimitConnectionGo(e *emit.Emitter, modBlock *ast.ConfigBlock) (string, error) {
+	var entries []ast.ConfigEntry
+	if modBlock != nil {
+		entries = modBlock.Entries
+	}
+
+	expr, ok := findConfigEntryExpr(entries, "connection")
+	if !ok {
+		expr, ok = findConfigEntryExpr(entries, "url")
+	}
+	if !ok {
+		return "", fmt.Errorf(`mod.ds RateLimit: backend "redis" exige "connection" ou "url" (ex. connection: env("REDIS_URL"))`)
+	}
+
+	if key, isEnv := envCallKey(expr); isEnv {
+		osAlias := e.Import("os")
+		return fmt.Sprintf("%s.Getenv(%q)", osAlias, key), nil
+	}
+	if lit, isLit := expr.(*ast.Literal); isLit && lit.Kind == token.STRING {
+		return strconv.Quote(lit.Value), nil
+	}
+	return "", fmt.Errorf(`mod.ds RateLimit: connection: forma não suportada (%T) — esperava env("VAR") ou um literal string`, expr)
+}
+
 // resolveRateLimitFailOpen combina o default do mod.ds RateLimit.
 // onBackendFailure ("open" quando o bloco/chave estão ausentes — o default
 // do próprio spec §16) com o override de cfg (Interface/rota, já mergeado
@@ -298,6 +354,7 @@ type routeRateLimitPlan struct {
 	byTier    bool
 	rules     []rateLimitRule     // dimensões flat — vazio quando byTier
 	tiers     []tierRateLimitPlan // um por RateLimitTierDecl do programa, em ordem alfabética — vazio quando !byTier
+	backend   string              // "" (in-memory, NFR-21) ou "redis" (task J4.3, REQ-44.4) — de mod.ds RateLimit.backend
 }
 
 // rateLimitRulesFromDims resolve o subconjunto de dims presente, na ordem
@@ -397,6 +454,10 @@ func planRouteRateLimit(iface *ast.InterfaceDecl, route *ast.Route, mod *program
 	if err != nil {
 		return nil, err
 	}
+	backend, err := rateLimitBackendKind(modBlock)
+	if err != nil {
+		return nil, err
+	}
 	burstGo := ""
 	if cfg.burst != nil {
 		n, perr := strconv.ParseInt(cfg.burst.Value, 10, 64)
@@ -406,7 +467,7 @@ func planRouteRateLimit(iface *ast.InterfaceDecl, route *ast.Route, mod *program
 		burstGo = strconv.FormatInt(n, 10)
 	}
 
-	plan := &routeRateLimitPlan{algorithm: algorithm, failOpen: failOpen, burstGo: burstGo, byTier: cfg.byTier}
+	plan := &routeRateLimitPlan{algorithm: algorithm, failOpen: failOpen, burstGo: burstGo, byTier: cfg.byTier, backend: backend}
 	if !cfg.byTier {
 		rules, rerr := rateLimitRulesFromDims(cfg.dims)
 		if rerr != nil {
@@ -476,7 +537,8 @@ func rateLimitBaseName(target string, used map[string]int) string {
 type pendingRateLimitPlan struct {
 	baseName string
 	plan     *routeRateLimitPlan
-	describe string // "POST /path -> Target", para os comentários gerados
+	describe string           // "POST /path -> Target", para os comentários gerados
+	modBlock *ast.ConfigBlock // bloco RateLimit do mod.ds do módulo alvo — nil quando ausente; usado só quando plan.backend == "redis" (task J4.3, rateLimitConnectionGo)
 }
 
 // httpRateLimitEnv agrupa o que emitRoute/emitUseCaseRoute/emitQueryRoute
@@ -521,7 +583,7 @@ func (env *httpRateLimitEnv) resolveAndQueue(route *ast.Route, targetModule stri
 	}
 	base := rateLimitBaseName(route.Target, env.used)
 	describe := fmt.Sprintf("%s %q -> %s", route.Method, route.Path, route.Target)
-	*env.pending = append(*env.pending, pendingRateLimitPlan{baseName: base, plan: plan, describe: describe})
+	*env.pending = append(*env.pending, pendingRateLimitPlan{baseName: base, plan: plan, describe: describe, modBlock: moduleRateLimitBlock(mod)})
 	return base + "RateLimitChecks", nil
 }
 
@@ -569,11 +631,33 @@ func rateLimitKeyExpr(dim string) string {
 }
 
 // emitRateLimitLimiterVar emite "var <varName> runtime.Limiter =
-// runtime.NewLimiter(...)" para UMA regra de dimensão já resolvida.
-func emitRateLimitLimiterVar(e *emit.Emitter, varName, describe, algoLit, burstGo, runtimeAlias string, rule rateLimitRule) {
+// runtime.NewLimiter(...)" para UMA regra de dimensão já resolvida — ou,
+// quando backend=="redis" (task J4.3, REQ-44.4, mod.ds `RateLimit {
+// backend: "redis" }`), abre uma conexão Redis PRÓPRIA (nunca compartilhada
+// entre limitadores — mesmo princípio de instância isolada de
+// emitQueryCacheVar/decl_query_cache.go, generalizado aqui) e emite
+// redisruntime.NewRedisLimiter no lugar do in-memory. connGo é a expressão
+// Go da connection string (cacheConnectionGo/rateLimitConnectionGo já
+// resolvida pelo chamador) — só usada quando backend=="redis".
+func emitRateLimitLimiterVar(e *emit.Emitter, varName, describe, algoLit, burstGo, runtimeAlias string, rule rateLimitRule, backend, connGo string) {
 	e.Line("")
 	e.Line("// %s é o limitador %s de %s (spec §16, G4).", varName, rule.dim, describe)
-	e.Line("var %s %s.Limiter = %s.NewLimiter(%s, %d, %s, %s)", varName, runtimeAlias, runtimeAlias, algoLit, rule.count, rule.periodGo, burstGo)
+	if backend != "redis" {
+		e.Line("var %s %s.Limiter = %s.NewLimiter(%s, %d, %s, %s)", varName, runtimeAlias, runtimeAlias, algoLit, rule.count, rule.periodGo, burstGo)
+		return
+	}
+
+	redisAlias := e.Import(path.Join(domainModuleRoot, "redisruntime"))
+	clientVar := varName + "RedisClient"
+	clientErrVar := varName + "RedisClientErr"
+	e.Line("var %s, %s = %s.OpenClient(%s)", clientVar, clientErrVar, redisAlias, connGo)
+	e.Line("")
+	e.Block("func init()", func() {
+		e.Block(fmt.Sprintf("if %s != nil", clientErrVar), func() {
+			e.Line("panic(%s)", clientErrVar)
+		})
+	})
+	e.Line("var %s %s.Limiter = %s.NewRedisLimiter(%s, %q, %s, %d, %s, %s)", varName, runtimeAlias, redisAlias, clientVar, varName, algoLit, rule.count, rule.periodGo, burstGo)
 }
 
 // emitRouteRateLimitChecks emite, no nível de PACOTE (ver a doc de
@@ -582,7 +666,7 @@ func emitRateLimitLimiterVar(e *emit.Emitter, varName, describe, algoLit, burstG
 // (tier, dimensão) — byTier — e a função "<baseName>RateLimitChecks(ctx,
 // r) []runtime.RateLimitCheck" que emitUseCaseRoute/emitQueryRoute já
 // chamou pelo nome (resolveAndQueue) enquanto montava o handler.
-func emitRouteRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, runtimeAlias, httpAlias string) {
+func emitRouteRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, runtimeAlias, httpAlias string) error {
 	ctxAlias := e.Import("context")
 	algoLit := strconv.Quote(p.plan.algorithm)
 	burstGo := p.plan.burstGo
@@ -591,23 +675,33 @@ func emitRouteRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, runtimeAl
 	}
 	funcName := p.baseName + "RateLimitChecks"
 
-	if p.plan.byTier {
-		emitByTierRateLimitChecks(e, p, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias)
-		return
+	connGo := ""
+	if p.plan.backend == "redis" {
+		var err error
+		connGo, err = rateLimitConnectionGo(e, p.modBlock)
+		if err != nil {
+			return err
+		}
 	}
-	emitFlatRateLimitChecks(e, p, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias)
+
+	if p.plan.byTier {
+		emitByTierRateLimitChecks(e, p, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias, connGo)
+		return nil
+	}
+	emitFlatRateLimitChecks(e, p, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias, connGo)
+	return nil
 }
 
 // emitFlatRateLimitChecks é o caso comum (não byTier): uma var de
 // limitador por dimensão configurada, e a função de checagem monta
 // []runtime.RateLimitCheck append-ando cada uma (pulando as que não têm
 // identidade disponível, ver emitRateLimitCheckAppend).
-func emitFlatRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias string) {
+func emitFlatRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias, connGo string) {
 	varNames := make(map[string]string, len(p.plan.rules))
 	for _, rule := range p.plan.rules {
 		varName := p.baseName + rateLimitDimSuffix(rule.dim) + "Limiter"
 		varNames[rule.dim] = varName
-		emitRateLimitLimiterVar(e, varName, p.describe, algoLit, burstGo, runtimeAlias, rule)
+		emitRateLimitLimiterVar(e, varName, p.describe, algoLit, burstGo, runtimeAlias, rule, p.plan.backend, connGo)
 	}
 
 	e.Line("")
@@ -627,14 +721,14 @@ func emitFlatRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, funcName, 
 // a função de checagem resolve o tier de tenant.Tier (runtime.TenantFrom)
 // — sem tenant/tier resolvido, devolve nil (nenhuma dimensão aplicada,
 // "rotas sem tenant" generalizado, ver a doc do arquivo) em vez de um erro.
-func emitByTierRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias string) {
+func emitByTierRateLimitChecks(e *emit.Emitter, p pendingRateLimitPlan, funcName, algoLit, burstGo, runtimeAlias, httpAlias, ctxAlias, connGo string) {
 	tierVarNames := make(map[string]map[string]string, len(p.plan.tiers)) // tier -> dim -> varName
 	for _, tp := range p.plan.tiers {
 		vars := make(map[string]string, len(tp.rules))
 		for _, rule := range tp.rules {
 			varName := p.baseName + tp.name + rateLimitDimSuffix(rule.dim) + "Limiter"
 			vars[rule.dim] = varName
-			emitRateLimitLimiterVar(e, varName, fmt.Sprintf("%s (tier %s)", p.describe, tp.name), algoLit, burstGo, runtimeAlias, rule)
+			emitRateLimitLimiterVar(e, varName, fmt.Sprintf("%s (tier %s)", p.describe, tp.name), algoLit, burstGo, runtimeAlias, rule, p.plan.backend, connGo)
 		}
 		tierVarNames[tp.name] = vars
 	}
