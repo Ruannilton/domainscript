@@ -127,7 +127,13 @@ func channelConnectionGo(e *emit.Emitter, ch *program.Channel) (string, error) {
 		expr, ok = findConfigEntryExpr(entries, "url")
 	}
 	if !ok {
-		return `""`, nil
+		// Erro de geração claro (revisão da PR #27), não uma string vazia
+		// silenciosa: sem connection/url, amqp.Dial("") falharia de forma
+		// confusa só em runtime, na inicialização do processo — mesma
+		// postura fail-closed de unsupportedChannelKindError/
+		// rejectUnsupportedTenancyStrategies (nunca deixar um problema
+		// detectável em tempo de geração vazar pra runtime).
+		return "", fmt.Errorf(`canal %s -> %s: provider "rabbitmq" exige "connection" ou "url" (ex. connection: env("AMQP_URL"))`, ch.From, ch.To)
 	}
 
 	if key, isEnv := envCallKey(expr); isEnv {
