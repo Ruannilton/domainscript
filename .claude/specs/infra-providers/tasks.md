@@ -198,7 +198,7 @@
     sem precisar de mutex extra pra Ack/Nack concorrente sobre um canal
     compartilhado (cada canal é dono de uma única goroutine). Ver a doc do
     arquivo.
-- [ ] **J3.3** Reconexão.
+- [x] **J3.3** Reconexão.
   - a. Supervisão de `Connection.NotifyClose`/`Channel.NotifyClose` com loop de
     reconnect+backoff, re-declarando exchanges/filas/consumidores; publish na
     janela de reconexão retorna erro (o relay do outbox re-tenta). (REQ-43.6,

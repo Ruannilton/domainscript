@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.3 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.4 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -741,6 +741,69 @@ consumidores) desta task; `Publish` na janela de reconexão retorna erro (o
 relay do outbox re-tenta). Teste unit: fechar o canal fake ⇒ o supervisor
 tenta reabrir.
 
+Concluído: **J3.3** — Reconexão (REQ-43.6). `rabbitmqChannel` ganha um
+supervisor (`supervise`, uma goroutine própria disparada por
+`NewRabbitMQChannel`) que observa `Connection.NotifyClose` da conexão
+ATUAL e, ao detectar um fechamento que não veio de `Close()` (a checagem de
+`r.stopCh` logo após o disparo de `NotifyClose` distingue as duas causas —
+`Close()` sempre fecha `stopCh` ANTES de fechar a conexão de verdade),
+aciona `reconnectLoop`: redial + re-declaração da topologia INTEIRA +
+reabertura de todos os consumidores, com backoff exponencial
+(`nextReconnectBackoff`, mesmo idioma de `DurableOutbox.Start`,
+`rtsrc/outbox.go.txt` — dobra a cada falha, capado em
+`reconnectMaxBackoff` = 30s, partindo de `reconnectInitialBackoff` = 1s).
+
+Refatoração pré-requisito: a lógica de declaração de topologia (antes só
+inline em `NewRabbitMQChannel`) virou o método `declareTopology`, e o dial +
+declare + abertura de consumidores virou `dialAndSetup` — as DUAS reusadas
+por `NewRabbitMQChannel` (construção) e `reconnectLoop` (reconexão), nunca
+duplicadas.
+
+`conn`/`ch`/`consumeChans` deixaram de ser write-once na construção — agora
+protegidos por `connMu` (`sync.RWMutex`, campo NOVO desta task): `Publish`
+lê `r.ch` sob `RLock` e devolve erro imediatamente se for `nil` (janela de
+reconexão), nunca bloqueia nem desreferencia nil; `pubMu` continua existindo,
+mas agora só serializa a chamada de I/O (`PublishWithContext`) em si.
+`Subscribe` não muda (só popula um map protegido por outro mutex, nunca toca
+conn/ch). `Close()` fecha `stopCh` (via `closeOnce`, então chamar `Close()`
+mais de uma vez nunca panica) ANTES de fechar conexão/canais — é essa ordem
+que permite ao supervisor distinguir "fechamento deliberado" de "blip de
+rede" sem nenhuma outra sincronização extra.
+
+**Revisão da PR #25** corrigiu três bugs de corrida encontrados após o
+primeiro push: (1) `supervise()` agora checa `r.conn == nil` antes de
+chamar `NotifyClose` — evita um nil pointer dereference quando
+`reconnectLoop` retorna sem reconectar (`Close()` concorrente durante a
+janela de reconexão); (2) `reconnectLoop` fecha explicitamente a conexão
+antiga (não só os canais), liberando recursos do lado do cliente; (3)
+`reconnectLoop` checa `r.stopCh` sob `connMu.Lock` ANTES de salvar uma
+conexão nova recém-aberta — se `Close()` rodou enquanto `dialAndSetup()`
+estava em andamento, a conexão/canais novos são fechados imediatamente em
+vez de vazarem.
+
+Teste novo: `codegen/amqp_reconnect_test.go` (mesmo padrão white-box de
+`amqp_topology_test.go`/`amqp_envelope_test.go` — `package codegen`, fixture
+via `gentest.WriteFiles`/`RunTests` sobre `buildAMQPRuntimeProjectFiles`,
+teste embutido `package amqpruntime`): `TestAMQPReconnectBackoffSequence`
+roda `TestNextReconnectBackoffDoublesAndCaps` (a sequência dobra e capa em
+`reconnectMaxBackoff`) e `TestNextReconnectBackoffNeverExceedsCapFromLargeInput`
+(clamping defensivo contra overflow de `time.Duration`). **Desvio do item
+b da task** ("fechar o canal fake ⇒ o supervisor tenta reabrir" literal):
+`*amqp.Connection`/`*amqp.Channel` (`github.com/rabbitmq/amqp091-go`) são
+STRUCTS concretos, não interfaces — não há como fabricar um `NotifyClose`
+"fake" sem abrir um socket de verdade contra um broker real (documentado no
+topo de `rabbitmq.go.txt`, seção "Reconexão"). Testado, então, o que É
+puro/testável sem broker (a sequência de backoff); o teste de integração
+de verdade (gated por uma env var tipo `AMQP_URL`) fica fora do orçamento
+desta task — pertence a J3.4/J6.
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go
+test ./...` (suíte inteira) verde, incluindo `TestAMQPEnvelopeRoundTrip`/
+`TestAMQPTopologyAssembly` (J3.1/J3.2, ainda passam sobre o
+`rabbitmq.go.txt` reescrito) e `TestGenerate*` (`driver`, wallet/shop e2e —
+nenhum byte mudou, NFR-21/23 intactos: nenhum dos dois declara canal
+`provider: "rabbitmq"`).
+
 Concluído: **J4.1** — adapter `redisQueryCache` (Cache §15, REQ-44.1/44.5,
 §design infra-providers 3.4), abrindo a Fase J4. Novo pacote
 `codegen/redisrt/` (mesmo padrão de `amqprt`/`sqlrt`/`grpcrt`: `doc.go` +
@@ -850,10 +913,22 @@ TestActiveSQLProviders|TestEmitGoMod|TestPolicy|TestOutbox|TestGentest|
 TestProviderRegistry|TestActiveProviderDeps|
 TestGenerateProviderRuntimeFiles|TestAMQP"` e `go test ./driver/... -run
 TestGenerate` (wallet/shop e2e, zero bytes mudaram, NFR-21) verdes; `go test
-./...` (suíte inteira) verde. Nota: por estar rodando em paralelo com outra
-task (J3.3) noutra branch, o ponteiro "Próxima task" acima e a linha da
-tabela no topo deste arquivo NÃO foram atualizados por esta task — deixados
-como encontrados, para reconciliação manual entre as duas PRs.
+./...` (suíte inteira) verde.
+
+**Reconciliação** (J3.3 e J4.1 foram desenvolvidas em paralelo, em branches
+separadas — ver a nota na PR de cada uma): ambos os parágrafos acima foram
+mesclados nesta atualização; nenhum outro arquivo divergiu (`tasks.md` fez
+merge automático, os dois só marcavam checkboxes independentes).
+
+Próxima: **J3.4** — Seleção + wiring + integração do canal RabbitMQ:
+`channel.go` ganha `channelProvider(ch)` (lê `provider` de
+`ch.Decl.Entries`), produtor/consumidor trocam `NewQueueChannel` por
+`NewRabbitMQChannel(url, cfg, keyFunc)` quando `"rabbitmq"` (sem provider ⇒
+in-memory de sempre; `grpc/http/stream` ⇒ erro de geração de sempre); URL de
+`connection: env(...)` via `envCallGo`; golden + smoke sobre fixture
+multi-service; integração `//go:build integration` guardada por `AMQP_URL`.
+Fecha a Fase J3 (REQ-43 completo). J4.2 (`redisLimiter`/RateLimit) segue
+disponível como alternativa independente, sem dependência de J3.4.
 
 ## Issues em aberto
 
