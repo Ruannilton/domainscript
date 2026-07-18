@@ -1187,7 +1187,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					candidates = append(candidates, channelEventCandidate{evtDecl: ev, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ev.Name)})
 				}
 			}
-			if err := emitChannelQueueVar(e, channelVarName, ":=", producerChannel, candidates, model, tab, producerModule, goname.NewVOOperatorRegistry(), runtimeAlias); err != nil {
+			if err := emitChannelTransportVar(e, channelVarName, ":=", producerChannel, candidates, model, tab, producerModule, goname.NewVOOperatorRegistry(), runtimeAlias, true); err != nil {
 				mainErr = fmt.Errorf("canal de saída do módulo %s: %w", producerModule, err)
 				return
 			}

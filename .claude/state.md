@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.4 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J4.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -920,15 +920,98 @@ separadas — ver a nota na PR de cada uma): ambos os parágrafos acima foram
 mesclados nesta atualização; nenhum outro arquivo divergiu (`tasks.md` fez
 merge automático, os dois só marcavam checkboxes independentes).
 
-Próxima: **J3.4** — Seleção + wiring + integração do canal RabbitMQ:
-`channel.go` ganha `channelProvider(ch)` (lê `provider` de
-`ch.Decl.Entries`), produtor/consumidor trocam `NewQueueChannel` por
-`NewRabbitMQChannel(url, cfg, keyFunc)` quando `"rabbitmq"` (sem provider ⇒
-in-memory de sempre; `grpc/http/stream` ⇒ erro de geração de sempre); URL de
-`connection: env(...)` via `envCallGo`; golden + smoke sobre fixture
-multi-service; integração `//go:build integration` guardada por `AMQP_URL`.
-Fecha a Fase J3 (REQ-43 completo). J4.2 (`redisLimiter`/RateLimit) segue
-disponível como alternativa independente, sem dependência de J3.4.
+Concluído: **J3.4** — Seleção + wiring + integração do canal RabbitMQ,
+fecha a Fase J3 (REQ-43 completo). Novo `codegen/channel_rabbitmq.go`:
+`channelProvider(ch)` lê `provider` de `ch.Decl.Entries` (R2, mesmo helper
+`configStringLitEntry` que `activeProviderDeps` já usa para
+`channelProviders["rabbitmq"]`); `channelProviderKind(ch)` normaliza contra
+o registro real — `""` (in-memory de sempre) quando ausente OU não
+reconhecido (ex. `"kafka"`, ainda não implementado — nunca um erro de
+geração por um rótulo que o front-end já aceita livremente), `"rabbitmq"`
+quando reconhecido. `channelConnectionGo(e, ch)` traduz `connection`/`url`
+de `ch.Decl.Entries` (R1, mesmo padrão de `databaseConnectionGo`,
+`sql_wiring.go`, J1.3): `env("VAR")` vira `os.Getenv("VAR")`, um literal
+string vira ele mesmo; sem nenhuma das duas chaves, `""` (sem campo DSN
+estático pra cair de volta, `program.Channel` nunca teve um).
+
+`emitChannelTransportVar` (novo) substitui as duas chamadas diretas a
+`emitChannelQueueVar` (`decl_policy.go:emitPolicyWireFunc`, lado
+consumidor; `codegen.go:generateCmdMainFile`, lado produtor) — despacha
+para `emitChannelQueueVar` de sempre (byte-idêntico, NFR-21) quando
+`channelProviderKind` não é `"rabbitmq"`, ou para `emitRabbitMQChannelVar`
+(novo) quando é. `emitRabbitMQChannelVar` monta
+`amqpruntime.NewRabbitMQChannel(<connection>, amqpruntime.RabbitMQConfig{
+Exchange: "<From>-<To>", Queue: "<From>-<To>", Concurrency: <workers.
+concurrency>, MaxAttempts: <circuitBreaker.threshold>, RetryTTL:
+<circuitBreaker.cooldown>, KeyFunc: <mesmo switch de orderBy que o caminho
+in-memory já usa>}, <registry>)` + `if err != nil { log.Fatal(err) }`
+(fail-closed na inicialização — mesma postura de `emitXADatabaseWiring`);
+`workers.maxRate`/`.batchSize` são específicos de `QueueChannelConfig`
+in-memory, sem equivalente em `RabbitMQConfig` — silenciosamente ignorados
+(nenhuma mentira: REQ-43 nunca promete os dois pro provider real). O
+registry (R8/REQ-43.5) é montado INLINE a partir dos `candidates` já
+resolvidos pelo CHAMADOR (o Policy.On no consumidor, todo PublicEvent do
+módulo produtor no produtor) — nunca via `contracts.EventRegistry()`/
+`EventRegistry()`: o tipo já é conhecido ESTATICAMENTE aqui, mesmo
+raciocínio que `emitDurableOutboxConstruction` (`decl_policy.go`, J2.5) já
+documenta para o outbox durável.
+
+**Achado desta task, corrigido dentro do orçamento (erro pertence ao
+escopo, CLAUDE.md):** `RabbitMQConfig.ConsumeDisabled` (novo campo,
+`amqprt/rabbitmq.go.txt`) — o lado PRODUTOR só chama `Publish`, nunca
+`Subscribe`, mas `NewRabbitMQChannel` sempre declarava fila(s) e subia
+consumidores de verdade na construção; como a fila é um recurso
+COMPARTILHADO no broker (ao contrário do `QueueChannel` in-memory, onde
+cada processo tem sua PRÓPRIA cópia isolada), um consumidor espúrio do lado
+produtor competiria pelas mensagens com o consumidor real do outro service
+e as descartaria em silêncio (`deliver` roda zero handlers ⇒ sucesso
+vacuamente ⇒ `ack` — a mensagem nunca chegaria no handler de verdade).
+`ConsumeDisabled: true` faz `declareTopology` só declarar a exchange
+principal (Publish precisa dela existir — idempotente, o lado consumidor
+pode declará-la de novo sem erro), sem fila/DLX/retry/DLQ nem consumidor
+nenhum; `dialAndSetup` então não abre nenhum `consumeChan` para essa
+instância. `emitRabbitMQChannelVar` passa `consumeDisabled=true` só na
+chamada de `generateCmdMainFile`.
+
+Testes novos: `codegen/channel_rabbitmq_test.go` (reusa a fixture
+multi-service de F5, `channel_test.go` — `parseChannelFixture`/
+`channelFixtureAlphaModDs`/`channelFixtureBetaPolicyDs` — só acrescentando
+`provider: "rabbitmq"` + `connection: env("AMQP_URL")` ao canal):
+`TestEmitPoliciesRabbitMQChannelGolden` (lado consumidor: `NewRabbitMQChannel`
+com a config/registry esperados, SEM `ConsumeDisabled`, nunca mais
+`runtime.NewQueueChannel`), `TestGenerateRabbitMQChannelFixtureProducer
+AndConsumerCompile` (lado produtor: `ConsumeDisabled: true`, `uow :=
+runtime.NewUnitOfWork(store, alphaChannel)` — MESMA forma de wiring que o
+caminho in-memory já usava, só troca o construtor — smoke compile real,
+importa `amqp091-go` de verdade) e
+`TestChannelRabbitMQUnrecognizedProviderStaysInMemory` (NFR-21: `"kafka"`
+não reconhecido ⇒ `runtime.NewQueueChannel` de sempre, nenhuma referência a
+`amqpruntime`). `codegen/channel_rabbitmq_integration_test.go` (`//go:build
+integration`, mesmo padrão de `sql_postgres_integration_test.go`, J1.4.b):
+`TestRabbitMQIntegration` gera o projeto de verdade e roda, via
+`gentest.RunTests`, um teste embutido que constrói DUAS instâncias
+SEPARADAS de `rabbitmqChannel` (produtora `ConsumeDisabled: true`,
+consumidora `ConsumeDisabled: false` com um handler `Subscribe`) contra o
+MESMO exchange/queue — `Publish` na produtora chega no handler da
+consumidora via um broker real (a prova de NFR-22, publicar→consumir
+cross-process == in-process); pula (`t.Skip`, nunca falha) sem `AMQP_URL`
+(REQ-48.3/NFR-24) — confirmado compilando com `-tags=integration` e pulando
+sem a env var, sem broker algum disponível neste ambiente.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...`/`go vet -tags=integration ./...` limpos; `go
+test ./...` (suíte inteira) verde, incluindo TODOS os testes de
+`channel_test.go` (F5, a fixture SEM provider — a prova viva de NFR-21: o
+mesmo programa sem provider continua byte-idêntico, nem uma linha mudou) e
+`TestGenerate*` (`driver`, wallet/shop e2e — nenhum dos dois declara canal
+`provider: "rabbitmq"`, nenhum byte mudou).
+
+Próxima: **J4.2** — `redisLimiter` (RateLimit §16) + fallback local:
+`redisrt/ratelimit.go.txt` implementa `Limiter` via script Lua atômico
+(token_bucket/sliding/fixed); entrada `rateLimitProviders["redis"]`;
+compõe um `Limiter` in-memory como fallback quando o Redis está
+indisponível (proteção por-réplica ativa, não fail-open total — REQ-44.5).
+Abre a última fase de provider real antes do fechamento (J5, S3).
 
 ## Issues em aberto
 

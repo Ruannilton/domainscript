@@ -643,7 +643,7 @@ func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.Polic
 			target := "d"
 			if info.channel != nil {
 				candidates := []channelEventCandidate{{evtDecl: info.evt.decl, goPtrType: info.evt.goPtrType}}
-				if err := emitChannelQueueVar(e, info.varName, "=", info.channel, candidates, model, tab, module, reg, runtimeAlias); err != nil {
+				if err := emitChannelTransportVar(e, info.varName, "=", info.channel, candidates, model, tab, module, reg, runtimeAlias, false); err != nil {
 					funcErr = fmt.Errorf("Policy %s: canal %s -> %s: %w", decl.Name, info.channel.From, info.channel.To, err)
 					return
 				}
