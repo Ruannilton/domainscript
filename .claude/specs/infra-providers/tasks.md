@@ -127,16 +127,23 @@
     falha ⇒ re-tenta (at-least-once). (REQ-42.2/42.3, §design 3.2).
   - b. Teste unit do relay com `*sql.DB` sqlite `:memory:` (sem infra), incl.
     crash simulado (não marca ⇒ re-entrega).
-- [ ] **J2.4** **(R9)** Relay alimenta o canal cross-service.
-  - a. `NewDurableOutbox(..., publisher)` recebe o transporte de saída; o relay
-    roteia por `event_type`: destino cross-service (a topologia tem canal de
-    saída, `producerChannelFor`) ⇒ `ChannelTransport.Publish`; senão ⇒
-    in-process. Só marca `delivered_at` após o `Publish` suceder. (REQ-42.6,
-    §design 3.2a).
-  - b. **Proibir** publish direto no commit para destino cross-service (o
-    publisher da uow deixa de receber o canal quando o outbox durável está
-    ativo). Teste: crash entre commit e publish ⇒ evento re-entregue (não
-    perdido).
+- [x] **J2.4** **(R9)** Relay alimenta o canal cross-service.
+  - a. `NewDurableOutbox(..., publisher)` recebe o transporte de saída
+    (variádico, mesma convenção de `NewUnitOfWork`): quando presente, TODA
+    linha entregue roteia por `publisher.Publish` em vez dos handlers
+    localmente assinados via `Subscribe` — decisão tomada UMA vez por
+    instância (não por `event_type` dinamicamente; mesma exclusividade
+    mútua que `codegen.go` já impõe hoje entre dispatcher/canal por
+    módulo). Só marca `delivered_at` após o `Publish` suceder; uma falha
+    incrementa `attempts` e re-tenta (REQ-42.6, §design 3.2a).
+  - b. **Reclassificado para J2.5:** "proibir publish direto no commit" é
+    uma decisão de WIRING (qual valor `codegen.go` passa como publisher de
+    `NewUnitOfWork`/qual `main.go` constrói) — pertence à task de
+    wiring/seleção (J2.5), não ao mecanismo do `DurableOutbox` em si. A
+    garantia "crash entre commit e publish ⇒ evento re-entregue" já está
+    provada nesta task no nível do relay (independe de qual publisher o
+    uow também tenha): `TestDurableOutboxRetriesOnPublishFailure` simula a
+    falha de `Publish` e confirma a re-entrega no próximo `Tick`.
 - [ ] **J2.5** Cleanup + seleção/wiring.
   - a. `StartOutboxCleanup(ctx)` (análogo a `StartIdempotencyCleanup`) purga
     entregues além da janela de retenção via `PurgeDelivered`. (REQ-42.7).
