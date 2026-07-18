@@ -1,0 +1,280 @@
+package amqpruntime
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sync"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+
+	"domainscript/generated/runtime"
+)
+
+// rabbitmq.go.txt implementa runtime.ChannelTransport sobre uma conexão
+// RabbitMQ real (Marco J, task J3.1, REQ-43.1, §design infra-providers 3.3)
+// — o contraparte cross-process de runtime.NewQueueChannel
+// (rtsrc/channel.go.txt, que só entrega dentro do MESMO processo, limitação
+// documentada explicitamente ali). Selecionado pelo wiring gerado (task
+// J3.4, codegen/channel.go) quando um canal da topologia declara `via:
+// queue provider: "rabbitmq"`; sem esse provider, o QueueChannel in-memory
+// de sempre continua (NFR-21).
+//
+// --- Escopo desta task (J3.1) — o que NÃO está aqui ainda ---
+//
+// Esta primeira versão cobre só o shape ChannelTransport (Subscribe/
+// Publish) sobre uma exchange fanout + UMA queue durável, com ack no
+// sucesso e nack (sem reencaminhamento) na falha — o suficiente para provar
+// o mecanismo fim a fim. Três propriedades ficam para tasks próprias,
+// documentadas no design (§design infra-providers 3.3) para não serem
+// esquecidas:
+//   - **Ordenação por partição (J3.2, REQ-43.3, R6):** hoje uma única queue
+//     com prefetch fixo NÃO preserva "ordem por chave, paralelo entre
+//     chaves" como o QueueChannel in-memory promete — J3.2 troca a exchange
+//     fanout por uma exchange consistent-hash quando o canal declara
+//     `orderBy`.
+//   - **Poison pill / DLX+retry (J3.2, REQ-43.4):** hoje uma falha de
+//     handler faz nack(requeue=false) direto — a mensagem é descartada pelo
+//     broker (sem DLX configurada, requeue=false é terminal). J3.2
+//     acrescenta a DLX+retry-queue(TTL)+circuitBreaker.threshold.
+//   - **Reconexão (J3.3, REQ-43.6):** hoje uma conexão perdida para a
+//     entrega em silêncio — sem um supervisor de NotifyClose. J3.3
+//     acrescenta o loop de reconnect+backoff.
+//
+// --- Envelope (task J3.1.b, §design 3.3) ---
+//
+// JSON `{eventType, payload}` — o mesmo shape que o Dispatcher já move em
+// memória, serializado (todo runtime.Event já é JSON-serializável, convenção
+// de E4.2: EventMeta + os campos do próprio tipo). encodeEnvelope/
+// decodeEnvelope, abaixo, são funções livres (não métodos) de propósito: o
+// teste desta task (task J3.1.e) as exercita isoladamente, round-trip, sem
+// abrir nenhuma conexão AMQP real.
+//
+// --- Registry consumidor: contracts.EventRegistry() + o do módulo (R8) ---
+//
+// decodeEnvelope recebe o registry pronto — quem o monta é o wiring gerado
+// (task J3.4, decl_policy.go/generateCmdMainFile): REQ-43.5 exige que o
+// binário CONSUMIDOR (um processo diferente do produtor) registre as
+// factories de contracts/ (os PublicEvent) ALÉM do EventRegistry() do
+// próprio módulo — um evento cross-service que só existe como PublicEvent
+// nunca teria sua factory no EventRegistry() do módulo consumidor sozinho
+// (EventRegistry() só cobre Event/PublicEvent DECLARADOS por aquele módulo,
+// mesmo raciocínio já documentado em decl_policy.go sobre por que o outbox
+// durável monta seu registry inline em vez de reusar EventRegistry()).
+
+// EventFactory espelha runtime.EventFactory/sqlruntime.EventFactory: constrói
+// um Event zerado (ponteiro) para um tipo de evento — o que decodeEnvelope
+// usa para materializar o payload JSON no tipo Go concreto certo.
+type EventFactory = func() runtime.Event
+
+// envelope é o formato de fio (task J3.1.b, §design 3.3): eventType nomeia o
+// tipo (EventType(), a chave de registry) e payload é o próprio Event
+// serializado — RawMessage para não decodificar duas vezes (uma vez pra
+// achar eventType, outra pro tipo concreto).
+type envelope struct {
+	EventType string          `json:"eventType"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+// encodeEnvelope serializa ev no envelope de fio (task J3.1.b).
+func encodeEnvelope(ev runtime.Event) ([]byte, error) {
+	if ev == nil {
+		return nil, fmt.Errorf("amqpruntime: encodeEnvelope: ev nil")
+	}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return nil, fmt.Errorf("amqpruntime: encodeEnvelope: %w", err)
+	}
+	return json.Marshal(envelope{EventType: ev.EventType(), Payload: payload})
+}
+
+// decodeEnvelope reconstrói o runtime.Event concreto que data carrega, via
+// registry (ver a doc do arquivo sobre R8/REQ-43.5 — este código não monta
+// registry, só consome o que recebe). Um eventType desconhecido é uma
+// condição PERMANENTE — nada num decodeEnvelope futuro decodificaria essa
+// linha de forma diferente — mesma classificação de "poison pill" que
+// DurableOutbox.deliver já documenta (rtsrc/outbox.go.txt, Marco J): o
+// chamador (consume, abaixo) trata isso como falha terminal, nunca
+// retentável.
+func decodeEnvelope(data []byte, registry map[string]EventFactory) (runtime.Event, error) {
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: envelope malformado: %w", err)
+	}
+	factory, ok := registry[env.EventType]
+	if !ok || factory == nil {
+		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: tipo de evento desconhecido %q (registry incompleto? ver a doc do arquivo sobre contracts.EventRegistry(), REQ-43.5)", env.EventType)
+	}
+	ev := factory()
+	if ev == nil {
+		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: factory de %q devolveu nil (registry mal configurado)", env.EventType)
+	}
+	if err := json.Unmarshal(env.Payload, ev); err != nil {
+		return nil, fmt.Errorf("amqpruntime: decodeEnvelope: payload de %q malformado: %w", env.EventType, err)
+	}
+	return ev, nil
+}
+
+// RabbitMQConfig configura NewRabbitMQChannel a partir de um canal `via:
+// queue provider: "rabbitmq"` da topologia (task J3.4 monta isto —
+// Exchange/Queue nomeados a partir do canal, ex. "<from>-<to>"). Exchange é
+// sempre declarada "fanout" nesta versão (ver a doc do arquivo sobre J3.2
+// trocar para consistent-hash quando `orderBy` está presente).
+type RabbitMQConfig struct {
+	Exchange string
+	Queue    string
+}
+
+// rabbitmqChannel implementa runtime.ChannelTransport (task J3.1.a).
+type rabbitmqChannel struct {
+	conn     *amqp.Connection
+	ch       *amqp.Channel
+	cfg      RabbitMQConfig
+	registry map[string]EventFactory
+
+	// pubMu serializa Publish (revisão da PR #23): *amqp.Channel NÃO é
+	// seguro para publicação concorrente por múltiplas goroutines (doc do
+	// driver amqp091-go) — Publish, ao contrário de Subscribe (só popula um
+	// map protegido por mu, abaixo), pode ser chamado concorrentemente por
+	// vários UseCases/Policies deste processo publicando ao mesmo tempo no
+	// MESMO canal AMQP.
+	pubMu sync.Mutex
+
+	mu       sync.RWMutex
+	handlers map[string][]func(ctx context.Context, ev runtime.Event) error
+}
+
+// NewRabbitMQChannel abre uma conexão AMQP para url, declara a exchange
+// fanout + a queue durável de cfg, faz o binding entre as duas, e começa a
+// consumir imediatamente (mesmo espírito de NewQueueChannel, que já sobe
+// seus workers na construção). registry é repassado a decodeEnvelope para
+// cada mensagem recebida (ver a doc do arquivo sobre R8/REQ-43.5 — o
+// chamador monta o registry completo, esta função só o usa).
+func NewRabbitMQChannel(url string, cfg RabbitMQConfig, registry map[string]EventFactory) (runtime.ChannelTransport, error) {
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: dial: %w", err)
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: channel: %w", err)
+	}
+	if err := ch.ExchangeDeclare(cfg.Exchange, "fanout", true, false, false, false, nil); err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: exchange declare: %w", err)
+	}
+	q, err := ch.QueueDeclare(cfg.Queue, true, false, false, false, nil)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: queue declare: %w", err)
+	}
+	if err := ch.QueueBind(q.Name, "", cfg.Exchange, false, nil); err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: queue bind: %w", err)
+	}
+
+	r := &rabbitmqChannel{
+		conn:     conn,
+		ch:       ch,
+		cfg:      cfg,
+		registry: registry,
+		handlers: make(map[string][]func(ctx context.Context, ev runtime.Event) error),
+	}
+
+	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: consume: %w", err)
+	}
+	go r.consume(msgs)
+
+	return r, nil
+}
+
+// Subscribe implementa runtime.ChannelTransport — mesmo contrato de
+// Dispatcher.Subscribe/queueChannel.Subscribe.
+func (r *rabbitmqChannel) Subscribe(eventType string, handler func(ctx context.Context, ev runtime.Event) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.handlers[eventType] = append(r.handlers[eventType], handler)
+}
+
+// Publish implementa runtime.ChannelTransport: serializa ev no envelope de
+// fio e publica na exchange — assíncrono do ponto de vista do broker (o
+// mesmo "retorna assim que enfileirado" que QueueChannel.Publish já
+// documenta), mas PublishWithContext só retorna depois que o broker confirma
+// o recebimento no canal (não espera nenhum consumidor entregar).
+func (r *rabbitmqChannel) Publish(ctx context.Context, ev runtime.Event) error {
+	body, err := encodeEnvelope(ev)
+	if err != nil {
+		return err
+	}
+	// pubMu (revisão da PR #23): serializa o acesso ao *amqp.Channel — ver a
+	// doc do campo em rabbitmqChannel.
+	r.pubMu.Lock()
+	defer r.pubMu.Unlock()
+	return r.ch.PublishWithContext(ctx, r.cfg.Exchange, "", false, false, amqp.Publishing{
+		ContentType: "application/json",
+		Body:        body,
+	})
+}
+
+// Close libera a conexão/canal AMQP abertos por NewRabbitMQChannel (revisão
+// da PR #23) — o wiring gerado (task J3.4/J6.2, "func run() error" com
+// "defer Close()" por recurso, §design infra-providers "wiring
+// multi-recurso fail-closed") chama isto no unwind. conn/ch nunca mudam
+// depois da construção (só lidos, nunca reatribuídos), então Close não
+// precisa de nenhum mutex para lê-los com segurança.
+func (r *rabbitmqChannel) Close() error {
+	var errs []error
+	if err := r.ch.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := r.conn.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("amqpruntime: Close: %v", errs)
+	}
+	return nil
+}
+
+// consume roda pela vida inteira de rabbitmqChannel, entregando cada
+// mensagem da queue ao(s) handler(s) assinados para seu eventType — ack no
+// sucesso, nack(requeue=false) na falha (ver a doc do arquivo sobre J3.2
+// substituir isto por DLX+retry-queue: por ora uma falha simplesmente
+// descarta a mensagem, sem reencaminhamento).
+func (r *rabbitmqChannel) consume(msgs <-chan amqp.Delivery) {
+	ctx := context.Background()
+	for msg := range msgs {
+		ev, err := decodeEnvelope(msg.Body, r.registry)
+		if err != nil {
+			slog.Error("amqpruntime: mensagem não decodificou, descartada", "error", err)
+			_ = msg.Nack(false, false)
+			continue
+		}
+
+		r.mu.RLock()
+		handlers := append([]func(ctx context.Context, ev runtime.Event) error(nil), r.handlers[ev.EventType()]...)
+		r.mu.RUnlock()
+
+		var handlerErr error
+		for _, h := range handlers {
+			if handlerErr = h(ctx, ev); handlerErr != nil {
+				break
+			}
+		}
+		if handlerErr != nil {
+			slog.Error("amqpruntime: entrega falhou", "eventType", ev.EventType(), "error", handlerErr)
+			_ = msg.Nack(false, false)
+			continue
+		}
+		_ = msg.Ack(false)
+	}
+}

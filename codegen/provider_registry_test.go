@@ -8,16 +8,20 @@ import (
 	"domainscript/token"
 )
 
-// provider_registry_test.go prova a DoD de J0.1 (REQ-46.1, §design 2.1): com
-// os quatro registros (channelProviders/cacheProviders/rateLimitProviders/
-// fileProviders) vazios — o estado real de hoje, antes de J1..J5 popularem
-// qualquer entrada —, activeProviderDeps devolve sempre vazio, mesmo diante
-// de um Program que declara canal/Cache/RateLimit/FileStorage com um
-// "provider"/"backend" desconhecido; e quando duas categorias apontam para o
-// MESMO provider (mesmo module E mesmo adapterDir), a dedup (R5) colapsa as
-// duas em uma única entrada.
+// provider_registry_test.go prova a DoD de J0.1 (REQ-46.1, §design 2.1):
+// activeProviderDeps devolve vazio diante de um Program que declara canal/
+// Cache/RateLimit/FileStorage com um "provider"/"backend" NÃO reconhecido em
+// nenhum dos quatro registros (channelProviders/cacheProviders/
+// rateLimitProviders/fileProviders) — cacheProviders/rateLimitProviders/
+// fileProviders continuam vazios até J4/J5 popularem alguma entrada, então
+// "redis"/"s3" servem de exemplo de provider desconhecido para as três; o
+// canal usa "kafka" (nunca implementado por este ciclo, ao contrário de
+// "rabbitmq", real desde J3.1 — channelProviders não está mais vazio, só
+// "kafka" continua sendo um provider não reconhecido). Quando duas categorias
+// apontam para o MESMO provider (mesmo module E mesmo adapterDir), a dedup
+// (R5) colapsa as duas em uma única entrada.
 
-func TestActiveProviderDepsEmptyRegistry(t *testing.T) {
+func TestActiveProviderDepsUnrecognizedProvidersAreNoOp(t *testing.T) {
 	prog := &program.Program{
 		Modules: map[string]*program.Module{
 			"Shop": {
@@ -46,7 +50,7 @@ func TestActiveProviderDepsEmptyRegistry(t *testing.T) {
 				To:   "Billing",
 				Via:  "queue",
 				Decl: ast.NewChannelDef("Shop", "Billing", []ast.ConfigEntry{
-					{Key: "provider", Value: &ast.Literal{Kind: token.STRING, Value: "rabbitmq"}},
+					{Key: "provider", Value: &ast.Literal{Kind: token.STRING, Value: "kafka"}},
 				}, ast.Span{}),
 			},
 		},
@@ -54,7 +58,7 @@ func TestActiveProviderDepsEmptyRegistry(t *testing.T) {
 
 	deps := activeProviderDeps(prog)
 	if len(deps) != 0 {
-		t.Fatalf("activeProviderDeps: esperava vazio com registro vazio, veio %+v", deps)
+		t.Fatalf("activeProviderDeps: esperava vazio (nenhum provider reconhecido), veio %+v", deps)
 	}
 }
 

@@ -9,11 +9,18 @@ import (
 // generateProviderRuntimeFiles é o gate genérico de cópia de fontes por
 // categoria, espelhando generateSQLRuntimeFiles (sql_wiring.go) — só copia as
 // fontes de uma providerDep quando providerSources tem uma entrada registrada
-// para seu adapterDir; com providerSources vazio (o estado de hoje, antes de
-// J1..J5 registrarem qualquer adapter real) devolve sempre nil, e nenhum
-// projeto gerado muda (NFR-21).
+// para seu adapterDir; com providerSources vazio devolve sempre nil, e
+// nenhum projeto gerado muda (NFR-21). "amqpruntime" (adapterDir de
+// channelProviders["rabbitmq"]) parou de ser um exemplo de adapterDir NÃO
+// registrado a partir de J3.1 — providerSources tem uma entrada real para
+// ele agora (ver TestGenerateProviderRuntimeFilesCopiesRealAMQPRuntimeSources,
+// abaixo); "redisruntime" segue não registrado até J4 popular Redis.
 
 func TestGenerateProviderRuntimeFilesEmptyRegistryIsNoop(t *testing.T) {
+	orig := providerSources
+	defer func() { providerSources = orig }()
+	providerSources = map[string]func() (map[string][]byte, error){}
+
 	deps := []providerDep{
 		{module: "github.com/rabbitmq/amqp091-go", version: "v1.10.0", adapterDir: "amqpruntime", ctor: "NewRabbitMQChannel"},
 		{module: "github.com/redis/go-redis/v9", version: "v9.7.0", adapterDir: "redisruntime", ctor: "NewRedisQueryCache"},
@@ -25,6 +32,32 @@ func TestGenerateProviderRuntimeFilesEmptyRegistryIsNoop(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("generateProviderRuntimeFiles: esperava nenhum arquivo (providerSources vazio), veio %+v", files)
+	}
+}
+
+// TestGenerateProviderRuntimeFilesCopiesRealAMQPRuntimeSources prova o
+// registro real de J3.1 (REQ-43.1/46.3): a providerDep de
+// channelProviders["rabbitmq"] tem seu adapterDir ("amqpruntime") resolvido
+// contra o registro DE VERDADE de providerSources (nenhum monkey-patch aqui,
+// ao contrário do teste acima) — copia exatamente os arquivos que
+// amqprt.Sources() embute, prefixados por "amqpruntime/".
+func TestGenerateProviderRuntimeFilesCopiesRealAMQPRuntimeSources(t *testing.T) {
+	files, err := generateProviderRuntimeFiles([]providerDep{channelProviders["rabbitmq"]})
+	if err != nil {
+		t.Fatalf("generateProviderRuntimeFiles: erro inesperado: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("generateProviderRuntimeFiles: esperava ao menos um arquivo (amqpruntime/rabbitmq.go)")
+	}
+	found := false
+	for _, f := range files {
+		if f.Path == "amqpruntime/rabbitmq.go" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("generateProviderRuntimeFiles: esperava amqpruntime/rabbitmq.go entre os arquivos, veio %+v", files)
 	}
 }
 

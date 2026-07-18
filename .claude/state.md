@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J3.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -582,10 +582,91 @@ sob `-tags=integration` (compila e pula sem `PG_URL`) e `TestGenerate*`
 (`driver`, wallet/shop e2e — nenhum byte mudou, confirmando NFR-21/23 para
 os dois exemplos reais).
 
-Próxima: **J3.1** — RabbitMQ como transporte de canal cross-process
-(`codegen/amqprt/`, novo, espelha `sqlrt/`): adapter `rabbitmqChannel`
-implementando `ChannelTransport` + envelope + registro de contracts. Abre a
-Fase J3 (REQ-43).
+Concluído: **J3.1** — adapter `amqprt` + envelope + registro de contracts,
+abre a Fase J3 (REQ-43). `codegen/amqprt/` (novo, espelha `sqlrt/`/`grpcrt/`
+— `doc.go`/`embed.go` com `Sources()`/`Names()` via `//go:embed *.go.txt`):
+`rabbitmq.go.txt` declara `package amqpruntime` (mesma convenção de
+`sqlruntime`/`grpcedge` — nome distinto de "runtime", o núcleo). `driver:
+github.com/rabbitmq/amqp091-go` (o fork oficial mantido, `streadway/amqp`
+está arquivado), `v1.12.0` fixo (determinismo, NFR-13; seu próprio go.mod
+exige só `go 1.20` — nenhuma constante `minGoVersion` própria precisou
+subir o default "1.22").
+
+`rabbitmqChannel` implementa `runtime.ChannelTransport` (`Subscribe`/
+`Publish`) sobre uma exchange fanout + UMA queue durável — Subscribe
+registra handlers locais, Publish serializa no envelope e publica,
+`consume` (goroutine própria, subida por `NewRabbitMQChannel`) decodifica
+cada mensagem, entrega, e faz `ack`/`nack(requeue=false)`. Documentado
+explicitamente no arquivo o que ESTA versão NÃO cobre ainda (cada um com a
+task própria que fecha): ordenação por partição via exchange
+consistent-hash (**J3.2**, REQ-43.3/R6 — hoje uma única queue não preserva
+"ordem por chave" do jeito que o `QueueChannel` in-memory promete), DLX+
+retry-queue no lugar do `nack` direto (**J3.2**, REQ-43.4), e supervisão de
+reconexão sobre `NotifyClose` (**J3.3**, REQ-43.6).
+
+Envelope (REQ-42.1.b/§design 3.3): JSON `{eventType, payload}` — mesmo
+shape que o Dispatcher já move em memória. `encodeEnvelope`/`decodeEnvelope`
+são funções livres (não métodos), deliberadamente NÃO exportadas — só o
+wiring gerado (dentro do MESMO pacote `amqpruntime`) as chama de verdade.
+Registry (R8/REQ-43.5): `decodeEnvelope` recebe um `map[string]EventFactory`
+já pronto e não distingue de onde vem cada factory — o mecanismo que
+permite ao wiring do CONSUMIDOR (task J3.4, fora do orçamento desta task)
+mesclar `contracts.EventRegistry()` (as factories dos PublicEvent) ao
+`EventRegistry()` do próprio módulo antes de construir o canal; um
+`eventType` fora do registry é tratado como falha PERMANENTE ("poison
+pill", mesma classificação de `DurableOutbox.deliver`, Marco J) — erro
+claro, nunca um pânico nem uma decodificação silenciosamente errada.
+
+Registro: `codegen/project.go` ganha as constantes `amqpDriverModule`/
+`amqpDriverVersion`; `codegen/provider_registry.go` ganha
+`channelProviders["rabbitmq"]` (a PRIMEIRA entrada real desse registro,
+criado vazio em J0.1) e `providerSources["amqpruntime"] = amqprt.Sources`
+— a partir daqui `activeProviderDeps`/`generateProviderRuntimeFiles`/
+`EmitGoMod` (mecânica genérica de J0.1-J0.3) já resolvem um canal
+`provider: "rabbitmq"` sozinhos, sem nenhuma mudança adicional nelas.
+Nenhuma mudança em `channel.go`/`decl_policy.go`/`generateCmdMainFile`
+ainda: NENHUM `.ds` seleciona `rabbitmqChannel` de verdade nesta task —
+isso é **J3.4** (o item (c) do design, "wiring do consumidor registra
+contracts.EventRegistry()", fecha no nível de MECANISMO aqui; o CALL SITE
+que de fato monta e passa o registry mesclado é wiring, escopo de J3.4).
+
+**Ripple pequeno, corrigido dentro do orçamento desta task:** dois testes
+de J0.1/J0.3 assumiam os quatro registros (`channelProviders` incluído)
+vazios — `TestActiveProviderDepsEmptyRegistry` (usava `"rabbitmq"` como
+exemplo de provider de canal NÃO reconhecido) virou
+`TestActiveProviderDepsUnrecognizedProvidersAreNoOp` (troca para
+`"kafka"`, ainda não implementado neste ciclo);
+`TestGenerateProviderRuntimeFilesEmptyRegistryIsNoop` (usava `"amqpruntime"`
+como exemplo de `adapterDir` NÃO registrado em `providerSources`) ganhou um
+monkey-patch explícito de `providerSources` para vazio, e um teste NOVO
+(`TestGenerateProviderRuntimeFilesCopiesRealAMQPRuntimeSources`) prova o
+caminho positivo real (sem monkey-patch) — `channelProviders["rabbitmq"]`
+resolve contra `providerSources` de verdade e copia `amqpruntime/rabbitmq.go`.
+
+Testes novos: `codegen/amqp_envelope_test.go` (`package codegen`, interno —
+acessa `channelProviders["rabbitmq"]` direto para montar o go.mod da
+fixture, mesmo padrão de `provider_registry_test.go`) —
+`TestAMQPEnvelopeRoundTrip` roda, via `gentest.WriteFiles`/`RunTests` (só
+`go mod tidy` resolvendo o driver amqp091-go — nenhuma conexão AMQP real
+aberta), um teste `package amqpruntime` (white-box, acessa
+`encodeEnvelope`/`decodeEnvelope` direto) que prova
+`TestEnvelopeRoundTripLocalAndContractsEvents` (um registry MESCLADO
+local+contracts decodifica os dois tipos a partir do MESMO map — a prova
+de R8/REQ-43.5 no nível de mecanismo) e
+`TestEnvelopeUnknownEventTypeIsPermanentError` (erro claro, nunca pânico).
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go
+test ./...` (suíte inteira) verde, incluindo `TestActiveProviderDeps*`/
+`TestGenerateProviderRuntimeFiles*`/`TestEmitGoModWithProviderDeps*`
+(`codegen`) e `TestGenerate*` (`driver`, wallet/shop e2e — nenhum byte
+mudou, NFR-21/23 intactos: nenhum dos dois declara canal `provider:
+"rabbitmq"`).
+
+Próxima: **J3.2** — **(R6)** Ordenação por partição + poison pill:
+exchange consistent-hash quando `orderBy` declarado (N filas de partição,
+um consumidor cada); `ack` no sucesso, `nack requeue=false` → DLX+
+retry-queue(TTL) → DLQ final esgotado `circuitBreaker.threshold`. Teste
+unit da montagem de exchange/DLX/binding.
 
 ## Issues em aberto
 
