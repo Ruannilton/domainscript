@@ -141,12 +141,17 @@ return {allowed, remaining, tostring(retry_after), tostring(reset_in)}
 // slidingWindowScript replica slidingWindowLimiter.Allow: um log de
 // timestamps de hit por chave (ZSET, score = timestamp), aparando tudo mais
 // velho que period a cada chamada. KEYS[1] é a chave do ZSET; ARGV =
-// {limit, period_seconds, now_unix_seconds}.
+// {limit, period_seconds, burst, now_unix_seconds} — MESMA ordem que
+// evalRedis passa pra TODOS os scripts (ver a doc do arquivo); ARGV[3]
+// (burst) não é usado por este algoritmo, "now" é ARGV[4] (revisão da PR
+// #28 — um bug real aqui lia "now" de ARGV[3], o que na prática travava a
+// janela no valor de burst, nunca avançando: uma vez esgotado o limite,
+// nunca mais desbloquearia).
 const slidingWindowScript = `
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
 local period = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
 local cutoff = now - period
 
 redis.call("ZREMRANGEBYSCORE", key, "-inf", cutoff)
@@ -180,12 +185,16 @@ return {allowed, remaining, tostring(retry_after), tostring(reset_in)}
 // janela absoluta (alinhada a múltiplos de period desde a época) — NUNCA
 // incrementa quando nega (mesma escolha do in-memory: só conta admissões).
 // KEYS[1] é a base da chave (a janela corrente é anexada a ela); ARGV =
-// {limit, period_seconds, now_unix_seconds}.
+// {limit, period_seconds, burst, now_unix_seconds} — MESMA ordem que
+// evalRedis passa pra TODOS os scripts (ver a doc do arquivo); ARGV[3]
+// (burst) não é usado por este algoritmo, "now" é ARGV[4] (revisão da PR
+// #28 — mesmo bug de slidingWindowScript, corrigido junto: lia "now" de
+// ARGV[3], travando a janela permanentemente no valor de burst).
 const fixedWindowScript = `
 local base = KEYS[1]
 local limit = tonumber(ARGV[1])
 local period = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
 local window_start = math.floor(now / period) * period
 local key = base .. ":" .. tostring(window_start)
 
@@ -372,6 +381,13 @@ func toFloat64(v interface{}) (float64, error) {
 		var out float64
 		_, err := fmt.Sscanf(n, "%g", &out)
 		return out, err
+	case float64:
+		// RESP3 (revisão da PR #28): sob esse protocolo o cliente pode
+		// devolver um número Lua não-inteiro já como float64 nativo, em vez
+		// da string que os scripts explicitamente tostring()-am — aceitar os
+		// dois formatos evita uma falha de type assertion dependendo do
+		// protocolo negociado com o servidor.
+		return n, nil
 	case int64:
 		return float64(n), nil
 	default:
