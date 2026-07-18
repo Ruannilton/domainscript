@@ -741,6 +741,58 @@ consumidores) desta task; `Publish` na janela de reconexão retorna erro (o
 relay do outbox re-tenta). Teste unit: fechar o canal fake ⇒ o supervisor
 tenta reabrir.
 
+Concluído: **J3.3** — Reconexão (REQ-43.6). `rabbitmqChannel` ganha um
+supervisor (`supervise`, uma goroutine própria disparada por
+`NewRabbitMQChannel`) que observa `Connection.NotifyClose` da conexão
+ATUAL e, ao detectar um fechamento que não veio de `Close()` (a checagem de
+`r.stopCh` logo após o disparo de `NotifyClose` distingue as duas causas —
+`Close()` sempre fecha `stopCh` ANTES de fechar a conexão de verdade),
+aciona `reconnectLoop`: redial + re-declaração da topologia INTEIRA +
+reabertura de todos os consumidores, com backoff exponencial
+(`nextReconnectBackoff`, mesmo idioma de `DurableOutbox.Start`,
+`rtsrc/outbox.go.txt` — dobra a cada falha, capado em
+`reconnectMaxBackoff` = 30s, partindo de `reconnectInitialBackoff` = 1s).
+
+Refatoração pré-requisito: a lógica de declaração de topologia (antes só
+inline em `NewRabbitMQChannel`) virou o método `declareTopology`, e o dial +
+declare + abertura de consumidores virou `dialAndSetup` — as DUAS reusadas
+por `NewRabbitMQChannel` (construção) e `reconnectLoop` (reconexão), nunca
+duplicadas.
+
+`conn`/`ch`/`consumeChans` deixaram de ser write-once na construção — agora
+protegidos por `connMu` (`sync.RWMutex`, campo NOVO desta task): `Publish`
+lê `r.ch` sob `RLock` e devolve erro imediatamente se for `nil` (janela de
+reconexão), nunca bloqueia nem desreferencia nil; `pubMu` continua existindo,
+mas agora só serializa a chamada de I/O (`PublishWithContext`) em si.
+`Subscribe` não muda (só popula um map protegido por outro mutex, nunca toca
+conn/ch). `Close()` fecha `stopCh` (via `closeOnce`, então chamar `Close()`
+mais de uma vez nunca panica) ANTES de fechar conexão/canais — é essa ordem
+que permite ao supervisor distinguir "fechamento deliberado" de "blip de
+rede" sem nenhuma outra sincronização extra.
+
+Teste novo: `codegen/amqp_reconnect_test.go` (mesmo padrão white-box de
+`amqp_topology_test.go`/`amqp_envelope_test.go` — `package codegen`, fixture
+via `gentest.WriteFiles`/`RunTests` sobre `buildAMQPRuntimeProjectFiles`,
+teste embutido `package amqpruntime`): `TestAMQPReconnectBackoffSequence`
+roda `TestNextReconnectBackoffDoublesAndCaps` (a sequência dobra e capa em
+`reconnectMaxBackoff`) e `TestNextReconnectBackoffNeverExceedsCapFromLargeInput`
+(clamping defensivo contra overflow de `time.Duration`). **Desvio do item
+b da task** ("fechar o canal fake ⇒ o supervisor tenta reabrir" literal):
+`*amqp.Connection`/`*amqp.Channel` (`github.com/rabbitmq/amqp091-go`) são
+STRUCTS concretos, não interfaces — não há como fabricar um `NotifyClose`
+"fake" sem abrir um socket de verdade contra um broker real (documentado no
+topo de `rabbitmq.go.txt`, seção "Reconexão"). Testado, então, o que É
+puro/testável sem broker (a sequência de backoff); o teste de integração
+de verdade (gated por uma env var tipo `AMQP_URL`) fica fora do orçamento
+desta task — pertence a J3.4/J6.
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go
+test ./...` (suíte inteira) verde, incluindo `TestAMQPEnvelopeRoundTrip`/
+`TestAMQPTopologyAssembly` (J3.1/J3.2, ainda passam sobre o
+`rabbitmq.go.txt` reescrito) e `TestGenerate*` (`driver`, wallet/shop e2e —
+nenhum byte mudou, NFR-21/23 intactos: nenhum dos dois declara canal
+`provider: "rabbitmq"`).
+
 ## Issues em aberto
 
 Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit

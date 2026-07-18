@@ -101,11 +101,41 @@ import (
 // mesmo raciocínio já documentado em decl_policy.go sobre por que o outbox
 // durável monta seu registry inline em vez de reusar EventRegistry()).
 //
-// --- Ainda fora do orçamento (J3.3) ---
+// --- Reconexão (task J3.3, REQ-43.6, §design 3.3) ---
 //
-// Reconexão: hoje uma conexão perdida para a entrega em silêncio — sem um
-// supervisor de `Connection.NotifyClose`/`Channel.NotifyClose`. J3.3
-// acrescenta o loop de reconnect+backoff, re-declarando toda essa topologia.
+// O `amqp091-go` não reconecta sozinho: um blip de rede fecha `*amqp.
+// Connection`/`*amqp.Channel` em silêncio (o consumidor simplesmente pararia
+// de receber, sem nenhum erro visível) — supervise (abaixo) resolve isso
+// registrando `Connection.NotifyClose` na conexão ATUAL e, ao detectar um
+// fechamento que NÃO veio de Close() (r.stopCh fecha ANTES de r.conn.Close()
+// dentro de Close(), então checar r.stopCh logo após o disparo de
+// NotifyClose distingue as duas causas de forma confiável), entra em
+// reconnectLoop: redial + re-declaração da topologia INTEIRA (mesmo código
+// de declareTopology que NewRabbitMQChannel já usa — nenhuma duplicação) +
+// reabertura de todos os consumidores, com backoff exponencial (mesmo
+// idioma de DurableOutbox.Start, rtsrc/outbox.go.txt: dobra a cada falha,
+// capado em reconnectMaxBackoff, nunca martelando o broker numa queda
+// prolongada). Durante a janela de reconexão r.conn/r.ch ficam nil sob
+// connMu — Publish lê isso e retorna erro IMEDIATAMENTE (nunca bloqueia,
+// nunca panica sobre um *amqp.Channel nil): é o comportamento que REQ-43.6
+// pede, e é suficiente porque o único chamador que importa (o relay de
+// DurableOutbox.Tick, rtsrc/outbox.go.txt) já re-tenta uma linha não
+// entregue na próxima Tick — nenhum buffer/fila própria de Publish é
+// necessário aqui. Subscribe não é afetado (só popula um map protegido por
+// mu, nunca toca conn/ch). connMu (RWMutex) é o mutex NOVO desta task —
+// pubMu continua existindo, mas passa a serializar só a chamada de I/O em si
+// (PublishWithContext), enquanto connMu serializa as TROCAS de conn/ch/
+// consumeChans entre o supervisor e Publish/Close (conn/ch deixaram de ser
+// write-once na construção a partir desta task).
+//
+// Testável sem broker: nextReconnectBackoff é uma função livre (a sequência
+// de espera do loop, mesmo espírito das outras funções puras desta doc) —
+// exercitada por TestNextReconnectBackoffDoublesAndCaps
+// (amqp_reconnect_test.go). O resto (supervise/reconnectLoop de verdade)
+// depende de um socket de verdade fechando: `*amqp.Connection`/`*amqp.
+// Channel` são STRUCTS concretos do driver (não interfaces), então não há
+// como fabricar um NotifyClose "fake" sem abrir uma conexão real — esse
+// teste de integração fica fora do orçamento desta task (J3.4/J6).
 
 // EventFactory espelha runtime.EventFactory/sqlruntime.EventFactory: constrói
 // um Event zerado (ponteiro) para um tipo de evento — o que decodeEnvelope
@@ -182,6 +212,14 @@ const (
 	// hash space; a exchange x-consistent-hash exige que a binding key seja
 	// um número textual representando o peso, não um padrão de rota).
 	consistentHashWeight = "10"
+	// reconnectInitialBackoff/reconnectMaxBackoff (task J3.3, REQ-43.6):
+	// mesmo idioma de defaultOutboxPollInterval/defaultOutboxMaxBackoff
+	// (rtsrc/outbox.go.txt) — reconnectLoop dobra o intervalo a cada
+	// tentativa de redial que falha, começando em reconnectInitialBackoff,
+	// nunca ultrapassando reconnectMaxBackoff, para não martelar um broker
+	// fora do ar.
+	reconnectInitialBackoff = time.Second
+	reconnectMaxBackoff     = 30 * time.Second
 )
 
 // effectiveRetryTTL normaliza cfg.RetryTTL (<=0 vira defaultRetryTTL).
@@ -253,6 +291,19 @@ func retryQueueArgs(mainExchange string, ttl time.Duration) amqp.Table {
 // consistentHashBindingKey devolve a binding key (peso) usada por TODA fila
 // de partição — ver a doc de consistentHashWeight.
 func consistentHashBindingKey() string { return consistentHashWeight }
+
+// nextReconnectBackoff dobra current, capado em reconnectMaxBackoff — a
+// função PURA que decide a sequência de espera de reconnectLoop (task J3.3,
+// REQ-43.6), extraída de propósito para ser testável sem nenhum socket real
+// (ver a doc do arquivo sobre "Reconexão" — reconnectLoop só CHAMA esta
+// função dentro do loop de fato, nunca reimplementa o dobramento inline).
+func nextReconnectBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > reconnectMaxBackoff || next <= 0 {
+		return reconnectMaxBackoff
+	}
+	return next
+}
 
 // xDeathCount lê o header `x-death` (formato padrão do RabbitMQ: um array
 // de amqp.Table) e soma quantas vezes esta mensagem já deu a volta pelo
@@ -327,35 +378,62 @@ type RabbitMQConfig struct {
 	RetryTTL time.Duration
 }
 
-// rabbitmqChannel implementa runtime.ChannelTransport (task J3.1.a/J3.2).
+// rabbitmqChannel implementa runtime.ChannelTransport (task J3.1.a/J3.2/J3.3).
 type rabbitmqChannel struct {
-	conn *amqp.Connection
-	// ch é o *amqp.Channel dedicado a Publish — nunca compartilhado com
-	// nenhum consumeChans (cada consumidor tem o seu, ver a doc do arquivo
-	// sobre por que isso evita qualquer mutex de Ack/Nack).
-	ch  *amqp.Channel
+	// url é guardado (a partir da task J3.3) porque reconnectLoop precisa
+	// redial do zero — antes desta task, NewRabbitMQChannel só usava url
+	// localmente e nunca mais precisava dele depois de construído.
+	url string
 	cfg RabbitMQConfig
 	// dlq é o nome da DLQ final (dlqName(cfg.Exchange)), guardado para
-	// consume não precisar recalculá-lo a cada mensagem.
+	// consume não precisar recalculá-lo a cada mensagem — não muda entre
+	// reconexões (deriva só de cfg, imutável após a construção).
 	dlq      string
 	registry map[string]EventFactory
 
-	// pubMu serializa Publish (revisão da PR #23): *amqp.Channel NÃO é
-	// seguro para publicação concorrente por múltiplas goroutines (doc do
-	// driver amqp091-go) — Publish, ao contrário de Subscribe (só popula um
-	// map protegido por mu, abaixo), pode ser chamado concorrentemente por
-	// vários UseCases/Policies deste processo publicando ao mesmo tempo no
-	// MESMO canal AMQP.
+	// connMu (task J3.3) protege conn/ch/consumeChans: write-once na
+	// construção até esta task, agora TROCADOS por reconnectLoop a cada
+	// reconexão, então toda leitura (Publish, Close) e escrita (dialAndSetup
+	// callers) passa por aqui. RWMutex porque Publish (o caminho quente) só
+	// PRECISA ler r.ch — RLock deixa publicações concorrentes não se
+	// bloquearem umas às outras por causa desta troca, só por pubMu
+	// (abaixo), que é quem de fato precisa ser exclusivo.
+	connMu sync.RWMutex
+	conn   *amqp.Connection
+	// ch é o *amqp.Channel dedicado a Publish — nunca compartilhado com
+	// nenhum consumeChans (cada consumidor tem o seu, ver a doc do arquivo
+	// sobre por que isso evita qualquer mutex de Ack/Nack). nil enquanto
+	// reconnectLoop está no ar (task J3.3) — Publish trata isso como "sem
+	// conexão", devolvendo erro em vez de bloquear ou desreferenciar nil.
+	ch *amqp.Channel
+	// consumeChans guarda cada *amqp.Channel de consumo aberto pela conexão
+	// ATUAL (um por partição, ou Concurrency deles sobre a MESMA fila quando
+	// KeyFunc == nil) — só para Close/reconnectLoop liberá-los; nenhuma
+	// goroutine além da sua própria (consume) toca no seu respectivo canal
+	// enquanto ele está vivo.
+	consumeChans []*amqp.Channel
+
+	// pubMu serializa a chamada de I/O de Publish em si (revisão da PR #23):
+	// *amqp.Channel NÃO é seguro para publicação concorrente por múltiplas
+	// goroutines (doc do driver amqp091-go) — Publish, ao contrário de
+	// Subscribe (só popula um map protegido por mu, abaixo), pode ser
+	// chamado concorrentemente por vários UseCases/Policies deste processo
+	// publicando ao mesmo tempo no MESMO canal AMQP. Desde a task J3.3,
+	// pubMu só cobre PublishWithContext — a leitura de qual *amqp.Channel
+	// usar é connMu (acima), um mutex DIFERENTE de propósito (permite
+	// Publishes concorrentes lerem r.ch em paralelo via RLock, serializando
+	// só a chamada de rede em si).
 	pubMu sync.Mutex
 
-	// consumeChans guarda cada *amqp.Channel de consumo aberto por
-	// NewRabbitMQChannel (um por partição, ou Concurrency deles sobre a
-	// MESMA fila quando KeyFunc == nil) — só para Close liberá-los; nenhuma
-	// goroutine além da sua própria (consume) toca no seu respectivo canal,
-	// então nenhum mutex extra é necessário para USÁ-los, só para a lista em
-	// si (closeMu).
-	closeMu      sync.Mutex
-	consumeChans []*amqp.Channel
+	// stopCh fecha quando Close() é chamado — supervise() e reconnectLoop()
+	// o observam para parar de tentar reconectar/reobservar NotifyClose
+	// (task J3.3): sem isso, Close() vazaria a goroutine de supervise para
+	// sempre (ela ficaria bloqueada esperando o próximo NotifyClose de uma
+	// conexão que ninguém mais vai fechar de propósito outra vez).
+	// closeOnce garante que fechar stopCh duas vezes (Close chamado mais de
+	// uma vez) nunca panica.
+	stopCh    chan struct{}
+	closeOnce sync.Once
 
 	mu       sync.RWMutex
 	handlers map[string][]func(ctx context.Context, ev runtime.Event) error
@@ -370,21 +448,49 @@ type rabbitmqChannel struct {
 // doc do arquivo sobre R8/REQ-43.5 — o chamador monta o registry completo,
 // esta função só o usa).
 func NewRabbitMQChannel(url string, cfg RabbitMQConfig, registry map[string]EventFactory) (runtime.ChannelTransport, error) {
-	concurrency := int(effectiveConcurrency(cfg.Concurrency))
-
-	conn, err := amqp.Dial(url)
-	if err != nil {
-		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: dial: %w", err)
+	r := &rabbitmqChannel{
+		url:      url,
+		cfg:      cfg,
+		dlq:      dlqName(cfg.Exchange),
+		registry: registry,
+		handlers: make(map[string][]func(ctx context.Context, ev runtime.Event) error),
+		stopCh:   make(chan struct{}),
 	}
-	fail := func(err error) (runtime.ChannelTransport, error) {
-		conn.Close()
+
+	conn, pubCh, consumeChans, err := r.dialAndSetup()
+	if err != nil {
 		return nil, fmt.Errorf("amqpruntime: NewRabbitMQChannel: %w", err)
 	}
 
+	r.connMu.Lock()
+	r.conn, r.ch, r.consumeChans = conn, pubCh, consumeChans
+	r.connMu.Unlock()
+
+	// supervise (task J3.3, REQ-43.6, ver a doc do arquivo sobre
+	// "Reconexão") roda pela vida inteira do canal, reconectando sozinho
+	// quando a conexão cai inesperadamente.
+	go r.supervise()
+
+	return r, nil
+}
+
+// declareTopology declara, sobre conn, TODA a topologia deste canal
+// (exchange principal — fanout ou x-consistent-hash conforme r.cfg.KeyFunc —
+// fila(s) principal(is), DLX de retry, retry queue e DLQ final; ver a doc do
+// arquivo) e devolve o nome de cada fila que precisa de um consumidor —
+// função ÚNICA reusada tanto por NewRabbitMQChannel quanto por
+// reconnectLoop (task J3.3): antes desta task esta lógica só existia inline
+// dentro de NewRabbitMQChannel; extraída aqui para nunca duplicar entre os
+// dois caminhos.
+func (r *rabbitmqChannel) declareTopology(conn *amqp.Connection) ([]string, error) {
+	cfg := r.cfg
+	concurrency := int(effectiveConcurrency(cfg.Concurrency))
+
 	setupCh, err := conn.Channel()
 	if err != nil {
-		return fail(fmt.Errorf("setup channel: %w", err))
+		return nil, fmt.Errorf("setup channel: %w", err)
 	}
+	defer setupCh.Close()
 
 	retryExchange := retryExchangeName(cfg.Exchange)
 	retryQueue := retryQueueName(cfg.Exchange)
@@ -393,97 +499,197 @@ func NewRabbitMQChannel(url string, cfg RabbitMQConfig, registry map[string]Even
 	// DLX de retry + retry queue + DLQ final: sempre declaradas,
 	// independente de orderBy (REQ-43.4 não é condicionado a ordenação).
 	if err := setupCh.ExchangeDeclare(retryExchange, "fanout", true, false, false, false, nil); err != nil {
-		setupCh.Close()
-		return fail(fmt.Errorf("retry exchange declare: %w", err))
+		return nil, fmt.Errorf("retry exchange declare: %w", err)
 	}
 	if _, err := setupCh.QueueDeclare(retryQueue, true, false, false, false, retryQueueArgs(cfg.Exchange, effectiveRetryTTL(cfg.RetryTTL))); err != nil {
-		setupCh.Close()
-		return fail(fmt.Errorf("retry queue declare: %w", err))
+		return nil, fmt.Errorf("retry queue declare: %w", err)
 	}
 	if err := setupCh.QueueBind(retryQueue, "", retryExchange, false, nil); err != nil {
-		setupCh.Close()
-		return fail(fmt.Errorf("retry queue bind: %w", err))
+		return nil, fmt.Errorf("retry queue bind: %w", err)
 	}
 	if _, err := setupCh.QueueDeclare(dlq, true, false, false, false, nil); err != nil {
-		setupCh.Close()
-		return fail(fmt.Errorf("dlq declare: %w", err))
+		return nil, fmt.Errorf("dlq declare: %w", err)
 	}
 
 	var queueNames []string
 	if cfg.KeyFunc != nil {
 		if err := setupCh.ExchangeDeclare(cfg.Exchange, "x-consistent-hash", true, false, false, false, nil); err != nil {
-			setupCh.Close()
-			return fail(fmt.Errorf("exchange declare (consistent-hash): %w", err))
+			return nil, fmt.Errorf("exchange declare (consistent-hash): %w", err)
 		}
 		queueNames = partitionQueueNames(cfg.Queue, concurrency)
 		for _, qn := range queueNames {
 			if _, err := setupCh.QueueDeclare(qn, true, false, false, false, mainQueueArgs(retryExchange)); err != nil {
-				setupCh.Close()
-				return fail(fmt.Errorf("partition queue %q declare: %w", qn, err))
+				return nil, fmt.Errorf("partition queue %q declare: %w", qn, err)
 			}
 			if err := setupCh.QueueBind(qn, consistentHashBindingKey(), cfg.Exchange, false, nil); err != nil {
-				setupCh.Close()
-				return fail(fmt.Errorf("partition queue %q bind: %w", qn, err))
+				return nil, fmt.Errorf("partition queue %q bind: %w", qn, err)
 			}
 		}
 	} else {
 		if err := setupCh.ExchangeDeclare(cfg.Exchange, "fanout", true, false, false, false, nil); err != nil {
-			setupCh.Close()
-			return fail(fmt.Errorf("exchange declare (fanout): %w", err))
+			return nil, fmt.Errorf("exchange declare (fanout): %w", err)
 		}
 		if _, err := setupCh.QueueDeclare(cfg.Queue, true, false, false, false, mainQueueArgs(retryExchange)); err != nil {
-			setupCh.Close()
-			return fail(fmt.Errorf("queue declare: %w", err))
+			return nil, fmt.Errorf("queue declare: %w", err)
 		}
 		if err := setupCh.QueueBind(cfg.Queue, "", cfg.Exchange, false, nil); err != nil {
-			setupCh.Close()
-			return fail(fmt.Errorf("queue bind: %w", err))
+			return nil, fmt.Errorf("queue bind: %w", err)
 		}
 		queueNames = make([]string, concurrency)
 		for i := range queueNames {
 			queueNames[i] = cfg.Queue
 		}
 	}
-	setupCh.Close()
+	return queueNames, nil
+}
 
-	pubCh, err := conn.Channel()
+// dialAndSetup abre uma conexão NOVA a partir de r.url, declara a topologia
+// inteira (declareTopology) e sobe um consumidor (goroutine + *amqp.Channel
+// próprios, ver a doc do arquivo sobre por que cada consumidor tem o seu)
+// por fila devolvida — usada tanto por NewRabbitMQChannel (construção)
+// quanto por reconnectLoop (task J3.3): as DUAS só chamam isto, nenhuma
+// reimplementa dial/declare/consume por conta própria. Numa falha em
+// qualquer passo, fecha tudo que já tinha aberto até ali e devolve erro —
+// nunca deixa a conexão/canais parcialmente montados vazando.
+func (r *rabbitmqChannel) dialAndSetup() (conn *amqp.Connection, pubCh *amqp.Channel, consumeChans []*amqp.Channel, err error) {
+	conn, err = amqp.Dial(r.url)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("dial: %w", err)
+	}
+	fail := func(err error) (*amqp.Connection, *amqp.Channel, []*amqp.Channel, error) {
+		conn.Close()
+		return nil, nil, nil, err
+	}
+
+	queueNames, err := r.declareTopology(conn)
+	if err != nil {
+		return fail(err)
+	}
+
+	pubCh, err = conn.Channel()
 	if err != nil {
 		return fail(fmt.Errorf("publish channel: %w", err))
 	}
 
-	r := &rabbitmqChannel{
-		conn:     conn,
-		ch:       pubCh,
-		cfg:      cfg,
-		dlq:      dlq,
-		registry: registry,
-		handlers: make(map[string][]func(ctx context.Context, ev runtime.Event) error),
-	}
-
 	for _, qn := range queueNames {
-		consumeCh, err := conn.Channel()
-		if err != nil {
-			r.Close()
-			return fail(fmt.Errorf("consume channel: %w", err))
+		consumeCh, cErr := conn.Channel()
+		if cErr != nil {
+			pubCh.Close()
+			for _, c := range consumeChans {
+				c.Close()
+			}
+			return fail(fmt.Errorf("consume channel: %w", cErr))
 		}
-		if err := consumeCh.Qos(1, 0, false); err != nil {
+		if cErr = consumeCh.Qos(1, 0, false); cErr != nil {
 			consumeCh.Close()
-			r.Close()
-			return fail(fmt.Errorf("qos: %w", err))
+			pubCh.Close()
+			for _, c := range consumeChans {
+				c.Close()
+			}
+			return fail(fmt.Errorf("qos: %w", cErr))
 		}
-		msgs, err := consumeCh.Consume(qn, "", false, false, false, false, nil)
-		if err != nil {
+		msgs, cErr := consumeCh.Consume(qn, "", false, false, false, false, nil)
+		if cErr != nil {
 			consumeCh.Close()
-			r.Close()
-			return fail(fmt.Errorf("consume %q: %w", qn, err))
+			pubCh.Close()
+			for _, c := range consumeChans {
+				c.Close()
+			}
+			return fail(fmt.Errorf("consume %q: %w", qn, cErr))
 		}
-		r.closeMu.Lock()
-		r.consumeChans = append(r.consumeChans, consumeCh)
-		r.closeMu.Unlock()
+		consumeChans = append(consumeChans, consumeCh)
 		go r.consume(msgs, consumeCh)
 	}
 
-	return r, nil
+	return conn, pubCh, consumeChans, nil
+}
+
+// supervise roda numa goroutine pela vida inteira do canal (task J3.3,
+// REQ-43.6, ver a doc do arquivo sobre "Reconexão"): observa
+// Connection.NotifyClose da conexão ATUAL (relida a cada volta do loop, já
+// que reconnectLoop troca r.conn) e, ao detectar um fechamento que não veio
+// de Close() (checagem de r.stopCh logo em seguida — Close() sempre fecha
+// stopCh ANTES de fechar a conexão de verdade, então se stopCh já está
+// fechado quando NotifyClose dispara, a causa foi Close(), não um blip de
+// rede), aciona reconnectLoop.
+func (r *rabbitmqChannel) supervise() {
+	for {
+		r.connMu.RLock()
+		conn := r.conn
+		r.connMu.RUnlock()
+
+		closeNotify := conn.NotifyClose(make(chan *amqp.Error, 1))
+		select {
+		case <-r.stopCh:
+			return
+		case amqpErr := <-closeNotify:
+			select {
+			case <-r.stopCh:
+				// Close() já estava em andamento — o fechamento é
+				// deliberado, não um blip de rede; nada a reconectar.
+				return
+			default:
+			}
+			if amqpErr != nil {
+				slog.Error("amqpruntime: conexão AMQP fechada inesperadamente, reconectando", "error", amqpErr)
+			} else {
+				slog.Error("amqpruntime: conexão AMQP fechada inesperadamente, reconectando")
+			}
+			r.reconnectLoop()
+		}
+	}
+}
+
+// reconnectLoop redial + re-declara a topologia inteira + reabre todos os
+// consumidores (dialAndSetup, a MESMA função que NewRabbitMQChannel usa),
+// com backoff exponencial (nextReconnectBackoff, mesmo idioma de
+// DurableOutbox.Start) entre tentativas malsucedidas. Enquanto este loop
+// roda, r.conn/r.ch/r.consumeChans ficam nil sob connMu — Publish trata isso
+// como "sem conexão" e devolve erro em vez de bloquear ou desreferenciar nil
+// (ver a doc do arquivo sobre "Reconexão"). Retorna quando reconecta com
+// sucesso OU quando r.stopCh fecha (Close() chamado durante a janela de
+// reconexão).
+func (r *rabbitmqChannel) reconnectLoop() {
+	r.connMu.Lock()
+	oldCh, oldChans := r.ch, r.consumeChans
+	r.conn, r.ch, r.consumeChans = nil, nil, nil
+	r.connMu.Unlock()
+	// A conexão antiga já está morta (é por isso que supervise nos trouxe
+	// até aqui) — fecha o que sobrou best-effort, sem checar erro: o socket
+	// subjacente já foi derrubado pelo broker/rede.
+	if oldCh != nil {
+		_ = oldCh.Close()
+	}
+	for _, c := range oldChans {
+		_ = c.Close()
+	}
+
+	backoff := reconnectInitialBackoff
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		default:
+		}
+
+		conn, pubCh, consumeChans, err := r.dialAndSetup()
+		if err != nil {
+			slog.Error("amqpruntime: falha ao reconectar, tentando novamente", "error", err, "backoff", backoff)
+			select {
+			case <-r.stopCh:
+				return
+			case <-time.After(backoff):
+			}
+			backoff = nextReconnectBackoff(backoff)
+			continue
+		}
+
+		r.connMu.Lock()
+		r.conn, r.ch, r.consumeChans = conn, pubCh, consumeChans
+		r.connMu.Unlock()
+		slog.Info("amqpruntime: reconectado com sucesso")
+		return
+	}
 }
 
 // Subscribe implementa runtime.ChannelTransport — mesmo contrato de
@@ -502,6 +708,11 @@ func (r *rabbitmqChannel) Subscribe(eventType string, handler func(ctx context.C
 // QueueChannel.Publish já documenta), mas PublishWithContext só retorna
 // depois que o broker confirma o recebimento no canal (não espera nenhum
 // consumidor entregar).
+//
+// Durante uma reconexão (task J3.3, REQ-43.6) r.ch é nil — Publish devolve
+// erro IMEDIATAMENTE nesse caso, nunca bloqueia nem desreferencia nil; ver a
+// doc do arquivo sobre "Reconexão" para por que isso é suficiente (o relay
+// do outbox, o único chamador que importa, já re-tenta).
 func (r *rabbitmqChannel) Publish(ctx context.Context, ev runtime.Event) error {
 	body, err := encodeEnvelope(ev)
 	if err != nil {
@@ -511,38 +722,60 @@ func (r *rabbitmqChannel) Publish(ctx context.Context, ev runtime.Event) error {
 	if r.cfg.KeyFunc != nil {
 		routingKey = r.cfg.KeyFunc(ev)
 	}
+
+	// connMu (task J3.3): lê qual *amqp.Channel usar AGORA — RLock permite
+	// Publishes concorrentes lerem em paralelo, só a troca (reconnectLoop)
+	// precisa de exclusividade aqui.
+	r.connMu.RLock()
+	ch := r.ch
+	exchange := r.cfg.Exchange
+	r.connMu.RUnlock()
+	if ch == nil {
+		return fmt.Errorf("amqpruntime: Publish: sem conexão ativa (reconectando)")
+	}
+
 	// pubMu (revisão da PR #23): serializa o acesso ao *amqp.Channel — ver a
 	// doc do campo em rabbitmqChannel.
 	r.pubMu.Lock()
 	defer r.pubMu.Unlock()
-	return r.ch.PublishWithContext(ctx, r.cfg.Exchange, routingKey, false, false, amqp.Publishing{
+	return ch.PublishWithContext(ctx, exchange, routingKey, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        body,
 	})
 }
 
-// Close libera a conexão e todo *amqp.Channel abertos por
-// NewRabbitMQChannel (canal de publish + um por consumidor) — o wiring
-// gerado (task J3.4/J6.2, "func run() error" com "defer Close()" por
+// Close libera a conexão e todo *amqp.Channel abertos (canal de publish +
+// um por consumidor) e para o supervisor de reconexão (task J3.3) — o
+// wiring gerado (task J3.4/J6.2, "func run() error" com "defer Close()" por
 // recurso, §design infra-providers "wiring multi-recurso fail-closed") vai
-// chamar isto no unwind.
+// chamar isto no unwind. Idempotente: chamar mais de uma vez nunca panica
+// (closeOnce protege o fechamento de stopCh; conn/ch/consumeChans são lidos
+// e zerados atomicamente sob connMu, então uma segunda chamada não encontra
+// nada para fechar de novo).
 func (r *rabbitmqChannel) Close() error {
+	// Fecha stopCh ANTES de tocar a conexão — supervise()/reconnectLoop()
+	// dependem dessa ordem para distinguir "Close() deliberado" de "blip de
+	// rede" (ver a doc do arquivo sobre "Reconexão").
+	r.closeOnce.Do(func() { close(r.stopCh) })
+
+	r.connMu.Lock()
+	conn, ch, chans := r.conn, r.ch, r.consumeChans
+	r.conn, r.ch, r.consumeChans = nil, nil, nil
+	r.connMu.Unlock()
+
 	var errs []error
-	if r.ch != nil {
-		if err := r.ch.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	r.closeMu.Lock()
-	chans := r.consumeChans
-	r.closeMu.Unlock()
-	for _, ch := range chans {
+	if ch != nil {
 		if err := ch.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if r.conn != nil {
-		if err := r.conn.Close(); err != nil {
+	for _, c := range chans {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if conn != nil {
+		if err := conn.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
