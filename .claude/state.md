@@ -741,6 +741,120 @@ consumidores) desta task; `Publish` na janela de reconexão retorna erro (o
 relay do outbox re-tenta). Teste unit: fechar o canal fake ⇒ o supervisor
 tenta reabrir.
 
+Concluído: **J4.1** — adapter `redisQueryCache` (Cache §15, REQ-44.1/44.5,
+§design infra-providers 3.4), abrindo a Fase J4. Novo pacote
+`codegen/redisrt/` (mesmo padrão de `amqprt`/`sqlrt`/`grpcrt`: `doc.go` +
+`embed.go` (`Sources()`/`Names()` via `//go:embed *.go.txt`) +
+`cache.go.txt`, `package redisruntime`, driver
+`github.com/redis/go-redis/v9`).
+
+`redisQueryCache` implementa `runtime.QueryCache`
+(`codegen/rtsrc/querycache.go.txt`) sobre um `redisCmdable` (interface
+interna própria, só `Get`/`Set`/`Incr` — as 3 únicas operações usadas, com as
+MESMAS assinaturas dos métodos promovidos por `*redis.Client`; existir como
+interface, e não campo `*redis.Client` concreto, é o que permite ao teste
+injetar um client fake sem nenhuma conexão real, já que `*redis.Client` é
+uma struct em go-redis/v9, não uma interface).
+
+**Serialização type-preserving via `encoding/gob`, não `encoding/json`**: o
+wrapper gerado (`emitQueryCacheWrapper`, `codegen/decl_query_cache.go`) faz
+`v.(<TipoDeRetorno>)` — um type assertion DIRETO e sem checagem sobre o que
+`Get` devolve como `value any`. `encoding/json` num alvo `any` reconstruiria
+só `map[string]interface{}`/`float64`/etc, o que faria esse assertion
+PANICAR; `encoding/gob`, ao contrário, preserva o tipo concreto através de um
+campo de interface — `cachePayload{Value any; Err error; HasErr bool}`, o
+envelope gravado no Redis — DESDE QUE o tipo concreto já tenha sido
+registrado via `gob.Register` antes do primeiro `Decode`. Essa chamada de
+`gob.Register(<TipoDeRetornoDaQuery>{})` (e, quando a Query usa
+`negativeCacheTtl`, dos tipos de erro de negócio cacheados por `SetErr`) é
+documentada no arquivo como responsabilidade do wiring que seleciona este
+backend para uma Query específica — **não desta task**: J4.3 ("Seleção +
+wiring") ainda não existe; `Get`/`decodePayload` já tratam um tipo não
+registrado (ou qualquer stream gob malformado) como um MISS silencioso
+(fail-open), nunca um pânico.
+
+**Invalidação por geração-no-prefixo (item b)**: cada instância (um
+namespace explícito por construtor, `NewRedisQueryCache(client, namespace)`
+— uma instância por Query cacheada, mesma convenção já documentada em
+`querycache.go.txt`) mantém um contador em `<ns>:gen` (via `INCR`,
+`redisQueryCache.InvalidateAll` = um único `INCR`, O(1), NUNCA `SCAN`). Toda
+chave de DADOS é escrita como `<ns>:<geração-na-escrita>:<sha256(key)>`
+sempre COM o `ttl`/`negativeCacheTtl` recebido de `Set`/`SetErr` (ttl<=0
+nunca cacheia, mesma regra do `memoryQueryCache`) — nunca sem expiração. A
+chave de geração em si NUNCA recebe TTL (persistente por design: se
+expirasse, o contador reiniciaria em 0 e invalidaria acidentalmente todo o
+cache vivo daquele namespace). `InvalidateAll` não apaga as chaves de dados
+da geração antiga — elas só deixam de ser lidas e expiram sozinhas via seu
+próprio TTL (custo aceito por design, documentado no arquivo).
+
+**Fail-open total (REQ-44.1/44.5)**: `Get` nunca devolve algo diferente de
+`hit=false` sob qualquer falha (Redis indisponível, `redis.Nil`/chave
+ausente, `gob.Decode` malformado) — nunca propaga erro, nunca panica.
+`Set`/`SetErr`/`InvalidateAll` também nunca retornam erro (mesma forma da
+interface): uma falha aí só é logada via `log/slog` (mesma convenção de
+`amqprt/rabbitmq.go.txt`) e a chamada retorna — uma escrita de cache que
+falha não é fatal. Coalescing (stampede protection) continua local por
+processo (mesmo mecanismo single-flight de `memoryQueryCache.Coalesce`,
+copiado dentro de `redisQueryCache`) — cruzar réplicas não é exigido (spec
+§15).
+
+Registro (mirror exato de J3.1/`channelProviders["rabbitmq"]`):
+`codegen/project.go` ganhou as constantes
+`redisDriverModule`/`redisDriverVersion` (`github.com/redis/go-redis/v9
+v9.21.0`, confirmada estável via `go list -m -versions`) e
+`redisMinGoVersion` ("1.24", do próprio `go.mod` do driver — abaixo de
+`sqliteMinGoVersion`/`postgresMinGoVersion`, então não eleva o default além
+do que Postgres/sqlite já exigiriam); `codegen/provider_registry.go` ganhou
+`cacheProviders["redis"] = {module: redisDriverModule, version:
+redisDriverVersion, minGo: redisMinGoVersion, adapterDir: "redisruntime",
+ctor: "NewRedisQueryCache"}` e `providerSources["redisruntime"] =
+redisrt.Sources` — `activeProviderDeps`/`EmitGoMod`/
+`generateProviderRuntimeFiles` (todos genéricos desde J0) já passam a
+reconhecer `Cache { backend: "redis" }` sem nenhuma mudança adicional
+(REQ-46.1/46.2/46.3). Este é o PRIMEIRO backend real de `cacheProviders`
+(antes só `channelProviders["rabbitmq"]` era real) — `TestActiveProviderDepsUnrecognizedProvidersAreNoOp`
+(`codegen/provider_registry_test.go`) usava `"redis"` como exemplo de
+backend de Cache NÃO reconhecido; atualizado para `"memcached"` (RateLimit
+continua usando `"redis"` como exemplo de backend ainda não reconhecido —
+`rateLimitProviders` fica vazio até J4.2).
+
+**Ainda fora do orçamento (J4.2/J4.3)**: `redisLimiter` (RateLimit sobre
+Redis, script Lua atômico, §design infra-providers 3.4) é J4.2; a seleção
+real — o wiring gerado (`decl_query_cache.go`) emitindo
+`redisruntime.NewRedisQueryCache(...)` em vez de
+`runtime.NewMemoryQueryCache()` quando `backend: "redis"`, incluindo as
+chamadas `gob.Register` necessárias — é J4.3. Nenhum dos dois foi tocado
+aqui; a task J4.1 é só o adapter.
+
+Testes novos (item c): `codegen/redis_cache_test.go` (`package codegen`,
+mesmo padrão de `amqp_envelope_test.go` — lê `cacheProviders["redis"]`
+direto ao montar o `go.mod` da fixture, roda um teste embutido `package
+redisruntime` white-box via `gentest.WriteFiles`/`RunTests` sobre um
+projeto Go efêmero real, SEM nenhuma conexão Redis, usando um `fakeCmdable`
+em memória injetado via `newRedisQueryCache` — o construtor interno usado
+tanto pelo fake quanto por `NewRedisQueryCache` real):
+`TestRedisQueryCacheRoundTripPreservesConcreteType` (Set→Get com um struct
+próprio, prova que o tipo concreto sobrevive ao gob, não vira
+`map[string]interface{}`), `TestRedisQueryCacheSetErrRoundTrip` (negativo,
+`SetErr`), `TestRedisQueryCacheInvalidateAllMissesEvenWithinTTL` (Get após
+`InvalidateAll` vira miss mesmo dentro do TTL original — prova geração, não
+expiração — e confirma que a chave de geração nunca é apagada),
+`TestRedisQueryCacheGetFailsOpenOnRedisError`/
+`TestRedisQueryCacheGetFailsOpenOnUnregisteredType` (fail-open, cliente fake
+com erro injetado / payload gob corrompido) e
+`TestRedisQueryCacheSetSkipsNonPositiveTTL`.
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go test
+./codegen/ -run "TestSQL|TestPostgres|TestWallet|TestLedger|
+TestActiveSQLProviders|TestEmitGoMod|TestPolicy|TestOutbox|TestGentest|
+TestProviderRegistry|TestActiveProviderDeps|
+TestGenerateProviderRuntimeFiles|TestAMQP"` e `go test ./driver/... -run
+TestGenerate` (wallet/shop e2e, zero bytes mudaram, NFR-21) verdes; `go test
+./...` (suíte inteira) verde. Nota: por estar rodando em paralelo com outra
+task (J3.3) noutra branch, o ponteiro "Próxima task" acima e a linha da
+tabela no topo deste arquivo NÃO foram atualizados por esta task — deixados
+como encontrados, para reconciliação manual entre as duas PRs.
+
 ## Issues em aberto
 
 Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit

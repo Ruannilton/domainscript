@@ -216,7 +216,7 @@
 
 ### Fase J4 — Redis como backend de Cache e RateLimit (REQ-44)
 
-- [ ] **J4.1** `redisQueryCache` (Cache §15).
+- [x] **J4.1** `redisQueryCache` (Cache §15).
   - a. `codegen/redisrt/cache.go.txt`: implementa `QueryCache` (GET/SETEX, TTL,
     negativo, fail-open). Entrada `cacheProviders["redis"]` (go-redis/v9).
     (REQ-44.1/44.5, §design 3.4).

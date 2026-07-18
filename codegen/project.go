@@ -59,6 +59,23 @@ const (
 	amqpDriverModule  = "github.com/rabbitmq/amqp091-go"
 	amqpDriverVersion = "v1.12.0"
 
+	// redisDriverModule/redisDriverVersion identificam o driver real que este
+	// gerador sabe vendorar atrás do adapter redisruntime (J4.1, REQ-44.1,
+	// §design infra-providers 3.4): o cliente oficial
+	// github.com/redis/go-redis/v9. Fixo (não "latest"), mesma razão de
+	// sqliteDriverVersion/postgresDriverVersion/amqpDriverVersion
+	// (determinismo, NFR-13).
+	redisDriverModule  = "github.com/redis/go-redis/v9"
+	redisDriverVersion = "v9.21.0"
+	// redisMinGoVersion é a versão mínima de Go que redisDriverVersion exige
+	// (seu próprio go.mod declara "go 1.24") — abaixo de
+	// sqliteMinGoVersion/postgresMinGoVersion (1.25), então na prática nunca
+	// eleva opts.GoVersion além do que sqlite/postgres já exigiriam quando
+	// ambos ativos; registrada mesmo assim pela mesma razão documental de
+	// sqliteMinGoVersion (um projeto SÓ com Redis, sem nenhum Database real,
+	// ainda precisa da versão certa).
+	redisMinGoVersion = "1.24"
+
 	// grpcModule/grpcVersion identificam o ÚNICO par módulo/versão que este
 	// gerador sabe vendorar atrás do pacote de borda grpcedge (H1, NFR-12,
 	// REQ-29.2): fixado (não "latest") pela mesma razão de
