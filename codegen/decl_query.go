@@ -274,7 +274,9 @@ func emitQueryDecl(e *emit.Emitter, decl *ast.QueryDecl, aggregates map[string]*
 	}
 
 	if plan != nil {
-		emitQueryCacheVar(e, decl, plan, runtimeAlias)
+		if err := emitQueryCacheVar(e, decl, plan, returnGoType, runtimeAlias, mod); err != nil {
+			return nil, err
+		}
 		emitQueryCacheWrapper(e, decl, plan, fnName, returnGoType, paramStrs, paramNames, ctxAlias, runtimeAlias)
 	}
 

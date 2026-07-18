@@ -246,7 +246,7 @@
     total); Redis volta ⇒ retoma a contagem global. (REQ-44.5, §design 3.4).
   - c. Teste unit do script/chave + fallback (Redis fake com erro ⇒ usa local,
     não libera tudo); integração `REDIS_URL`.
-- [ ] **J4.3** **(R2/R3)** Seleção + wiring.
+- [x] **J4.3** **(R2/R3)** Seleção + wiring.
   - a. `decl_query_cache.go`/`ratelimit.go`: trocam construtor in-memory pelo
     redis quando `Cache{backend:redis}`/`RateLimit{backend:redis}` (lidos dos
     ConfigBlocks de módulo); URL de `env(...)`. (REQ-44.4, R1).
