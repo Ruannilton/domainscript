@@ -2,8 +2,13 @@ package codegen
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
+	"domainscript/ast"
 	"domainscript/codegen/emit"
+	"domainscript/program"
+	"domainscript/token"
 )
 
 // decl_filestorage.go emite o wiring de FileStorage de um módulo (G1a, §2.5,
@@ -43,4 +48,70 @@ func emitFileStorageWiring(pkg string) ([]byte, error) {
 	})
 
 	return e.Bytes()
+}
+
+// fileStorageProvider lê "provider" de fs.Decl.Entries — "" quando ausente
+// (backend in-memory de sempre). Mesmo helper (configStringLitEntry,
+// decl_telemetry.go) que activeProviderDeps (provider_registry.go) já usa
+// para resolver fileProviders["s3"] a partir de uma FileStorage (task
+// J5.2, R2).
+func fileStorageProvider(fs *program.FileStorage) (string, error) {
+	if fs == nil || fs.Decl == nil {
+		return "", nil
+	}
+	provider, ok, err := configStringLitEntry(fs.Decl.Entries, "provider")
+	if err != nil {
+		return "", fmt.Errorf("FileStorage %s: provider: %w", fs.Name, err)
+	}
+	if !ok {
+		return "", nil
+	}
+	return provider, nil
+}
+
+// fileStorageProviderKind normaliza fileStorageProvider(fs) contra
+// fileProviders (o registro real, J5.1) — "" quando ausente OU não
+// reconhecido (o backend in-memory de sempre, NFR-21), "s3" quando
+// reconhecido. Mesmo padrão de channelProviderKind/cacheBackendKind/
+// rateLimitBackendKind: um provider declarado mas NÃO reconhecido (ex.
+// "gcs", ainda não implementado) cai silenciosamente no caminho in-memory,
+// nunca um erro de geração.
+func fileStorageProviderKind(fs *program.FileStorage) (string, error) {
+	provider, err := fileStorageProvider(fs)
+	if err != nil || provider == "" {
+		return "", err
+	}
+	if _, known := fileProviders[strings.ToLower(provider)]; known {
+		return strings.ToLower(provider), nil
+	}
+	return "", nil
+}
+
+// fileStorageConfigGo traduz o valor de key ("bucket"/"region") no
+// Decl.Entries de fs para uma expressão Go (task J5.2, R1) — mesmo padrão de
+// channelConnectionGo/cacheConnectionGo/rateLimitConnectionGo:
+// "env(VAR)" vira "os.Getenv(VAR)"; um literal STRING vira ele mesmo, entre
+// aspas Go. Só chamada quando fileStorageProviderKind já confirmou "s3" — a
+// chave ausente é um erro de geração claro (fail-closed), não uma string
+// vazia silenciosa (spec §12: "DocumentStorage { provider: \"s3\", bucket:
+// env(\"DOCUMENTS_BUCKET\"), region: env(\"AWS_REGION\") }").
+func fileStorageConfigGo(e *emit.Emitter, fs *program.FileStorage, key string) (string, error) {
+	var entries []ast.ConfigEntry
+	if fs.Decl != nil {
+		entries = fs.Decl.Entries
+	}
+
+	expr, ok := findConfigEntryExpr(entries, key)
+	if !ok {
+		return "", fmt.Errorf(`FileStorage %s: provider "s3" exige %q (ex. %s: env("..."))`, fs.Name, key, key)
+	}
+
+	if envKey, isEnv := envCallKey(expr); isEnv {
+		osAlias := e.Import("os")
+		return fmt.Sprintf("%s.Getenv(%q)", osAlias, envKey), nil
+	}
+	if lit, isLit := expr.(*ast.Literal); isLit && lit.Kind == token.STRING {
+		return strconv.Quote(lit.Value), nil
+	}
+	return "", fmt.Errorf(`FileStorage %s: %s: forma não suportada (%T) — esperava env("VAR") ou um literal string`, fs.Name, key, expr)
 }
