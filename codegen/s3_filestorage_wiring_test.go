@@ -72,9 +72,9 @@ func TestGenerateFileStorageS3BackendGolden(t *testing.T) {
 	s := string(got)
 
 	for _, want := range []string{
-		`contentStorageFS, err := s3runtime.NewS3FileStorage(context.Background(), os.Getenv("DOCUMENTS_BUCKET"), os.Getenv("AWS_REGION"))`,
+		`docsContentStorageFS, err := s3runtime.NewS3FileStorage(context.Background(), os.Getenv("DOCUMENTS_BUCKET"), os.Getenv("AWS_REGION"))`,
 		"log.Fatal(err)",
-		`docs.WireFileStorage("ContentStorage", contentStorageFS)`,
+		`docs.WireFileStorage("ContentStorage", docsContentStorageFS)`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("esperava %q em cmd/docs/main.go, não achei:\n%s", want, s)
