@@ -277,7 +277,7 @@
 
 ### Fase J6 — Fixture-âncora, fail-closed e determinismo (REQ-47, REQ-48)
 
-- [ ] **J6.1** **(R7)** Fixture-âncora multi-service.
+- [x] **J6.1** **(R7)** Fixture-âncora multi-service.
   - a. Postgres + canal rabbitmq + cache/ratelimit redis + filestorage s3 +
     Policy AtLeastOnce sobre o Outbox durável, tudo com `connection: env(...)`.
     (§1.4 requirements).

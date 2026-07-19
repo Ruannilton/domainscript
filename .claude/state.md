@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J6.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J6.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1250,14 +1250,85 @@ comportamental) continua verde SEM NENHUMA alteração — a prova viva de
 NFR-21/23 (nenhum programa sem `FileStorage{provider:"s3"}` muda 1 byte);
 `go test ./...` (suíte inteira) verde.
 
-Próxima: **J6.1** — **(R7)** Fixture-âncora multi-service: Postgres + canal
-rabbitmq + cache/ratelimit redis + filestorage s3 + Policy AtLeastOnce
-sobre o Outbox durável, tudo com `connection`/`bucket`/`region: env(...)`;
-cada módulo é de UseCase OU de Policy, nunca os dois (evita ISSUE-7);
-gera, builda **offline** (`go build -mod=vendor`) + `go vet`a com os cinco
-adapters e o `vendor/` presentes (golden + smoke, REQ-48.1, R10). Abre a
-Fase J6 (REQ-47/48), o fechamento de Marco J: fixture-âncora, fail-closed
-(`run() error` multi-recurso, J6.2) e determinismo consolidado (J6.3).
+**Follow-up (PR #32):** o Gemini Code Assist apontou, já depois da PR #31
+mesclada, que `fsVar := strings.ToLower(name[:1]) + name[1:] + "FS"`
+colidiria em Go se DOIS módulos DISTINTOS do mesmo grupo de serviços
+declarassem uma FileStorage de MESMO nome (ex. "ContentStorage") — duas
+vars `:=` no MESMO escopo de `func main()`. Corrigido prefixando pelo
+pacote do módulo: `fsVar := wt.pkg + name + "FS"`. PR pequena e separada
+(#32, já mesclada), já que #31 mesclou antes do fix ficar pronto.
+
+Concluído: **J6.1** — **(R7)** Fixture-âncora multi-service, abrindo a
+Fase J6 (REQ-47/48) — o fechamento de Marco J. Novo
+`codegen/anchor_fixture_test.go`: 3 services, 5 módulos, os CINCO
+providers reais ativos ao mesmo tempo no MESMO programa —
+`AnchorOrdersSvc{AnchorOrders}` (Database postgres decorativo + emite o
+PublicEvent `AnchorOrderPlaced` cross-service via RabbitMQ),
+`AnchorCatalogSvc{AnchorCatalog}` (Cache+RateLimit redis numa Query
+cacheada + rota com rateLimit, FileStorage s3 via `store`/`load File`),
+`AnchorBillingSvc{AnchorBilling, AnchorInvoice, AnchorNotify}`
+(`AnchorBilling` consome `AnchorOrderPlaced` via RabbitMQ;
+`AnchorInvoice`/`AnchorNotify` — UseCase+Policy LOCAIS, mesmo service, sem
+canal — provam a Policy `AtLeastOnce` com Outbox durável, `AnchorNotify`
+com Database postgres própria).
+
+**Dois achados arquiteturais pré-existentes (fora do escopo de
+infra-providers, contornados na fixture, registrados como desvio/issue):**
+1. Uma Policy cross-service (consumindo via canal `queue`) NUNCA é
+   elegível ao Outbox durável no código atual — `emitPolicyWireFunc`
+   (decl_policy.go, J2.5) só promove `o` a `*runtime.DurableOutbox` para
+   Policies de alvo LOCAL (`info.channel == nil`); uma Policy cross-service
+   sempre usa `runtime.NewOutbox(<canal>)`, mesmo com Database real +
+   `delivery AtLeastOnce`. A durabilidade cross-service do REQ-42.6 é sobre
+   o outbox do PRODUTOR alimentando o canal ao publicar — um mecanismo
+   distinto de "promover o Outbox local do CONSUMIDOR". Por isso a
+   fixture prova as duas pontas SEPARADAMENTE (`AnchorBilling` prova o
+   canal; `AnchorInvoice`/`AnchorNotify`, local, provam o Outbox durável) —
+   nenhuma mudança de código foi necessária, só de estrutura da fixture.
+2. `generateCmdMainFile` (F5/G3, ANTES de Marco J) recusa combinar, no
+   MESMO service, um módulo PRODUTOR de canal de saída com um módulo que
+   precisa de `runtime.Dispatcher` (Policy local OU Query cacheada) — as
+   duas formas de construir a `UnitOfWork` do service são incompatíveis.
+   Por isso Cache/RateLimit/FileStorage (REQ-44/45) vivem em
+   `AnchorCatalog`, um 3º service SEM canal nenhum, separado de
+   `AnchorOrders` (o produtor).
+3. **(ISSUE-11, novo)** o parser falha em analisar duas atribuições
+   simples CONSECUTIVAS (`x = load Y(id)` seguido de `y = ...`) — erro de
+   SINTAXE no `=` da segunda, mesmo sendo gramática válida; uma "ensure"
+   (ou qualquer outro statement) entre as duas evita o bug. Fora do escopo
+   de infra-providers (é `parser/`) — contornado na fixture inserindo um
+   "ensure ... exists else ..." entre os dois `load`; registrado em
+   `.claude/issues.md` para uma task dedicada no `parser/`.
+
+**Desvio registrado (R10, item c) — build offline com `vendor/` real não
+implementado nesta task.** O critério pede `go build -mod=vendor` contra
+um `vendor/` materializado a partir da árvore vendorizada do PRÓPRIO
+repositório domainscript (§design infra-providers §2.2) — isso exigiria o
+compilador (este módulo) passar a depender de verdade dos 4 drivers
+(pgx/amqp091-go/go-redis/aws-sdk-go-v2) só para vendorizá-los, e uma
+função nova de `codegen` para copiar o subconjunto ativo para o `vendor/`
+do projeto GERADO — uma mudança de escopo maior (dezenas de MB no repo,
+mecanismo nunca usado aqui antes) do que cabe nesta task isoladamente;
+levantado explicitamente ao usuário antes de decidir (a pergunta não
+recebeu resposta síncrona — decisão tomada: interim, sem bloquear a
+task). Interim: `TestAnchorFixtureSmokeCompile` prova o MESMO smoke
+(build+vet reais, sobre os bytes escritos em disco, NFR-17) via `go mod
+tidy` — a mesma técnica que TODA a suíte de J1-J5 já usa — em vez de
+`-mod=vendor`. A vendorização de verdade fica como follow-up explícito
+(não um `ISSUE-N` — é o próprio critério R10/c da task, registrado aqui
+e em `tasks.md`).
+
+Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go
+test ./codegen/... ./driver/...` verde; `go test ./...` (suíte inteira)
+verde.
+
+Próxima: **J6.2** — **(R1)** Wiring multi-recurso fail-closed com `run()
+error`: o `main.go`-âncora passa a gerar o corpo num `func run() error`
+(cada passo `return err`, `defer Close()` no unwind, `main()` faz o
+`log.Fatal` único) — não vaza recurso já aberto se o próximo falhar
+(REQ-47.2/47.3, §design 3.6). Teste: smoke confirma a forma `run() error`
++ `defer Close()` por recurso. Esta task também é a oportunidade natural
+para revisitar o desvio de vendoring (R10, acima) se o usuário pedir.
 
 ## Issues em aberto
 

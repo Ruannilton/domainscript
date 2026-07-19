@@ -1277,7 +1277,12 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					}
 					s3RuntimeAlias := e.Import(path.Join(domainModuleRoot, "s3runtime"))
 					s3CtxAlias := e.Import("context")
-					fsVar := strings.ToLower(name[:1]) + name[1:] + "FS"
+					// fsVar prefixado por wt.pkg (revisão da PR #31): dois módulos
+					// DISTINTOS do MESMO grupo podem declarar uma FileStorage de
+					// MESMO nome (ex. "ContentStorage" em dois módulos) — sem o
+					// prefixo, as duas vars ":=" colidiriam no MESMO escopo de
+					// func main(), erro de compilação Go.
+					fsVar := wt.pkg + name + "FS"
 					e.Line("%s, err := %s.NewS3FileStorage(%s.Background(), %s, %s)", fsVar, s3RuntimeAlias, s3CtxAlias, bucketGo, regionGo)
 					e.Line("if err != nil { %s.Fatal(err) }", logAlias)
 					e.Line("%s.WireFileStorage(%s, %s)", wt.alias, strconv.Quote(name), fsVar)

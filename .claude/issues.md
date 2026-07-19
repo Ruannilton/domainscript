@@ -224,3 +224,28 @@ Cada issue é um bloco novo, nesta forma:
   malformado — não exercitado por nenhum teste comportamental hoje), mas
   vale uma task pequena e dedicada (fora de Marco J, é `rtsrc/` puro) para
   fechar.
+
+## ISSUE-11
+- SPEC: infra-providers
+- TASK: J6.1 (fixture-âncora multi-service)
+- DESCRIPTION: o **parser** (`parser/parse_stmt.go`) falha em analisar DUAS
+  atribuições simples consecutivas dentro do mesmo bloco de statements — ex.:
+  ```
+  order = load Bar(id)
+  x = id
+  ```
+  A SEGUNDA atribuição ("x = id") produz um erro de SINTAXE ("esperava uma
+  expressão, encontrei =") no "=" da segunda linha, mesmo sendo gramática
+  válida (duas AssignStmt seguidas) — reproduzido isolado, sem relação com
+  `load File`/FileStorage (testado trocando o RHS da 2ª atribuição por um
+  literal simples, mesmo erro). Uma "ensure ... exists else ..." (ou
+  qualquer outro tipo de statement) ENTRE as duas atribuições evita o bug —
+  sugere que o parser de statements trata "AssignStmt seguido de AssignStmt"
+  como uma continuação de expressão em vez de dois statements
+  independentes, possivelmente relacionado a como `synchronize`/`expect`
+  decide onde um statement termina. Fora do escopo de J6.1 (é
+  `parser/`, front-end — a spec infra-providers não toca lá) — contornado
+  na fixture-âncora reescrevendo para "return load File(...)" direto (sem a
+  2ª atribuição intermediária), sem mudar a cobertura pretendida da task.
+  Vale uma task pequena e dedicada no `parser/` (fora de Marco J) para
+  isolar a causa raiz e cobrir com um teste positivo/negativo (NFR-4).
