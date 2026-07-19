@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J5.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J6.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1204,15 +1204,60 @@ test ./codegen/... ./driver/...` verde (inclui `TestActiveProviderDeps*`
 ajustado); nenhum programa sem `FileStorage { provider: "s3" }` muda 1
 byte (NFR-21 — nenhuma fixture existente declara S3).
 
-Próxima: **J5.2** — **(R2)** Seleção + wiring: `decl_filestorage.go` ganha
-`fileStorageProvider(fs)` (lê `provider` de `fs.Decl.Entries`, R2);
-`codegen.go` (o loop `for _, name := range wt.fileStorages`, hoje
-incondicional em `NewMemoryFileStorage()`) troca para
-`NewS3FileStorage(ctx, bucket, region)` quando `"s3"` — bucket/região de
-`env(...)`, credenciais pela cadeia AWS padrão (já resolvida dentro do
-construtor de J5.1). Golden + smoke; sem s3 ⇒ byte-idêntico. Integração
-`//go:build integration` guardada por `S3_BUCKET` (put+get+presign+delete
-== in-memory, NFR-22/24). Fecha a Fase J5 (REQ-45 completo).
+Concluído: **J5.2** — **(R2)** Seleção + wiring, fechando a Fase J5
+(REQ-45 completo) e o 5-provider slice inteiro de Marco J (Postgres/
+Outbox/RabbitMQ/Redis/S3). `codegen/decl_filestorage.go` ganhou
+`fileStorageProvider(fs)` (lê `provider` de `fs.Decl.Entries` via
+`configStringLitEntry`, R2 — mesmo padrão de `channelProvider`),
+`fileStorageProviderKind(fs)` (normaliza contra `fileProviders`, "" quando
+ausente/não reconhecido — NFR-21) e `fileStorageConfigGo(e, fs, key)`
+(traduz `bucket`/`region` via `env(...)` ou literal, mesmo padrão de
+`cacheConnectionGo`/`rateLimitConnectionGo`/`channelConnectionGo` — chave
+ausente é erro de geração claro, fail-closed). `codegen.go`: o loop `for
+_, name := range wt.fileStorages` (dentro de `generateCmdMainFile`, ainda
+`func main()` direto — sem `run() error`, isso é J6.2) agora resolve
+`fileStorageProviderKind` por FileStorage; sem `"s3"` continua emitindo
+exatamente `<pkg>.WireFileStorage(name, runtime.NewMemoryFileStorage())`
+(byte-idêntico); com `"s3"`, emite `<var>, err :=
+s3runtime.NewS3FileStorage(context.Background(), <bucketGo>, <regionGo>)`
++ `if err != nil { log.Fatal(err) }` (mesmo padrão fail-closed de
+`emitXADatabaseWiring`/`sql_wiring.go`, único resource aberto aqui — o
+padrão multi-resource `run() error` do §design 3.6 é escopo de J6.2) + `
+<pkg>.WireFileStorage(name, <var>)`.
+
+Testes novos: `codegen/s3_filestorage_wiring_test.go`
+(`TestGenerateFileStorageS3BackendGolden`,
+`TestGenerateFileStorageS3BackendSmokeCompile`,
+`TestFileStorageUnrecognizedProviderStaysInMemory` — mesmo padrão de
+`channel_rabbitmq_test.go`/J3.4: reaproveita a fixture Docs de
+`filestorage_test.go` acrescentando só `provider: "s3"` +
+`bucket/region: env(...)` ao bloco `FileStorage{}` do mod.ds, prova que os
+DOIS caminhos leem a MESMA declaração). `codegen/
+s3_filestorage_integration_test.go` (`//go:build integration`, guardado
+por `S3_BUCKET` — região fixa `"us-east-1"` em vez de `env(...)` no
+fixture de integração especificamente, para que só `S3_BUCKET` precise
+estar no ambiente, mesmo espírito dos demais integration tests):
+`TestS3FileStorageIntegrationParityWithMemory` roda Store->Load->
+SignedURL->Delete->Load contra `runtime.NewMemoryFileStorage()` e contra
+um bucket S3 real, comparando Name/ContentType/Buffer/Metadata — a prova
+de NFR-22; confirmado compilando com `-tags=integration` e pulando sem
+`S3_BUCKET` neste ambiente.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...`/`go vet -tags=integration ./...` limpos; a
+suíte completa de `filestorage_test.go` (golden, determinismo, smoke,
+comportamental) continua verde SEM NENHUMA alteração — a prova viva de
+NFR-21/23 (nenhum programa sem `FileStorage{provider:"s3"}` muda 1 byte);
+`go test ./...` (suíte inteira) verde.
+
+Próxima: **J6.1** — **(R7)** Fixture-âncora multi-service: Postgres + canal
+rabbitmq + cache/ratelimit redis + filestorage s3 + Policy AtLeastOnce
+sobre o Outbox durável, tudo com `connection`/`bucket`/`region: env(...)`;
+cada módulo é de UseCase OU de Policy, nunca os dois (evita ISSUE-7);
+gera, builda **offline** (`go build -mod=vendor`) + `go vet`a com os cinco
+adapters e o `vendor/` presentes (golden + smoke, REQ-48.1, R10). Abre a
+Fase J6 (REQ-47/48), o fechamento de Marco J: fixture-âncora, fail-closed
+(`run() error` multi-recurso, J6.2) e determinismo consolidado (J6.3).
 
 ## Issues em aberto
 

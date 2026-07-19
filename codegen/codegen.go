@@ -1251,10 +1251,36 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				for _, name := range wt.fileStorages {
 					// NewMemoryFileStorage (G1a, §2.5): o seam in-memory, sem
 					// dependência externa — o mesmo espírito de NewMemoryEventStore
-					// acima (Marco E). Um backend real (S3/GCS/...) entra atrás
-					// deste MESMO seam (runtime.FileStorage) em marco posterior,
-					// opt-in (NFR-12) — nenhuma mudança de codegen necessária.
-					e.Line("%s.WireFileStorage(%s, %s.NewMemoryFileStorage())", wt.alias, strconv.Quote(name), runtimeAlias)
+					// acima (Marco E). Com provider "s3" reconhecido
+					// (fileStorageProviderKind, task J5.2, R2), troca para
+					// s3runtime.NewS3FileStorage — mesmo seam (runtime.FileStorage),
+					// nenhuma mudança no resto do codegen (NFR-12).
+					fs := programModule(prog, wt.module).FileStorages[name]
+					kind, err := fileStorageProviderKind(fs)
+					if err != nil {
+						mainErr = fmt.Errorf("FileStorage %s do módulo %s: %w", name, wt.module, err)
+						return
+					}
+					if kind != "s3" {
+						e.Line("%s.WireFileStorage(%s, %s.NewMemoryFileStorage())", wt.alias, strconv.Quote(name), runtimeAlias)
+						continue
+					}
+					bucketGo, err := fileStorageConfigGo(e, fs, "bucket")
+					if err != nil {
+						mainErr = fmt.Errorf("FileStorage %s do módulo %s: %w", name, wt.module, err)
+						return
+					}
+					regionGo, err := fileStorageConfigGo(e, fs, "region")
+					if err != nil {
+						mainErr = fmt.Errorf("FileStorage %s do módulo %s: %w", name, wt.module, err)
+						return
+					}
+					s3RuntimeAlias := e.Import(path.Join(domainModuleRoot, "s3runtime"))
+					s3CtxAlias := e.Import("context")
+					fsVar := strings.ToLower(name[:1]) + name[1:] + "FS"
+					e.Line("%s, err := %s.NewS3FileStorage(%s.Background(), %s, %s)", fsVar, s3RuntimeAlias, s3CtxAlias, bucketGo, regionGo)
+					e.Line("if err != nil { %s.Fatal(err) }", logAlias)
+					e.Line("%s.WireFileStorage(%s, %s)", wt.alias, strconv.Quote(name), fsVar)
 				}
 				if wt.hasWorkers {
 					e.Line("%s.StartWorkers(workerCtx)", wt.alias)

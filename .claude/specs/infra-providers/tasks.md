@@ -266,7 +266,7 @@
   - b. `FileStream` fica como desvio documentado (lowering não emite hoje,
     REQ-45.3).
   - c. Teste unit da montagem de key/metadata/layout, sem infra.
-- [ ] **J5.2** **(R2)** Seleção + wiring.
+- [x] **J5.2** **(R2)** Seleção + wiring.
   - a. `decl_filestorage.go`: `fileStorageProvider(fs)` lê `provider` de
     `fs.Decl.Entries` (R2); troca `NewMemoryFileStorage` por
     `NewS3FileStorage(bucket, region)` quando `"s3"`; bucket/região de
