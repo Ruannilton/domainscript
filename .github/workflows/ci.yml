@@ -88,3 +88,68 @@ jobs:
           done
 
           exit "$fail"
+
+  # Ao mergear para main (e SÓ se test + examples passarem), compila o dsc para
+  # os principais SOs/arquiteturas e publica uma release rolante "nightly": o
+  # binário mais recente de main fica sempre disponível para baixar e testar
+  # localmente, numa URL estável (releases/download/nightly/<asset>).
+  release:
+    needs: [test, examples]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Compila o dsc para todas as plataformas
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${p%/*}"; arch="${p#*/}"
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            out="dist/dsc-${os}-${arch}${ext}"
+            echo "building $out"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" -o "$out" ./cmd/dsc
+          done
+          ( cd dist && sha256sum * > SHA256SUMS.txt )
+          ls -la dist
+
+      - name: Publica a release rolante (nightly)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="nightly"
+          sha="${GITHUB_SHA:0:7}"
+
+          {
+            echo "Transpilador \`dsc\` compilado automaticamente do último merge para \`main\` (commit \`$sha\`)."
+            echo
+            echo "Build **rolante**: este release é sobrescrito a cada merge, então aponta sempre para a versão mais recente de main. A URL de download é estável."
+            echo
+            echo "Baixe o binário do seu SO/arquitetura:"
+            echo "- Linux x86-64 — \`dsc-linux-amd64\`"
+            echo "- Linux ARM64 — \`dsc-linux-arm64\`"
+            echo "- macOS Intel — \`dsc-darwin-amd64\`"
+            echo "- macOS Apple Silicon — \`dsc-darwin-arm64\`"
+            echo "- Windows x86-64 — \`dsc-windows-amd64.exe\`"
+            echo
+            echo "Confira a integridade com \`SHA256SUMS.txt\`. Em Linux/macOS: \`chmod +x dsc-*\` e rode \`./dsc-<...> gen <projeto> -o <saída>\`."
+          } > notes.md
+
+          # Recria a release/tag apontando para o commit recém-mergeado, para
+          # manter uma URL de download estável no tag fixo "nightly".
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "dsc — build contínuo de main ($sha)" \
+            --prerelease \
+            --notes-file notes.md
