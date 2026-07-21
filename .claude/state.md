@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J6.3 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J7.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1377,14 +1377,49 @@ verde SEM NENHUMA alteração — incl. `decl_policy_outbox_test.go`
 recurso PRÓPRIO — `runMode` fica `false` nos três) — a prova viva de
 NFR-21/23; `go test ./...` (suíte inteira) verde.
 
-Próxima: **J6.3** — Determinismo + NFR-21 consolidado: regenerar a
-fixture-âncora 2x ⇒ bytes idênticos (`go.mod`, `go.sum`, imports, fontes
-de adapter, `vendor/`, `main.go`) — por analogia a
-`TestSharedCollectionTypeDeterministic` (NFR-23); teste "categoria não
-declarada ⇒ nada em go.mod/go.sum/vendor, nada copiado" (NFR-21). Fecha a
-Fase J6 e o plano infra-providers inteiro (REQ-41..48). Esta task também
-é a oportunidade natural para revisitar o desvio de vendoring (R10,
-acima) se o usuário pedir.
+Concluído: **J6.3** — Determinismo + NFR-21 consolidado, fechando a Fase
+J6 (REQ-47/48). Novo `codegen/infra_providers_determinism_test.go`:
+
+**(a)** `TestAnchorFixtureDeterministic` — regenera a fixture-âncora de
+J6.1 (os cinco providers ativos ao mesmo tempo, 3 services) duas vezes e
+compara TODOS os arquivos byte a byte (`gentest.Deterministic`, mesma
+técnica de `TestFileStorageDeterministic`/
+`TestSharedCollectionTypeDeterministic`: concatena `Path+"\x00"+Content`
+de cada arquivo). Cobre `go.mod`, imports, cada `main.go` de service, e as
+fontes de adapter copiadas (redisrt/s3rt/amqprt/sqlrt) — **não** cobre
+`go.sum`/`vendor/`, que nunca chegaram a existir neste ciclo (o desvio de
+vendoring real, R10, registrado em J6.1, continua em aberto — ver abaixo).
+
+**(b)** `TestNoProviderDeclaredMeansCoreOnly` — uma fixture nova, mínima
+(`Baseline`, 1 módulo, 1 Aggregate/UseCase, SEM Database/Cache/RateLimit/
+FileStorage/topology.ds nenhum — a prova mais simples possível de "zero
+dos cinco providers") gera `go.mod` **exatamente**
+`"module domainscript/generated\n\ngo 1.22\n"` (sem bloco `require`
+nenhum) e **nenhum** arquivo sob `sqlruntime/`/`amqpruntime/`/
+`redisruntime/`/`s3runtime/` — consolida, numa única fixture, a mesma
+prova que cada task individual (J1-J5) já fazia por categoria.
+**Achado incidental (não é um bug, registrado só para contexto):**
+`docs/examples/wallet`/`shop`/`pizzeria` já declaram `provider: "postgres"`/
+`"rabbitmq"` como rótulos que ERAM decorativos quando escritos — como
+"postgres" (J1.2) e "rabbitmq" (J3.1) agora são reconhecidos de verdade,
+esses exemplos deixaram de ser um baseline "zero provider" — por isso
+J6.3.b precisou de uma fixture NOVA em vez de reusar wallet/shop; a
+atualização da documentação desses exemplos (postgres/rabbitmq deixam de
+ser "só rótulo") já é o item J7.1.b, não tocado aqui.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...` limpos; `go test ./codegen/... ./driver/...`
+verde; `go test ./...` (suíte inteira) verde.
+
+Próxima: **J7.1** — Revisão contra a DoD + atualização de docs (REQ-48.4),
+fechando o plano infra-providers inteiro (REQ-41..48): (a) conferir a DoD
+(requirements §5) — cinco providers reais e opt-in, `go.mod` exato,
+wallet/shop sem regressão (NFR-19), três camadas de teste (integração
+pulada sem infra, NFR-24); (b) atualizar a doc dos exemplos que marcavam
+esses providers como decorativos (`docs/examples/pizzeria` README —
+postgres/rabbitmq deixam de ser "só rótulo", achado documentado acima em
+J6.3). Esta task também é a oportunidade natural para revisitar o desvio
+de vendoring (R10) se o usuário pedir.
 
 ## Issues em aberto
 

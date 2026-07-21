@@ -292,7 +292,7 @@
     não vaza recurso já aberto se o próximo falhar. (REQ-47.2/47.3, §design 3.6).
   - b. Teste: smoke confirma a forma `run() error` + `defer Close()` por
     recurso.
-- [ ] **J6.3** Determinismo + NFR-21 consolidado.
+- [x] **J6.3** Determinismo + NFR-21 consolidado.
   - a. Regenerar a fixture-âncora 2x ⇒ bytes idênticos (go.mod, go.sum, imports,
     fontes de adapter, `vendor/`, main.go) — por analogia a
     `TestSharedCollectionTypeDeterministic`. (NFR-23).
