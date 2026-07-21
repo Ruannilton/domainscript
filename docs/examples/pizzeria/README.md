@@ -95,15 +95,29 @@ escrever o exemplo — não são tentativas às cegas:
    aceito pelo parser (`parser/parse_interface_test.go`) e tem wiring real no
    codegen (`codegen/http.go`, extrai o primeiro rótulo do `Host`). Usado tal
    como o enunciado pede.
-3. **`provider` do Database:** `"postgres"` (Sales) e `"mongodb"` (Kitchen)
-   são só rótulos decorativos — `codegen/sql_wiring.go` só reconhece
-   `"sqlite"` como provider real. Nenhum driver real é puxado; documentado
-   aqui para não confundir alguém lendo o `.ds` esperando um Postgres/Mongo
-   de verdade.
-4. **Canal `via: queue`:** funciona em memória independente do `provider`
-   string (`"rabbitmq"` aqui é decorativo) — só `via: grpc/http/stream` são
-   erro de geração. Usado exatamente como o próprio exemplo de topologia do
-   spec (§11) demonstra.
+3. **`provider` do Database (atualizado pelo ciclo infra-providers/Marco J,
+   REQ-41):** `"postgres"` (Sales) **deixou de ser decorativo** —
+   `codegen/sql_wiring.go` reconhece `"sqlite"` **e** `"postgres"` como
+   providers reais desde J1.2; se a geração alcançasse o módulo Sales, ela
+   puxaria `github.com/jackc/pgx/v5` para o `go.mod` e tentaria abrir uma
+   conexão real. Isso não chega a acontecer hoje: a limitação
+   UseCase+Policy no mesmo módulo (ver "Gerar o back-end" abaixo) barra
+   `dsc gen` antes de qualquer wiring de provider — mas o rótulo em si não
+   é mais só decoração, e `sales/mod.ds` não declara `connection: env(...)`
+   (só é lida quando o módulo usa 2PC ou Outbox durável — nenhum dos dois é
+   o caso aqui). `"mongodb"` (Kitchen) **continua decorativo** — fora do
+   recorte de 5 providers do Marco J (só Postgres entre bancos reais; ver
+   `.claude/specs/infra-providers/requirements.md`, "Fora de escopo").
+4. **Canal `via: queue` (atualizado pelo ciclo infra-providers/Marco J,
+   REQ-43):** `"rabbitmq"` **deixou de ser decorativo** —
+   `codegen/channel_rabbitmq.go` reconhece `"rabbitmq"` como provider real
+   desde J3.1; os dois canais aqui já declaram `connection:
+   env("RABBITMQ_URL")` (a mesma chave que o wiring real espera), então SE
+   a limitação de "Gerar o back-end" fosse resolvida, este exemplo passaria
+   a puxar `github.com/rabbitmq/amqp091-go` e usar o transporte cross-
+   process de verdade, em vez do `QueueChannel` in-memory — nenhuma mudança
+   no `.ds` seria necessária. `via: grpc/http/stream` continuam erro de
+   geração (fora do recorte de Marco J).
 5. **`visibility` de View:** o bloco em `OrderVW` (sales/read.ds) é sintaxe
    válida e modela a intenção corretamente (campos sensíveis só para o
    cliente dono ou `staff`), mas é um **gap conhecido do back-end**

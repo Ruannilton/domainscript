@@ -18,12 +18,18 @@ bodies generate `where`/`orderBy`/`skip`/`take`/`as`/`join`/`in` and
 `distinct`/`sum`/`focus` over an in-memory seam (`runtime.Query[T]`) that
 descends to parametrized SQL on the sqlite adapter through a pluggable
 `Dialect`. A fifth plan, `.claude/specs/infra-providers/` — real
-infrastructure providers (REQ-41..48, Marco J) — is **in progress**
-(J0 done, J1.1/J1.2 done, next is J1.3): it closes gap G-4 / ISSUE-3 for a deliberate
-5-provider slice — Postgres (Database), a durable Outbox, RabbitMQ
-(cross-service channel), Redis (Cache + RateLimit) and S3 (FileStorage) — each
-opt-in behind the seam that already exists. Five spec sets are the source of
-truth and are written in Portuguese:
+infrastructure providers (REQ-41..48, Marco J) — is **also complete**: it
+closes gap G-4 / ISSUE-3 for a deliberate 5-provider slice — Postgres
+(Database), a durable Outbox, RabbitMQ (cross-service channel), Redis (Cache
++ RateLimit) and S3 (FileStorage) — each opt-in behind the seam that already
+exists. One residual gap survives the closure and is tracked, not hidden:
+the outbox's PRODUCER side (a module emitting a `PublicEvent` to a
+cross-service channel) still publishes straight on commit instead of
+enqueuing through the durable outbox — only the CONSUMER side (a local
+`AtLeastOnce` Policy with a real Database) gets a real `DurableOutbox`
+(REQ-42.6, see ISSUE-9's final-status note and
+`.claude/specs/codegen/gaps.md` §G-4 "Residual aberto"). Five spec sets are the source of truth and
+are written in Portuguese:
 
 - `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
   (REQ-1..8, NFR-1..7).
@@ -272,10 +278,11 @@ cycle closed (G-1, G-2, G-8) and what remains open.
 Infra providers (`.claude/specs/infra-providers/tasks.md`): J "Providers Reais
 de Infraestrutura" — a 5-provider slice of gap G-4 / ISSUE-3: Postgres
 (Database), durable Outbox, RabbitMQ (cross-service channel), Redis (Cache +
-RateLimit), S3 (FileStorage), each opt-in behind the existing seam. J0 is the
-transversal provider registry; J1–J5 are independent per-provider vertical
-slices (J2 depends on J1); J6/J7 anchor+close. **In progress** — J0 (registry)
-and J1.1/J1.2 (Postgres dialect + driver/go.mod) are done; next task is J1.3
-(env-based DSN wiring, R1). The rest of G-4 (other databases, gRPC channel,
-Dynamo idempotency, layered cache, GCS/Azure) stays explicitly out of this
-slice.
+RateLimit), S3 (FileStorage), each opt-in behind the existing seam — **also
+complete**; infra providers closes here. J7.1's DoD review found one residual
+gap that survives the closure: the outbox's producer side (a module emitting
+a cross-service `PublicEvent`) still publishes straight on commit instead of
+enqueuing through the durable outbox (REQ-42.6) — tracked in ISSUE-9 (final
+status) and `.claude/specs/codegen/gaps.md` §G-4, not silently dropped. The
+rest of G-4 (other databases, gRPC channel, Dynamo idempotency, layered
+cache, GCS/Azure) stays explicitly out of this slice, for a future cycle.

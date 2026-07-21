@@ -1,10 +1,14 @@
 // mod.ds — infraestrutura do módulo Sales.
-// Banco relacional (Postgres, decorativo — só "sqlite" liga um driver real,
-// ver README) com isolamento multi-tenant por linha: a estratégia pedida no
-// desafio era schema_per_tenant, mas o back-end só tem implementação real
-// para row_level (ver README, "Adaptações"). Idempotência/Cache/RateLimit
-// entram aqui como defaults do módulo; PlaceOrder e GetAvailableMenu os
-// refinam por construto (application.ds / read.ds).
+// Banco relacional (Postgres) com isolamento multi-tenant por linha: a
+// estratégia pedida no desafio era schema_per_tenant, mas o back-end só tem
+// implementação real para row_level (ver README, "Adaptações"). "postgres" é
+// um provider REAL desde o ciclo infra-providers/Marco J (REQ-41) — puxa
+// github.com/jackc/pgx/v5 para o go.mod quando a geração alcança este
+// módulo; hoje isso não acontece (ver README, "Gerar o back-end" — a
+// limitação UseCase+Policy no mesmo módulo barra `dsc gen` antes disso).
+// Idempotência/Cache/RateLimit entram aqui como defaults do módulo;
+// PlaceOrder e GetAvailableMenu os refinam por construto (application.ds /
+// read.ds).
 Module Sales {
     Database MainDb {
         provider: "postgres"

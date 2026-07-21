@@ -102,29 +102,59 @@ de front-end (parser → resolver → sema → types), e só depois codegen.
 
 ### G-4. Providers reais de infraestrutura
 
-Tudo está atrás de seams limpos (NFR-12 respeitado), mas a única dependência
-externa real por categoria é a listada abaixo. O sistema gerado hoje **não é
-implantável contra infraestrutura real** além de sqlite.
+**Parcialmente fechado pelo ciclo `.claude/specs/infra-providers/` (Marco J,
+REQ-41..48) — um recorte deliberado de 5 categorias.** Tudo continua atrás
+de seams limpos (NFR-12 respeitado); a tabela abaixo reflete o estado
+ATUAL, pós-Marco J:
 
 | Categoria | Spec pede | Implementado | Onde está documentado |
 |---|---|---|---|
-| Database | `"Postgres"` (§12) | só `"sqlite"` é adapter real; `"postgres"` é rótulo decorativo | `codegen/sql_wiring.go`; provado empiricamente em `driver/generate_e2e_shop_test.go` |
-| Canais | `direct`/`queue`/`grpc`/`http`/`stream` (§11) | só `direct` e `queue` in-memory; os outros 3 → **erro de geração**; provider `rabbitmq` não existe | `codegen/channel_test.go` (unsupported kind); F5 em `tasks.md` |
-| Cache backend | `memory`/`redis`/`layered` (§15) | in-memory apenas | G3 em `tasks.md` |
-| RateLimit backend | `redis` (§16) | in-memory apenas | G4 em `tasks.md` |
-| FileStorage | `"s3"` (§12) | seam in-memory | G1a em `tasks.md` |
-| Idempotency storage | `same`/`external` Redis-Dynamo (§14) | só `same` in-memory | `codegen/rtsrc/idempotency.go.txt` |
-| Outbox | durabilidade real (§12) | in-memory | F5 em `tasks.md` |
+| Database | `"Postgres"` (§12) | `"sqlite"` **e** `"postgres"` são adapters reais (REQ-41) — outros bancos (MySQL, SQL Server, Mongo, Cassandra) seguem rótulo decorativo | `codegen/sql_wiring.go`/`codegen/sqlrt/`; J1 em `infra-providers/tasks.md` |
+| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **residual (ver nota abaixo):** o relay ainda não publica no canal cross-service de verdade (REQ-42.6 só implementado no seam `runtime.Publisher`, nunca conectado pelo codegen) | `codegen/sql_wiring.go`/`codegen/rtsrc/outbox.go.txt`; J2 em `infra-providers/tasks.md`; ISSUE-9 (`.claude/issues.md`) |
+| Canais | `direct`/`queue`/`grpc`/`http`/`stream` (§11) | `queue` ganhou o provider `"rabbitmq"` real (cross-process, ordenação por chave, reconexão, DLQ — REQ-43); `direct` continua in-memory (não precisa de provider); `grpc`/`http`/`stream` continuam erro de geração | `codegen/channel_rabbitmq.go`; J3 em `infra-providers/tasks.md` |
+| Cache backend | `memory`/`redis`/`layered` (§15) | `redis` real (REQ-44) — `layered` segue fora de escopo | `codegen/redisrt/`; J4 em `infra-providers/tasks.md` |
+| RateLimit backend | `redis` (§16) | real, com fallback local em falha do Redis (REQ-44.5) | `codegen/redisrt/`; J4 em `infra-providers/tasks.md` |
+| FileStorage | `"s3"` (§12) | `"s3"` real (REQ-45) — GCS/Azure Blob seguem fora de escopo | `codegen/s3rt/`; J5 em `infra-providers/tasks.md` |
+| Idempotency storage | `same`/`external` Redis-Dynamo (§14) | só `same` in-memory — `external` explicitamente fora do recorte de Marco J | `codegen/rtsrc/idempotency.go.txt` |
 
-**Fechar exige:** um provider real por vez, cada um opt-in e isolado (o
-padrão já existe: `codegen/sqlrt/`, `codegen/grpcrt/`, `codegen/otelrt/`).
-Postgres ou rabbitmq primeiro — são os que validam os seams mais centrais
-(persistência e canal cross-service). **Nota (ciclo read-side, fechado):**
-REQ-40 (`.claude/specs/read-side/`, task I7.0) já entregou o seam `Dialect`
-+ registro único de provider (`codegen/sqlrt/dialect.go.txt`) — adicionar um
-banco agora é "implementar `Dialect` + uma entrada no registro" (modelo de
-ORM), reduzindo o custo da parte SQL deste gap. O restante (driver real além
-de sqlite, migrations, type mapping) segue em aberto.
+**Residual aberto (não fechado por Marco J, registrado para um ciclo
+futuro):**
+- **Outbox → canal cross-service (REQ-42.6, ISSUE-9):** o runtime já
+  suporta um `DurableOutbox` construído com um `publisher` (o relay chama
+  `publisher.Publish` em vez de rodar handlers locais — provado por
+  `codegen/sql_outbox_channel_test.go`), mas **nenhum código do codegen
+  constrói esse publisher** — `emitDurableOutboxConstruction`
+  (`codegen/decl_policy.go`) sempre chama `NewDurableOutbox(store,
+  registry)` sem o 3º argumento, e `generateCmdMainFile` continua publicando
+  DIRETO no commit (`NewUnitOfWork(store, <canal>)`) para um módulo produtor
+  de canal, em vez de enfileirar no outbox e deixar o relay publicar. A
+  fixture-âncora de J6.1 prova as duas metades SEPARADAMENTE (o canal
+  rabbitmq funcionando; a Policy AtLeastOnce local com Outbox durável) —
+  nunca a integração completa "outbox alimenta o canal", que a spec original
+  do ciclo esperava fechar aqui. Não bloqueia nenhum critério de aceite das
+  tasks J2/J3/J6 individualmente (nenhuma pede essa mudança de wiring
+  explicitamente), mas é uma lacuna real contra REQ-42.6/DoD do ciclo.
+- **Vendorização real / build offline (`R10`, §design infra-providers
+  §2.2):** o critério "`go build -mod=vendor` contra um `vendor/` real,
+  materializado a partir da árvore vendorizada do próprio repositório
+  domainscript" nunca foi implementado — os smoke tests dos 5 providers
+  usam `go mod tidy` (rede) em vez de `-mod=vendor` (offline). Registrado
+  como desvio explícito em J6.1/`.claude/state.md`.
+- **Outros bancos** (MySQL, SQL Server, Mongo, Cassandra), **gRPC/HTTP/
+  stream** como `via` de canal, **Idempotency `external`** (Redis/Dynamo),
+  **Cache `layered`**, **GCS/Azure Blob** para FileStorage — todos
+  explicitamente fora do recorte de 5 categorias do Marco J (ver
+  `.claude/specs/infra-providers/requirements.md`, "Fora de escopo").
+
+**Fechar o residual exige:** (a) fazer o codegen de UseCase/Handle chamar
+`tx.EnqueueOutbox` para um `PublicEvent` cross-service em vez de depender só
+do commit implícito, e construir o `publisher` (o `ChannelTransport` real)
+ao montar `NewDurableOutbox` quando o módulo também produz para aquele
+canal; (b) para os bancos/canais/backends fora do recorte, o modelo
+"implementar `Dialect`/adapter + 1 entrada de registro" que Marco J já
+generalizou (REQ-46, `codegen/provider_registry.go`) reduz o custo
+significativamente — cada categoria nova é, estruturalmente, o mesmo
+trabalho que Postgres/RabbitMQ/Redis/S3 já fizeram.
 
 ### G-5. Field-Level Security de View: bloco `visibility` (spec §6.2)
 

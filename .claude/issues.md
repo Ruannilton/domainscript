@@ -96,6 +96,25 @@ Cada issue é um bloco novo, nesta forma:
   categorias de G-4 (outros bancos, gRPC-canal, Dynamo para idempotency
   `external`, backend `layered` de cache, GCS/Azure) ficam explicitamente fora
   do recorte, para ciclos futuros. Fecha PARCIALMENTE quando o Marco J fechar.
+- FECHADA PARCIALMENTE (Marco J concluído, J7.1): as 5 categorias do recorte
+  têm provider real — Postgres (J1, `codegen/pgrt` + `sql_wiring.go`),
+  RabbitMQ (J3, `codegen/channel_rabbitmq.go`), Redis Cache+RateLimit (J4,
+  `codegen/redisrt`), S3 FileStorage (J5, `codegen/s3rt`), Outbox durável
+  (J2, `runtime.DurableOutbox`/`sql_wiring.go:emitOutboxDatabaseWiring`) —
+  todos opt-in, isolados atrás do seam existente, cobertos por golden +
+  smoke compile (NFR-17) e determinismo (NFR-21, `infra_providers_
+  determinism_test.go`). Ver `.claude/specs/codegen/gaps.md` §G-4 para a
+  tabela completa antes/depois por categoria. **Residual aberto** (não
+  fechado por Marco J, ver ISSUE-9 e `gaps.md` "Residual aberto"): o lado
+  PRODUTOR do Outbox→canal cross-service (REQ-42.6) segue publicando direto
+  no commit em vez de enfileirar no outbox — só o lado consumidor (Policy
+  local com Database real) ganhou `DurableOutbox` de verdade; e a
+  vendorização/build offline real (R10) nunca foi implementada — os smoke
+  tests usam `go mod tidy` (rede), não `-mod=vendor` genuíno. As categorias
+  explicitamente fora do recorte (outros bancos, gRPC-canal, Dynamo,
+  `layered` cache, GCS/Azure) continuam abertas para um ciclo futuro. Não
+  reabrir esta issue para o residual — ele está registrado em ISSUE-9 e em
+  `gaps.md`; um ciclo futuro pode referenciar os dois diretamente.
 
 ## ISSUE-4
 - SPEC: codegen
@@ -200,6 +219,20 @@ Cada issue é um bloco novo, nesta forma:
   Policy) nem quebra NFR-21 (shop continua byte-idêntico, confirmado por
   `driver.TestGenerateShopE2E*`/golden tests). Fica para J3.4 (RabbitMQ, R2)
   ou J6 fechar de verdade.
+- STATUS FINAL (J7.1, revisão de DoD): **nem J3.4 nem J6 fecharam isto** —
+  confirmado por inspeção de código durante a revisão de DoD de J7.1.
+  `emitDurableOutboxConstruction` (`codegen/decl_policy.go`, ~linha 692)
+  ainda chama `NewDurableOutbox(outboxStore, map[...]{...})` sem 3º
+  argumento (`publisher`) em NENHUM caminho — nem mesmo na fixture-âncora
+  de J6.1 (`AnchorNotify`), que prova só o lado consumidor local (Policy +
+  Database própria, sem canal). `generateCmdMainFile` continua publicando
+  direto no commit (`runtime.NewUnitOfWork(store, <canal>)`) para todo
+  módulo produtor de canal — nenhum emissor de UseCase/Handle chama
+  `tx.EnqueueOutbox`. O runtime seam suporta e testa isso isoladamente
+  (`codegen/sql_outbox_channel_test.go`), mas o codegen nunca conecta os
+  dois lados. Registrado também em `.claude/specs/codegen/gaps.md` §G-4
+  ("Residual aberto") e em ISSUE-3. Continua ABERTA — não fechar sem
+  implementar o wiring produtor→outbox→relay de verdade.
 
 ## ISSUE-10
 - SPEC: infra-providers
