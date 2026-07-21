@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J7.1 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1411,15 +1411,66 @@ Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
 `gofmt -l .`/`go vet ./...` limpos; `go test ./codegen/... ./driver/...`
 verde; `go test ./...` (suíte inteira) verde.
 
-Próxima: **J7.1** — Revisão contra a DoD + atualização de docs (REQ-48.4),
-fechando o plano infra-providers inteiro (REQ-41..48): (a) conferir a DoD
-(requirements §5) — cinco providers reais e opt-in, `go.mod` exato,
-wallet/shop sem regressão (NFR-19), três camadas de teste (integração
-pulada sem infra, NFR-24); (b) atualizar a doc dos exemplos que marcavam
-esses providers como decorativos (`docs/examples/pizzeria` README —
-postgres/rabbitmq deixam de ser "só rótulo", achado documentado acima em
-J6.3). Esta task também é a oportunidade natural para revisitar o desvio
-de vendoring (R10) se o usuário pedir.
+Concluído: **J7.1** — Revisão contra a DoD + atualização de docs (REQ-48.4),
+fechando o plano infra-providers inteiro (REQ-41..48). Revisão sistemática
+da DoD (`requirements.md` §5, 6 critérios):
+
+1. Fixture-âncora compila/vet limpo (NFR-17) — **satisfeito**
+   (`anchor_fixture_test.go`, J6.1).
+2. Outbox durável alimenta o canal cross-service (REQ-42.1/42.6) —
+   **satisfeito só PARCIALMENTE**: o lado consumidor (Policy local +
+   Database real → `DurableOutbox`) está de verdade (J2.5); o lado
+   produtor (`emitDurableOutboxConstruction`, `codegen/decl_policy.go`)
+   NUNCA passa um `publisher` para `NewDurableOutbox`, e
+   `generateCmdMainFile` continua publicando direto no commit para um
+   módulo produtor de canal — nenhum emissor de UseCase/Handle chama
+   `tx.EnqueueOutbox`. O runtime seam suporta e testa isso isoladamente
+   (`codegen/sql_outbox_channel_test.go`), mas o codegen nunca liga os dois
+   lados. Este é o achado mais significativo da revisão — documentado sem
+   suavização em ISSUE-9 (status final) e em `gaps.md` §G-4 ("Residual
+   aberto"), e referenciado de volta por ISSUE-3.
+3. `go.mod` exato / NFR-21/23 — **satisfeito**, exceto que `go.sum`/
+   `vendor/` reais nunca existiram (desvio R10, já registrado em J6.1,
+   permanece aberto).
+4. Três camadas de teste (golden + smoke compile + unit de dialeto,
+   integração pulada sem infra real, NFR-24) — **satisfeito**, com a mesma
+   ressalva do item 3: os smoke tests usam `go mod tidy` (rede), não
+   `-mod=vendor` genuíno offline.
+5. wallet/shop sem regressão (NFR-19) / `go build`/`go test` — **satisfeito**
+   (confirmado por toda a suíte verde ao longo de J1-J6, sem alteração
+   byte a byte nos exemplos existentes).
+6. Cinco categorias opt-in e isoladas atrás do seam — **satisfeito**
+   (Postgres/RabbitMQ/Redis-Cache/Redis-RateLimit/S3, cada um só ativado
+   quando o `.ds` declara o provider correspondente).
+
+Atualização de docs (item b da task): `docs/examples/pizzeria/sales/mod.ds`,
+`docs/examples/pizzeria/kitchen/mod.ds` e `docs/examples/pizzeria/README.md`
+("Adaptações" itens #3/#4) — removida a alegação, agora falsa, de que
+`"postgres"`/`"rabbitmq"` são "só rótulos decorativos"; substituída por uma
+descrição precisa: ambos são providers REAIS desde Marco J (J1.2/J3.1),
+mas a geração do pizzeria continua bloqueada por uma limitação PRÉ-EXISTENTE
+e não relacionada (ISSUE-7, UseCase+Policy no mesmo módulo) antes de
+alcançar qualquer wiring de provider; MongoDB (Kitchen) permanece decorativo,
+fora do recorte de 5 providers de Marco J.
+
+`.claude/specs/codegen/gaps.md` §G-4 reescrito: nova tabela por categoria
+(antes/depois) e nova seção "Residual aberto" documentando com precisão de
+código o gap do item 2 acima, o desvio de vendoring (R10), e as categorias
+explicitamente fora de escopo (outros bancos, gRPC-canal, Dynamo,
+`layered` cache, GCS/Azure). `.claude/issues.md`: ISSUE-3 ganhou nota de
+fechamento parcial (recorte de 5 fechado, residual apontado para ISSUE-9);
+ISSUE-9 ganhou nota de status final confirmando que nem J3.4 nem J6
+fecharam o lado produtor — continua ABERTA.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...` limpos; `./dsc docs/examples/pizzeria` continua
+validando limpo (mudança só em comentários); `go test ./...` verde.
+
+Marco J (infra-providers) está **fechado** com este task: o recorte
+deliberado de 5 providers (Postgres/Outbox/RabbitMQ/Redis/S3) está
+implementado, testado e documentado; o residual (produtor→outbox→canal,
+vendoring real, e as categorias fora de escopo) fica registrado para um
+ciclo futuro, não reaberto aqui.
 
 ## Issues em aberto
 

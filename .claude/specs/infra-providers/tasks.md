@@ -301,7 +301,7 @@
 
 ### Fase J7 — Fechamento do ciclo (REQ-48.4, DoD)
 
-- [ ] **J7.1** Revisão contra a DoD + atualização de docs.
+- [x] **J7.1** Revisão contra a DoD + atualização de docs.
   - a. Conferir DoD (requirements §5): cinco providers reais e opt-in, go.mod
     exato, wallet/shop sem regressão (NFR-19), três camadas de teste
     (integração pulada sem infra, NFR-24).
