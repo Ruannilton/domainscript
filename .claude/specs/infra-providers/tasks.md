@@ -286,7 +286,7 @@
     OU de Policy, como shop).
   - c. Gera, builda **offline** (`go build -mod=vendor`) + `go vet`a com os
     cinco adapters e o `vendor/` presentes (golden + smoke, REQ-48.1, R10).
-- [ ] **J6.2** **(R1)** Wiring multi-recurso fail-closed com `run() error`.
+- [x] **J6.2** **(R1)** Wiring multi-recurso fail-closed com `run() error`.
   - a. O `main.go`-âncora gera o corpo num `func run() error` (cada passo
     `return err`, `defer Close()` no unwind, `main()` faz o `log.Fatal` único) —
     não vaza recurso já aberto se o próximo falhar. (REQ-47.2/47.3, §design 3.6).

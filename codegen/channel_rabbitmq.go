@@ -153,7 +153,7 @@ func channelConnectionGo(e *emit.Emitter, ch *program.Channel) (string, error) {
 // DOIS lados (consumidor: decl_policy.go:emitPolicyWireFunc,
 // consumeDisabled=false; produtor: codegen.go:generateCmdMainFile,
 // consumeDisabled=true — ver a doc do arquivo).
-func emitChannelTransportVar(e *emit.Emitter, varName, op string, ch *program.Channel, candidates []channelEventCandidate, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias string, consumeDisabled bool) error {
+func emitChannelTransportVar(e *emit.Emitter, varName, op string, ch *program.Channel, candidates []channelEventCandidate, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias string, consumeDisabled bool, runMode bool) error {
 	kind, err := channelProviderKind(ch)
 	if err != nil {
 		return err
@@ -161,7 +161,7 @@ func emitChannelTransportVar(e *emit.Emitter, varName, op string, ch *program.Ch
 	if kind != "rabbitmq" {
 		return emitChannelQueueVar(e, varName, op, ch, candidates, model, tab, module, reg, runtimeAlias)
 	}
-	return emitRabbitMQChannelVar(e, varName, op, ch, candidates, model, tab, module, reg, runtimeAlias, consumeDisabled)
+	return emitRabbitMQChannelVar(e, varName, op, ch, candidates, model, tab, module, reg, runtimeAlias, consumeDisabled, runMode)
 }
 
 // emitRabbitMQChannelVar emite "<varName> <op> amqpruntime.NewRabbitMQChannel(
@@ -180,7 +180,7 @@ func emitChannelTransportVar(e *emit.Emitter, varName, op string, ch *program.Ch
 // vez de acionar runtime.CircuitBreaker); KeyFunc de `orderBy`, MESMA
 // validação de emitChannelQueueVar (um orderBy que nenhum candidate tem é
 // erro de geração claro).
-func emitRabbitMQChannelVar(e *emit.Emitter, varName, op string, ch *program.Channel, candidates []channelEventCandidate, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias string, consumeDisabled bool) error {
+func emitRabbitMQChannelVar(e *emit.Emitter, varName, op string, ch *program.Channel, candidates []channelEventCandidate, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, runtimeAlias string, consumeDisabled bool, runMode bool) error {
 	env := lower.New(model, tab, module)
 	l := lower.NewLowerer(env, reg, runtimeAlias).WithEmitter(e)
 
@@ -273,8 +273,14 @@ func emitRabbitMQChannelVar(e *emit.Emitter, varName, op string, ch *program.Cha
 		e.Line("var %s error", errVar)
 		e.Line("%s, %s = %s.NewRabbitMQChannel(%s, %s, %s)", varName, errVar, amqpAlias, connGo, cfgGo, registryGo)
 	}
-	e.Block(fmt.Sprintf("if %s != nil", errVar), func() {
-		e.Line("%s.Fatal(%s)", logAlias, errVar)
-	})
+	emitFailFastBlock(e, errVar, logAlias, runMode)
+	if op == ":=" {
+		// defer Close() (task J6.2) só faz sentido do lado PRODUTOR (op
+		// ":=", chamado por generateCmdMainFile) — o lado CONSUMIDOR (op
+		// "=", chamado por emitPolicyWireFunc dentro de Wire(d)) sempre
+		// passa runMode=false, então emitDeferChannelClose é um no-op ali
+		// de qualquer forma; a checagem "op" aqui é só documental.
+		emitDeferChannelClose(e, varName, runMode)
+	}
 	return nil
 }

@@ -1135,6 +1135,52 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		ctxAlias = e.Import("context")
 	}
 
+	// runMode (task J6.2, REQ-47.2/47.3, §design infra-providers 3.6): conta
+	// os recursos reais fallíveis que este main.go abre em SEQUÊNCIA — uma
+	// Database XA (por módulo, tratada como UMA unidade mesmo abrindo
+	// db+store — mesmo enquadramento do "sqlite de hoje" no §design 3.6),
+	// o Database do outbox durável (por módulo), o canal produtor rabbitmq,
+	// e cada FileStorage s3 (por módulo). Com 2+ desses no MESMO corpo, um
+	// "log.Fatal" no meio pularia o "defer Close()" de todo recurso já
+	// aberto ANTES dele — run_error.go's emitFailFast/emitDeferClose/
+	// emitDeferChannelClose passam a emitir a forma "func run() error"
+	// (ver runErrorAndListen abaixo). Com 0 ou 1 (o caso comum: wallet,
+	// shop, e toda fixture de J1-J5 hoje — nenhuma delas combina 2+ destes
+	// no MESMO service), runMode fica false e NADA muda (NFR-21/23,
+	// byte-idêntico).
+	runMode := false
+	{
+		resourceCount := 0
+		if producerChannel != nil {
+			kind, err := channelProviderKind(producerChannel)
+			if err != nil {
+				return nil, fmt.Errorf("cmd/%s/main.go: canal de saída do módulo %s: %w", group.dirName, producerModule, err)
+			}
+			if kind == "rabbitmq" {
+				resourceCount++
+			}
+		}
+		for _, wt := range wireTargets {
+			if wt.outboxDatabase != "" {
+				resourceCount++
+			}
+			if len(wt.xaDatabases) > 0 {
+				resourceCount++
+			}
+			for _, name := range wt.fileStorages {
+				fs := programModule(prog, wt.module).FileStorages[name]
+				kind, err := fileStorageProviderKind(fs)
+				if err != nil {
+					return nil, fmt.Errorf("cmd/%s/main.go: FileStorage %s do módulo %s: %w", group.dirName, name, wt.module, err)
+				}
+				if kind == "s3" {
+					resourceCount++
+				}
+			}
+		}
+		runMode = resourceCount >= 2
+	}
+
 	iface := findGroupInterface(prog, group.modules)
 	port := httpPortGo(iface)
 
@@ -1167,11 +1213,23 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 	}
 
-	e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
-	e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
-	e.Line("// geração, não editar à mão.")
+	if runMode {
+		e.Line("// run executa o wiring in-memory do service %q a partir de mod.ds/", group.dirName)
+		e.Line("// topology.ds (§design 3.11) e devolve o primeiro erro fail-closed — cada")
+		e.Line("// defer Close() já registrado roda no unwind antes do log.Fatal ÚNICO de")
+		e.Line("// main() (task J6.2, REQ-47.2/47.3, §design infra-providers 3.6). Gerado")
+		e.Line("// por dsc gen — sobrescrito a cada geração, não editar à mão.")
+	} else {
+		e.Line("// main é o ponto de entrada do service %q — wiring in-memory a partir de", group.dirName)
+		e.Line("// mod.ds/topology.ds (§design 3.11). Gerado por dsc gen — sobrescrito a cada")
+		e.Line("// geração, não editar à mão.")
+	}
 	var mainErr error
-	e.Block("func main()", func() {
+	bodyHead := "func main()"
+	if runMode {
+		bodyHead = "func run() error"
+	}
+	e.Block(bodyHead, func() {
 		if telemetryPlan != nil {
 			emitOTelWiring(e, telemetryPlan, group.dirName)
 		}
@@ -1187,7 +1245,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					candidates = append(candidates, channelEventCandidate{evtDecl: ev, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ev.Name)})
 				}
 			}
-			if err := emitChannelTransportVar(e, channelVarName, ":=", producerChannel, candidates, model, tab, producerModule, goname.NewVOOperatorRegistry(), runtimeAlias, true); err != nil {
+			if err := emitChannelTransportVar(e, channelVarName, ":=", producerChannel, candidates, model, tab, producerModule, goname.NewVOOperatorRegistry(), runtimeAlias, true, runMode); err != nil {
 				mainErr = fmt.Errorf("canal de saída do módulo %s: %w", producerModule, err)
 				return
 			}
@@ -1214,7 +1272,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					// ANTES de Wire (task J2.5, REQ-42.5): Wire lê outboxStore
 					// ao construir o DurableOutbox na 1ª Policy AtLeastOnce
 					// local (ver a doc de emitPolicyWireFunc, decl_policy.go).
-					if err := emitOutboxDatabaseWiring(e, prog, wt.module, wt.alias, wt.outboxDatabase); err != nil {
+					if err := emitOutboxDatabaseWiring(e, prog, wt.module, wt.alias, wt.outboxDatabase, runMode); err != nil {
 						mainErr = fmt.Errorf("wiring do outbox durável do módulo %s: %w", wt.module, err)
 						return
 					}
@@ -1243,7 +1301,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					e.Line("%s.WireMetrics(dispatcher)", wt.alias)
 				}
 				if len(wt.xaDatabases) > 0 {
-					if err := emitXADatabaseWiring(e, prog, wt.module, wt.alias, wt.xaDatabases, ctxAlias); err != nil {
+					if err := emitXADatabaseWiring(e, prog, wt.module, wt.alias, wt.xaDatabases, ctxAlias, runMode); err != nil {
 						mainErr = fmt.Errorf("wiring 2PC do módulo %s: %w", wt.module, err)
 						return
 					}
@@ -1284,7 +1342,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 					// func main(), erro de compilação Go.
 					fsVar := wt.pkg + name + "FS"
 					e.Line("%s, err := %s.NewS3FileStorage(%s.Background(), %s, %s)", fsVar, s3RuntimeAlias, s3CtxAlias, bucketGo, regionGo)
-					e.Line("if err != nil { %s.Fatal(err) }", logAlias)
+					emitFailFast(e, "err", logAlias, runMode)
 					e.Line("%s.WireFileStorage(%s, %s)", wt.alias, strconv.Quote(name), fsVar)
 				}
 				if wt.hasWorkers {
@@ -1319,9 +1377,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 			e.Line("")
 			e.Line("grpcPort := %s", grpcPortGo(grpcIface))
 			e.Line("grpcLis, listenErr := %s.Listen(\"tcp\", %s.Sprintf(\":%%s\", grpcPort))", netAlias, fmtAlias)
-			e.Block("if listenErr != nil", func() {
-				e.Line("%s.Fatal(listenErr)", logAlias)
-			})
+			emitFailFastBlock(e, "listenErr", logAlias, runMode)
 			e.Line("grpcServer := newGRPCServer(store)")
 			e.BlockSuffix("go func()", "()", func() {
 				e.Line("%s.Fatal(grpcServer.Serve(grpcLis))", logAlias)
@@ -1331,10 +1387,30 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		e.Line("")
 		e.Line("port := %s", port)
 		e.Line("server := &%s.Server{Addr: %s.Sprintf(\":%%s\", port), Handler: newMux(store)}", httpAlias, fmtAlias)
-		e.Line("%s.Fatal(server.ListenAndServe())", logAlias)
+		if runMode {
+			e.Line("return server.ListenAndServe()")
+		} else {
+			e.Line("%s.Fatal(server.ListenAndServe())", logAlias)
+		}
 	})
 	if mainErr != nil {
 		return nil, fmt.Errorf("cmd/%s/main.go: %w", group.dirName, mainErr)
+	}
+
+	if runMode {
+		// func main() (task J6.2): só chama run() e falha fechado com o
+		// log.Fatal ÚNICO do processo — depois que TODO defer Close() já
+		// rodou no unwind de run(), nenhum recurso já aberto vaza numa
+		// falha do próximo (REQ-47.2/47.3, §design infra-providers 3.6).
+		e.Line("")
+		e.Line("// main chama run() e falha fechado (log.Fatal ÚNICO) se qualquer passo do")
+		e.Line("// wiring falhar — depois que todo defer Close() já rodou no unwind de")
+		e.Line("// run() (task J6.2, REQ-47.2/47.3, §design infra-providers 3.6).")
+		e.Block("func main()", func() {
+			e.Block("if err := run(); err != nil", func() {
+				e.Line("%s.Fatal(err)", logAlias)
+			})
+		})
 	}
 
 	e.Line("")

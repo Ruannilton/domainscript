@@ -14,7 +14,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J6.2 |
+| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | in-progress | J6.3 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1322,13 +1322,69 @@ Sem regressão: `go build ./...`/`gofmt -l .`/`go vet ./...` limpos; `go
 test ./codegen/... ./driver/...` verde; `go test ./...` (suíte inteira)
 verde.
 
-Próxima: **J6.2** — **(R1)** Wiring multi-recurso fail-closed com `run()
-error`: o `main.go`-âncora passa a gerar o corpo num `func run() error`
-(cada passo `return err`, `defer Close()` no unwind, `main()` faz o
-`log.Fatal` único) — não vaza recurso já aberto se o próximo falhar
-(REQ-47.2/47.3, §design 3.6). Teste: smoke confirma a forma `run() error`
-+ `defer Close()` por recurso. Esta task também é a oportunidade natural
-para revisitar o desvio de vendoring (R10, acima) se o usuário pedir.
+Concluído: **J6.2** — **(R1)** Wiring multi-recurso fail-closed com `run()
+error` (REQ-47.2/47.3, §design infra-providers 3.6). Novo
+`codegen/run_error.go`: `emitFailFast`/`emitFailFastBlock` (a checagem de
+erro de UM passo fallível — `runMode==false`, o caso comum, preserva
+EXATAMENTE `log.Fatal(errVar)` inline, byte-idêntico a antes desta task;
+`runMode==true` troca para `return errVar`), `emitDeferClose` (`defer
+<dbVar>.Close()` para um recurso `*sql.DB`), `emitDeferChannelClose`
+(`defer <var>.(interface{ Close() error }).Close()` para o canal
+produtor rabbitmq — o var tem tipo estático `runtime.ChannelTransport`,
+sem `Close()` na interface; a asserção de tipo nunca falha porque só é
+emitida quando o provider já é "rabbitmq"). `codegen.go`
+(`generateCmdMainFile`) ganhou o cálculo de `runMode`: conta os recursos
+reais fallíveis do service (canal produtor rabbitmq, Database do outbox
+por módulo, Database XA por módulo — tratada como UMA unidade mesmo
+abrindo db+store, mesmo enquadramento do "sqlite de hoje" no §design
+3.6 —, FileStorage s3 por módulo); com 2+ no MESMO service, o corpo
+inteiro emitido antes como `func main()` passa a ser `func run() error`,
+e um `func main()` novo e curto chama `run()` e faz o `log.Fatal` ÚNICO;
+com 0 ou 1 (wallet, shop, e toda fixture de J1-J5 hoje — nenhuma combina
+2+ num mesmo service), `runMode` fica `false` e absolutamente NADA muda.
+`emitXADatabaseWiring`/`emitOutboxDatabaseWiring`
+(sql_wiring.go)/`emitChannelTransportVar`/`emitRabbitMQChannelVar`
+(channel_rabbitmq.go) ganharam o parâmetro `runMode` (o lado CONSUMIDOR
+de canal, chamado por `emitPolicyWireFunc`/decl_policy.go dentro de
+`Wire(d)` — uma função diferente, sem retorno de erro — sempre passa
+`runMode=false`, preservando seu comportamento de sempre).
+
+**(b)** Novo `codegen/run_error_test.go`: fixture sintética de 3 módulos
+sem `topology.ds` (1 grupo default "app") — `RunOrders` (UseCase,
+`PublicEvent RunOrderPlaced`), `RunShipping` (Policy-only, `delivery
+AtLeastOnce` local + Database postgres própria → 1º recurso, o Outbox
+durável), `RunDocs` (UseCase-only, `FileStorage { provider: "s3" }` → 2º
+recurso) — nenhum dos dois módulos produz canal nem precisa de Dispatcher
+junto de um produtor (evita a limitação pré-existente já documentada em
+J6.1). `TestGenerateRunErrorMainUsesRunErrorForm` prova a forma completa:
+`func run() error` com `runShippingOutboxDB, err :=
+sqlruntime.OpenPostgres(...)` + `defer runShippingOutboxDB.Close()` +
+`return err`, `rundocsRunDocsStorageFS, err :=
+s3runtime.NewS3FileStorage(...)`, terminando em `return
+server.ListenAndServe()`; e um `func main()` CURTO (só `if err := run();
+err != nil { log.Fatal(err) }`, sem nenhum wiring direto).
+`TestGenerateRunErrorSmokeCompile` prova que o projeto INTEIRO, com essa
+forma ativa, compila e `go vet`-limpa de verdade.
+
+Sem regressão: `go build ./...`/`go build -tags=integration ./...`/
+`gofmt -l .`/`go vet ./...`/`go vet -tags=integration ./...` limpos;
+TODA a suíte existente (`go test ./codegen/... ./driver/...`) continua
+verde SEM NENHUMA alteração — incl. `decl_policy_outbox_test.go`
+(1 recurso — outbox — continua gerando `log.Fatal` inline, sem
+`run()`), `channel_rabbitmq_test.go` (1 recurso — canal — idem),
+`s3_filestorage_wiring_test.go` (1 recurso — S3 — idem) e o
+`anchor_fixture_test.go` de J6.1 (cada um dos 3 services tem só 1
+recurso PRÓPRIO — `runMode` fica `false` nos três) — a prova viva de
+NFR-21/23; `go test ./...` (suíte inteira) verde.
+
+Próxima: **J6.3** — Determinismo + NFR-21 consolidado: regenerar a
+fixture-âncora 2x ⇒ bytes idênticos (`go.mod`, `go.sum`, imports, fontes
+de adapter, `vendor/`, `main.go`) — por analogia a
+`TestSharedCollectionTypeDeterministic` (NFR-23); teste "categoria não
+declarada ⇒ nada em go.mod/go.sum/vendor, nada copiado" (NFR-21). Fecha a
+Fase J6 e o plano infra-providers inteiro (REQ-41..48). Esta task também
+é a oportunidade natural para revisitar o desvio de vendoring (R10,
+acima) se o usuário pedir.
 
 ## Issues em aberto
 
