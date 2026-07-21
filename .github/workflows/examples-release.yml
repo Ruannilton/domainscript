@@ -1,0 +1,55 @@
+name: Examples release
+
+# Quando algum arquivo de docs/examples muda em main, empacota a pasta inteira
+# num .zip e publica numa release rolante (tag "examples") — assim dá para
+# baixar e testar os exemplos sem clonar o repositório.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/examples/**'
+
+jobs:
+  zip-examples:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Empacota docs/examples
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Zipa a partir de docs/ para o arquivo conter "examples/..." na raiz
+          # (ao extrair, aparece uma pasta examples/ com todos os exemplos).
+          ( cd docs && zip -r -q "../dist/domainscript-examples.zip" examples )
+          ( cd dist && sha256sum domainscript-examples.zip > domainscript-examples.zip.sha256 )
+          ls -la dist
+
+      - name: Publica a release dos exemplos (rolante)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="examples"
+          sha="${GITHUB_SHA:0:7}"
+
+          {
+            echo "Exemplos do DomainScript (\`docs/examples/\`) empacotados automaticamente a partir do último merge para \`main\` que os alterou (commit \`$sha\`)."
+            echo
+            echo "Build **rolante**: este release é sobrescrito sempre que um exemplo muda, então o \`.zip\` reflete sempre a versão mais recente. A URL de download é estável."
+            echo
+            echo "**Download:** \`domainscript-examples.zip\` (confira a integridade com \`domainscript-examples.zip.sha256\`)."
+            echo
+            echo "Ao extrair, você obtém a pasta \`examples/\` com \`wallet/\`, \`shop/\`, \`pizzeria/\` e o \`README.md\`. Rode, por exemplo, \`dsc gen examples/wallet -o saida\` (baixe o \`dsc\` na release \`nightly\`)."
+          } > notes.md
+
+          # Recria a release/tag apontando para o commit atual, mantendo uma URL
+          # de download estável no tag fixo "examples".
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Exemplos do DomainScript ($sha)" \
+            --prerelease \
+            --notes-file notes.md
