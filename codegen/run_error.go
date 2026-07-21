@@ -57,15 +57,19 @@ func emitDeferClose(e *emit.Emitter, varName string, runMode bool) {
 // só quando runMode (ver a doc do arquivo). O var tem tipo estático
 // runtime.ChannelTransport (a interface do seam, sem método Close — ver
 // rtsrc/channel.go.txt); só a implementação REAL (amqpruntime.
-// NewRabbitMQChannel) tem Close, então a asserção de tipo é feita direto,
-// sem checar "ok" — esta função só é chamada quando o provider selecionado
-// já é "rabbitmq" (channelProviderKind == "rabbitmq"), então a asserção
-// SEMPRE sucede em tempo de execução; nunca panica.
+// NewRabbitMQChannel) tem Close — esta função só é chamada quando o
+// provider selecionado já é "rabbitmq" (channelProviderKind ==
+// "rabbitmq"), então a asserção abaixo sempre sucede em tempo de
+// execução hoje; ainda assim usa a forma segura (comma-ok, achado da
+// revisão da PR #33) em vez de uma asserção direta — nunca panica, nem
+// se um provider futuro reusar este caminho sem implementar Close.
 func emitDeferChannelClose(e *emit.Emitter, varName string, runMode bool) {
 	if !runMode {
 		return
 	}
-	e.Line("defer %s.(interface{ Close() error }).Close()", varName)
+	e.Block(fmt.Sprintf("if closeable, ok := %s.(interface{ Close() error }); ok", varName), func() {
+		e.Line("defer closeable.Close()")
+	})
 }
 
 // emitFailFastBlock é a variante de emitFailFast para o formato de bloco
