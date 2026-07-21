@@ -222,3 +222,145 @@ func TestGenerateRunErrorSmokeCompile(t *testing.T) {
 	files := generateRunErrorProject(t)
 	gentest.SmokeCompile(t, filesToMap(files))
 }
+
+// --- Canal produtor rabbitmq + defer Close() seguro (achado da revisão da
+// PR #33) ---
+//
+// A fixture acima (outbox + S3) nunca exercita emitDeferChannelClose — o
+// ÚNICO recurso closeable ali é o Database do outbox (*sql.DB). Esta
+// segunda fixture (2 services, via topology.ds) força um canal PRODUTOR
+// rabbitmq a coexistir com uma FileStorage s3 no MESMO service (RunChan):
+// 2 recursos reais (canal + S3) no mesmo main.go, o canal sendo o
+// closeable — prova que a asserção de tipo segura (comma-ok, o fix da
+// revisão) realmente compila e fecha o canal via defer.
+
+const runChanModDs = `Module RunChan {
+    FileStorage RunChanStorage {
+        provider: "s3"
+        bucket: env("RUN_CHAN_BUCKET")
+        region: env("AWS_REGION")
+    }
+}
+`
+
+const runChanDomainDs = `
+ValueObject RunChanId(string) {
+    Valid { value.length() > 0 }
+}
+
+PublicEvent RunChanSent {
+    id RunChanId
+}
+
+Aggregate RunChanAgg {
+    strategy EventSourced
+
+    state {
+        id RunChanId
+    }
+
+    access {
+        Send requires caller.authenticated
+    }
+
+    Handle Send() {
+        emit RunChanSent(self.id)
+    }
+
+    Apply RunChanSent {
+    }
+}
+`
+
+const runChanApplicationDs = `
+Command SendRunChan {
+    id ref RunChanAgg
+}
+
+UseCase SendRunChanUseCase handles SendRunChan {
+    execute {
+        agg = load RunChanAgg(cmd.id)
+        agg.Send()
+    }
+}
+`
+
+const runChanReceiverModDs = `Module RunChanReceiver { }
+`
+
+const runChanReceiverPolicyDs = `Policy NotifyRunChanReceiver on RunChanSent {
+    delivery AtLeastOnce
+    execute { return }
+}
+`
+
+const runChanTopologyDs = `Topology {
+    services {
+        RunChanSvc { modules: [RunChan] }
+        RunChanReceiverSvc { modules: [RunChanReceiver] }
+    }
+    channels {
+        RunChan -> RunChanReceiver {
+            via: queue
+            provider: "rabbitmq"
+            connection: env("RUN_CHAN_AMQP_URL")
+        }
+    }
+}
+`
+
+// generateRunErrorChannelProject monta a fixture (2 services, canal
+// produtor rabbitmq + FileStorage s3 no MESMO service) e gera o projeto Go
+// completo.
+func generateRunErrorChannelProject(t *testing.T) []codegen.File {
+	t.Helper()
+	dir := writeProjectDir(t, map[string]string{
+		"topology.ds":         runChanTopologyDs,
+		"chan/mod.ds":         runChanModDs,
+		"chan/domain.ds":      runChanDomainDs,
+		"chan/application.ds": runChanApplicationDs,
+		"receiver/mod.ds":     runChanReceiverModDs,
+		"receiver/policy.ds":  runChanReceiverPolicyDs,
+	})
+	prog, bag := driver.CheckProject(dir)
+	if bag.HasErrors() {
+		t.Fatalf("fixture de run() error + canal (J6.2) tem diagnósticos de erro:\n%s", bag.Render())
+	}
+	model := types.NewModel(prog.Symbols)
+	files, err := codegen.Generate(prog, model, prog.Symbols, bag, runErrorGenerateOptions)
+	if err != nil {
+		t.Fatalf("Generate: erro inesperado sobre a fixture de run() error + canal: %v", err)
+	}
+	return files
+}
+
+// TestGenerateRunErrorChannelUsesSafeDeferClose prova que o canal produtor
+// rabbitmq, quando runMode está ativo (aqui: canal + FileStorage s3 no
+// mesmo service RunChanSvc), fecha via asserção de tipo SEGURA (comma-ok,
+// achado da revisão da PR #33) — nunca a forma direta/insegura que
+// panicaria se o tipo subjacente não implementasse Close().
+func TestGenerateRunErrorChannelUsesSafeDeferClose(t *testing.T) {
+	files := generateRunErrorChannelProject(t)
+	main := fileContent(t, files, "cmd/runchansvc/main.go")
+
+	for _, want := range []string{
+		"func run() error {",
+		"amqpruntime.NewRabbitMQChannel(",
+		"if closeable, ok := runChanChannel.(interface{ Close() error }); ok {",
+		"defer closeable.Close()",
+	} {
+		if !strings.Contains(main, want) {
+			t.Fatalf("cmd/runchansvc/main.go não contém %q:\n%s", want, main)
+		}
+	}
+	if strings.Contains(main, "runChanChannel.(interface{ Close() error }).Close()") {
+		t.Fatalf("cmd/runchansvc/main.go não deveria usar a asserção de tipo INSEGURA:\n%s", main)
+	}
+}
+
+// TestGenerateRunErrorChannelSmokeCompile prova que esse projeto (canal
+// produtor + defer Close() seguro) compila e vet-limpa de verdade.
+func TestGenerateRunErrorChannelSmokeCompile(t *testing.T) {
+	files := generateRunErrorChannelProject(t)
+	gentest.SmokeCompile(t, filesToMap(files))
+}
