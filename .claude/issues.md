@@ -233,6 +233,15 @@ Cada issue é um bloco novo, nesta forma:
   dois lados. Registrado também em `.claude/specs/codegen/gaps.md` §G-4
   ("Residual aberto") e em ISSUE-3. Continua ABERTA — não fechar sem
   implementar o wiring produtor→outbox→relay de verdade.
+- EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-9-10-11/`
+  (Marco K, REQ-51 / §design 4) trata esta issue na raiz — a análise de
+  raiz confirma que fechar exige a pré-condição do UnitOfWork `database/sql`
+  de banco único para o produtor (hoje um Database único degenera para a
+  store in-memory, onde `Tx.EnqueueOutbox` é no-op), depois enfileirar o
+  `PublicEvent` cross-service na tx (`tx.EnqueueOutbox`), trocar o publisher
+  da UoW pelo canal-como-publisher do `DurableOutbox`, e subir o relay.
+  Recorte: um produtor, um Database real, um canal `queue provider:"rabbitmq"`
+  (a forma do `shop/Orders`). Fecha quando o Marco K fechar.
 
 ## ISSUE-10
 - SPEC: infra-providers
@@ -257,6 +266,10 @@ Cada issue é um bloco novo, nesta forma:
   malformado — não exercitado por nenhum teste comportamental hoje), mas
   vale uma task pequena e dedicada (fora de Marco J, é `rtsrc/` puro) para
   fechar.
+- EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-9-10-11/`
+  (Marco K, REQ-50 / §design 3, task K2.1) — replica o mesmo padrão de
+  `defer` que `redisQueryCache.Coalesce` já usa (revisão da PR #26), sem
+  `recover`. Fecha quando o Marco K fechar.
 
 ## ISSUE-11
 - SPEC: infra-providers
@@ -282,3 +295,13 @@ Cada issue é um bloco novo, nesta forma:
   2ª atribuição intermediária), sem mudar a cobertura pretendida da task.
   Vale uma task pequena e dedicada no `parser/` (fora de Marco J) para
   isolar a causa raiz e cobrir com um teste positivo/negativo (NFR-4).
+- EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-9-10-11/`
+  (Marco K, REQ-49 / §design 2, task K1.1). Causa-raiz ISOLADA e ela **não**
+  é `synchronize`/`expect` como este registro especulava: é o **binding
+  opcional de `parseQueryOp`** (`parser/parse_query.go`) — depois de
+  `load Bar(id)`, o `x` da linha seguinte é consumido como binding da query
+  (a forma de `list Ticket t`) porque a guarda `p.at(token.IDENT) &&
+  !isClauseKw(...)` não olha a quebra de linha; o `=` órfão vira o erro. Uma
+  statement intermediária evita o bug porque o token após `load Bar(id)`
+  deixa de ser um IDENT. Fix: guardar o binding (e o alias de `join`, mesmo
+  padrão latente) por `sameLineAsPrev()`. Fecha quando o Marco K fechar.
