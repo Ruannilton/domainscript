@@ -192,7 +192,7 @@ func generateSQLRuntimeFiles() ([]File, error) {
 // sintética desta task exercitam essa combinação — generalizar exige uma
 // fixture real que a precise (mesmo espírito de "mais casos entram quando
 // surgir necessidade real" já documentado em decl_query.go).
-func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias string, dbNames []string, ctxAlias string) error {
+func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias string, dbNames []string, ctxAlias string, runMode bool) error {
 	mod := prog.Modules[moduleName]
 	if mod == nil {
 		return fmt.Errorf("módulo %s não encontrado no Program (bug de geração)", moduleName)
@@ -225,9 +225,10 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 			return fmt.Errorf("Database %s: %w", dbName, err)
 		}
 		e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, connGo)
-		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
+		emitFailFast(e, "err", logAlias, runMode)
+		emitDeferClose(e, dbVar, runMode)
 		e.Line("%s, err := %s.NewEventStore(%s.Background(), %s, %s.EventRegistry(), %s.%s())", storeVar, sqlRuntimeAlias, ctxAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor)
-		e.Line("if err != nil { %s.Fatal(err) }", logAlias)
+		emitFailFast(e, "err", logAlias, runMode)
 	}
 
 	e.Line("%s.Wire2PC(%s.NewUnitOfWork2PC(map[string]*%s.EventStore{", pkgAlias, sqlRuntimeAlias, sqlRuntimeAlias)
@@ -251,7 +252,7 @@ func emitXADatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pk
 // os dois (não exercitado por wallet/shop hoje) abriria duas conexões
 // separadas para o mesmo Database; aceitável, generalizar fica para quando
 // um exemplo real precisar.
-func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias, dbName string) error {
+func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias, dbName string, runMode bool) error {
 	mod := prog.Modules[moduleName]
 	if mod == nil {
 		return fmt.Errorf("módulo %s não encontrado no Program (bug de geração)", moduleName)
@@ -277,7 +278,8 @@ func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName
 		return fmt.Errorf("Database %s: %w", dbName, err)
 	}
 	e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, connGo)
-	e.Line("if err != nil { %s.Fatal(err) }", logAlias)
+	emitFailFast(e, "err", logAlias, runMode)
+	emitDeferClose(e, dbVar, runMode)
 	e.Line("%s := %s.NewOutboxStore(%s, %s.%s())", storeVar, sqlRuntimeAlias, dbVar, sqlRuntimeAlias, provider.dialectCtor)
 	e.Line("%s.WireOutboxStore(%s)", pkgAlias, storeVar)
 	return nil
