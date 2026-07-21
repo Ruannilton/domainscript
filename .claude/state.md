@@ -15,6 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | pending (spec criada, não iniciada) | K1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1472,9 +1473,23 @@ implementado, testado e documentado; o residual (produtor→outbox→canal,
 vendoring real, e as categorias fora de escopo) fica registrado para um
 ciclo futuro, não reaberto aqui.
 
+## correcoes-issues-9-10-11 — `.claude/specs/correcoes-issues-9-10-11/tasks.md`
+
+Marco K ("Correções de dívida técnica"), REQ-49..51 — ciclo de manutenção que
+fecha três issues em aberto na raiz: ISSUE-11 (parser, duas atribuições
+consecutivas — causa-raiz: binding ganancioso de `parseQueryOp`), ISSUE-10
+(`memoryQueryCache.Coalesce` sem `defer`, vaza goroutine sob pânico) e ISSUE-9
+(produtor Outbox→canal cross-service, resíduo do Marco J / REQ-42.6). Três
+fases independentes (K1/K2/K3), executadas em ordem de risco crescente. **Spec
+criada, execução não iniciada** — próxima task **K1.1** (guarda de fim-de-linha
+no binding/alias de operação de domínio). Ver `tasks.md` para o mapa de
+dependências (K3.1 é pré-condição do fluxo do produtor).
+
 ## Issues em aberto
 
 Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit
 `3a22df3`): `codegen/decl_collections.go` centraliza a declaração de
 `Collection[T]` var disputado entre `EmitQueries`/`EmitPolicies` num único
-`collections.go` por módulo — nenhuma issue em aberto no momento.
+`collections.go` por módulo. ISSUE-9/10/11 têm **spec de correção criada**
+(`.claude/specs/correcoes-issues-9-10-11/`, Marco K) — ainda abertas até a
+execução do Marco K fechá-las.
