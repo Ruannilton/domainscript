@@ -27,8 +27,8 @@ the outbox's PRODUCER side (a module emitting a `PublicEvent` to a
 cross-service channel) still publishes straight on commit instead of
 enqueuing through the durable outbox — only the CONSUMER side (a local
 `AtLeastOnce` Policy with a real Database) gets a real `DurableOutbox`
-(REQ-42.6, see ISSUE-9's final-status note and `.claude/specs/codegen/
-gaps.md` §G-4 "Residual aberto"). Five spec sets are the source of truth and
+(REQ-42.6, see ISSUE-9's final-status note and
+`.claude/specs/codegen/gaps.md` §G-4 "Residual aberto"). Five spec sets are the source of truth and
 are written in Portuguese:
 
 - `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
