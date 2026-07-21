@@ -128,43 +128,76 @@ O adapter Redis (`codegen/redisrt/cache.go.txt:326`) já usa o padrão certo —
 `recover` (o pânico segue propagando). `memoryQueryCache`, o backend em produção
 desde G3, ficou com a versão original.
 
-### 3.2. Fix na raiz: `defer` idêntico ao do Redis
+### 3.2. Fix na raiz: `defer` com flag + erro-sentinela aos esperadores
 
-Reescrever o trecho pós-registro para instalar o `defer` antes de chamar `fn()`:
+> **Refinado após a revisão da PR #37.** A versão inicial deste design pedia só
+> "espelhar o `defer` do Redis". Validando contra o **wrapper gerado**
+> (`codegen/decl_query_cache.go:491-504`):
+> ```go
+> result, err := cache.Coalesce(key, func() (any, error) { return runFn(...) })
+> if err != nil { var zero T; return zero, err }
+> return result.(T), nil   // <-- nil.(T) PANICA se result==nil e T é tipo de valor
+> ```
+> Num pânico do líder, o esperador recebe `(nil, nil)` (a atribuição
+> `fl.value, fl.err = fn()` nunca completa), passa pelo `if err != nil`, e
+> executa `result.(T)` sobre `nil` — **um segundo pânico**. O `defer` do Redis
+> (PR #26) fechou o vazamento de goroutine mas **não** este ponto: ele também
+> devolve `(nil, nil)`. Logo o fix de raiz injeta um erro e vale para os dois
+> backends.
+
+Reescrever o trecho pós-registro (idêntico em `memoryQueryCache` e
+`redisQueryCache`):
 
 ```go
 fl := &queryCacheFlight{done: make(chan struct{})}
 c.flights[key] = fl
 c.mu.Unlock()
 
+completed := false
 defer func() {
     c.mu.Lock()
     delete(c.flights, key)
     c.mu.Unlock()
+    if !completed {
+        fl.err = errCoalescedPanic // sentinela de pacote; nunca (nil, nil)
+    }
     close(fl.done)
 }()
 
 fl.value, fl.err = fn()
+completed = true
 return fl.value, fl.err
 ```
 
-Sem `recover` (REQ-50.2: o pânico continua propagando após a limpeza). O ramo
-`inFlight` (esperador) fica inalterado. Comportamento sem pânico idêntico ao
-atual (REQ-50.3) — a mesma prova que o Redis já tem. Comentário no arquivo
-apontando a paridade com `redisQueryCache.Coalesce` (a revisão da PR #26) para
-que os dois não voltem a divergir.
+Pontos validados:
+- **Sem `recover`** (REQ-50.3): o pânico do líder segue desenrolando a pilha; a
+  flag só protege os esperadores.
+- **Erro de negócio legítimo preservado** (REQ-50.4): no sucesso, `completed =
+  true` roda, então o `if !completed` do `defer` é falso e **não** sobrescreve o
+  `fl.err` que `fn` devolveu.
+- **Data-race-free:** o `defer` escreve `fl.err` **antes** de `close(fl.done)`; o
+  esperador lê `fl.err` **depois** de `<-fl.done`. O fechamento do canal
+  estabelece o happens-before.
+- **Sentinela:** `var errCoalescedPanic = errors.New("coalesced function
+  panicked")` no pacote. `errors` já é importado no adapter Redis; adicionar o
+  import em `querycache.go.txt`.
+- Comentário nos dois arquivos apontando a paridade (para não voltarem a
+  divergir).
 
 ### 3.3. Arquivos e testes
 
-- `codegen/rtsrc/querycache.go.txt` — o `defer`.
-- Teste (`codegen/…_test.go`, via `gentest.WriteFiles`/`RunTests` sobre o pacote
-  runtime gerado, mesmo padrão dos testes de cache existentes; par NFR-4):
-  - **negativo (pânico):** uma `fn` que panica; uma 2ª goroutine bloqueada no
-    mesmo voo é liberada (usar `recover` no teste para não derrubar o processo,
-    um `sync.WaitGroup`/timeout para provar que não trava); depois, a MESMA chave
-    coalesce de novo (não ficou presa em `c.flights`).
-  - **positivo (não-regressão):** coalescência normal — N goroutines concorrentes
-    na mesma chave recebem o mesmo resultado e `fn` roda **uma** vez.
+- `codegen/rtsrc/querycache.go.txt` — flag + sentinela + import `errors` (REQ-50.1-4).
+- `codegen/redisrt/cache.go.txt` — o MESMO endurecimento (REQ-50.5): hoje só tem
+  o `defer` de limpeza da PR #26; ganha a flag + o sentinela.
+- Testes (`codegen/…_test.go`, via `gentest.WriteFiles`/`RunTests` sobre o pacote
+  gerado, mesmo padrão dos testes de cache existentes; par NFR-4 **por backend**):
+  - **negativo (pânico):** uma `fn` que panica (com `recover` no teste do líder
+    para não derrubar o processo); uma 2ª goroutine no mesmo voo é liberada sob
+    timeout/`WaitGroup` (não trava) **e recebe um erro não-nil**; depois, a MESMA
+    chave coalesce de novo (não ficou presa em `c.flights`).
+  - **positivo (não-regressão):** N goroutines na mesma chave recebem o mesmo
+    resultado, `fn` roda **uma** vez; um `fn` que devolve um erro de negócio
+    propaga esse erro (não o sentinela) a todos os esperadores.
 
 ---
 
@@ -174,17 +207,35 @@ O maior dos três — o resíduo aberto do Marco J. O design segue o alvo já
 desenhado em §3.2a de `infra-providers/design.md`, traduzido para os pontos de
 codegen concretos.
 
-### 4.1. Análise de raiz e pré-condição (o UnitOfWork sql de banco único)
+### 4.1. Condição de ativação, análise de raiz e pré-condição
 
-Hoje, para um módulo produtor com Database real + canal de saída `queue`
-(`shop/Orders`), `generateCmdMainFile` (`codegen.go:1254`) emite:
+**Condição de ativação (validada na revisão da PR #37):** o caminho
+produtor-durável ativa só quando o módulo tem **Database real**
+(`recognizedSQLProvider`) **E** um canal de saída com **provider real**
+(`channelProviderKind(ch) == "rabbitmq"` — não a `QueueChannel` in-memory de um
+`via: queue` sem `provider:`). A durabilidade só faz sentido com transporte real
+(§design infra-providers 3.2a). Recorte, isolando as fronteiras pré-existentes:
+
+- `wallet` — sem canal de saída ⇒ nunca ativa ⇒ byte-idêntico.
+- `shop/Orders` — Database postgres **real**, mas canal `Orders -> Shipping {
+  via: queue orderBy: id }` **sem `provider:`** (a `QueueChannel` in-memory,
+  mesmo processo) ⇒ **não ativa** ⇒ **byte-idêntico**. (Corrige a versão inicial
+  deste design, que dizia que o `shop` mudaria — validação de código: seu canal
+  não tem transporte real, então a durabilidade não se aplica; segue no
+  publish-direto in-memory documentado do Marco F.)
+- Fixture-âncora de J6 (`AnchorOrders`) — postgres + canal `queue provider:
+  "rabbitmq"` ⇒ **ativa** ⇒ é o exerciser pretendido (suas asserções de teste
+  atualizam).
+
+Hoje, para `AnchorOrders`/`shop/Orders`, `generateCmdMainFile` (`codegen.go:1254`)
+emite:
 
 ```go
 store := runtime.NewMemoryEventStore()
 uow := runtime.NewUnitOfWork(store, ordersChannel)   // publisher = canal
 ```
 
-Dois problemas encadeados:
+Dois problemas encadeados (relevantes só sob a condição de ativação):
 
 1. **A store é in-memory, não o Database declarado.** O adapter `database/sql`
    só é wirado hoje no caminho **2PC** (`usecase2PCPlan` exige 2+ Databases XA,
@@ -231,24 +282,32 @@ a conexão real (mesma `databaseConnectionGo`/`provider.openFunc` de
 marca de módulo (`moduleMarks.singleDatabase`, calculada em `codegen.go` quando o
 módulo produtor tem exatamente 1 Database real e um canal de saída — sem 2PC).
 
-**(P2) Emitir `tx.EnqueueOutbox` para o PublicEvent cross-service** (REQ-51.1).
-Hoje nenhum emissor chama `EnqueueOutbox` — os eventos apensados são publicados
-pelo publisher da UoW. O lowering de `emit` (ou o wrapper do UseCase) precisa,
-para um evento cujo tipo está no **conjunto transportado pelo canal de saída do
-módulo** (a topologia diz — `producerChannelFor` + o `PublicEvent` que ele
-carrega), chamar `tx.EnqueueOutbox([]Event{ev})` dentro da tx, ao lado do
-`Append`. Decisão de design a fixar na implementação: **enfileirar em vez de
-(não além de) publicar** — o publisher da UoW deixa de receber o canal (P3), então
-o único caminho de saída do evento cross-service passa a ser o outbox. Eventos
-**locais** (in-process, sem canal) seguem inalterados (dispatcher/Append).
-  - Ponto de corte a auditar na implementação: se o mais simples e robusto é
-    (a) o lowering de `emit` rotear por tipo, ou (b) o `Run` do produtor
-    enfileirar automaticamente os eventos apensados cujo tipo tem canal de saída
-    (espelhando como o publisher da UoW hoje publica todos os apensados). A
-    opção (b) mantém o corpo gerado do UseCase inalterado e concentra a decisão
-    no wiring — preferível se a informação "este event_type tem canal" puder ser
-    passada à UoW na construção. A task J correspondente decide após auditar o
-    lowering de `emit`.
+**(P2) Enfileirar o PublicEvent cross-service via `tx.EnqueueOutbox`**
+(REQ-51.1/51.4). **Rota resolvida na revisão da PR #37 — é a (b), no wiring da
+UoW, sem tocar o corpo gerado.** Auditoria do lowering de `emit`
+(`codegen/lower/stmt.go:1904-1919`): dentro de um Handle, `emit X(...)` vira
+`events = append(events, &X)` — acumula numa slice `events []runtime.Event` que
+o UseCase apensa (`Append`) atomicamente; o publisher da UoW então publica os
+apensados **após** o commit (`rtsrc/uow.go.txt:114-120` /
+`sqlrt/uow.go.txt:90-96`). Confirmado no `shop/Orders`: `Handle Place { emit
+OrderPlaced(...) }` + `Apply OrderPlaced` — o `PublicEvent` É apensado ao stream
+e está em `tx.appended`.
+
+Logo o enqueue não precisa mudar o lowering nem o corpo do UseCase: basta a UoW
+do produtor, **antes** do commit, enfileirar via `tx.EnqueueOutbox` os eventos
+apensados **cujo tipo o canal de saída carrega** — e **deixar de publicá-los**
+pós-commit (a troca de publisher é P3). Concretamente, `sqlruntime.NewUnitOfWork`
+ganha um parâmetro opcional "conjunto de `event_type` carregados pelo canal"
+(os `PublicEvent` do módulo, `buckets[module].pubEvents`, REQ-51.4): no `Run`,
+após `fn` e **antes** de `Commit`, `tx.EnqueueOutbox(<apensados desse conjunto>)`;
+os demais apensados (eventos de domínio internos) seguem só no stream, nunca no
+outbox nem no canal. Eventos locais de módulos sem canal seguem 100% inalterados.
+  - Vantagem da rota (b): o corpo gerado do UseCase/Handle fica byte-idêntico —
+    a mudança é isolada na construção da UoW e no `main.go` (P1/P3/P4).
+  - Filtro (REQ-51.4): sem ele, um evento de domínio interno apensado junto
+    (não-`PublicEvent`) seria serializado e enviado cross-process à toa. O
+    publisher in-memory de hoje podia publicar tudo (o consumidor filtra por
+    assinatura); o outbox→broker precisa ser preciso.
 
 **(P3) Trocar o publisher da UoW do produtor** (REQ-51.3). Em
 `generateCmdMainFile`, quando o produtor tem outbox durável ativo (P1),
@@ -281,51 +340,74 @@ por produtor), todo evento enfileirado vai para esse único canal — o relay co
   sobre o consumidor. As duas metades permanecem provadas separadamente, mas
   agora o produtor ganha a durabilidade que faltava.
 
-### 4.4. Impacto no `shop` (NFR-25, exceção deliberada)
+### 4.4. Impacto nos exemplos e no exerciser (NFR-25, corrigido)
 
-`shop/Orders` é o exerciser real: `Database MainDb { provider: "postgres" }` +
-`UseCase PlaceOrder` + canal `Orders -> Shipping { via: queue orderBy: id }`.
-Fechar REQ-51 **muda** o `cmd/sales/main.go` gerado (passa a abrir o Database
-real, montar o OutboxStore, enfileirar e subir o relay em vez de
-`NewUnitOfWork(store, ordersChannel)`). Isso é o comportamento correto novo:
+**`wallet` e `shop` permanecem byte-idênticos** (correção da validação da PR
+#37):
 
-- Atualizar o golden e `driver.TestGenerateShopE2E*` deliberadamente, com o diff
-  justificado no commit (mesmo enquadramento do ripple postgres de J1.2, que já
-  transformou wallet/shop em programas SQL reais).
-- Os smoke tests do shop passam a exigir a conexão (já há o padrão
-  `ensureModTidyIfNeeded`/`t.Skip` sem broker vivo — o relay não abre broker no
-  build/vet, só em runtime); o teste comportamental fim-a-fim do crash simulado
-  roda sobre **sqlite** real + um `fakePublisher` (mesmo padrão de
-  `sql_outbox_channel_test.go`), sem RabbitMQ vivo.
-- `wallet` (sem canal de saída) permanece byte-idêntico.
+- `wallet` — sem canal de saída ⇒ nunca ativa.
+- `shop/Orders` — Database postgres real, mas canal `via: queue` **sem
+  `provider:`** (`QueueChannel` in-memory) ⇒ não satisfaz a condição de ativação
+  (§4.1) ⇒ `cmd/sales/main.go` continua `NewUnitOfWork(store, ordersChannel)`,
+  byte-idêntico. O `shop` é um demo single-process; seu canal in-memory não é um
+  transporte real, então a durabilidade cross-service não se aplica (limitação
+  documentada do Marco F, inalterada). `driver.TestGenerateShopE2E*` sem
+  regressão, **sem** regeneração de golden.
+
+**Exerciser = fixture com `provider: "rabbitmq"`:**
+
+- A **fixture-âncora de J6** (`codegen/anchor_fixture_test.go`), cujo
+  `AnchorOrders` é postgres + canal `queue provider: "rabbitmq"`, **passa a
+  ativar** o caminho: suas asserções de wiring de `AnchorOrders` mudam
+  deliberadamente (abre o Database, monta o OutboxStore, enfileira, sobe o
+  relay em vez de `NewUnitOfWork(store, canal)`). É o exerciser pretendido, não
+  uma regressão de exemplo publicado.
+- Uma **fixture sintética dedicada** (nova, `codegen/producer_outbox_test.go`,
+  espelhando como o lado consumidor ganhou `decl_policy_outbox_test.go`): 1
+  módulo produtor (postgres + canal rabbitmq) + 1 consumidor — foco no wiring do
+  produtor, isolado da complexidade multi-provider da âncora.
+- O teste comportamental fim-a-fim do "crash simulado" roda sobre **sqlite** real
+  + um `fakePublisher` (mesmo padrão de `sql_outbox_channel_test.go`), sem
+  RabbitMQ vivo: o relay não abre broker em `go build`/`go vet` (só em runtime),
+  e o `Publish` é substituído pelo `fakePublisher` que falha na 1ª tentativa.
 
 ### 4.5. Arquivos e testes
 
-Arquivos (prováveis — a auditoria de P2 pode ajustar):
-- `codegen/codegen.go` — `moduleMarks.singleDatabase`/decisão de produtor
-  durável; trocar o publisher da UoW; emitir relay/cleanup do produtor.
-- `codegen/sql_wiring.go` — `emitSingleDatabaseWiring` (P1) + resolução da store
-  do outbox do produtor.
-- `codegen/decl_usecase.go` / lowering de `emit` — enqueue cross-service (P2).
-- `codegen/rtsrc/uow.go.txt` / `sqlrt/uow.go.txt` — se P2 escolher a rota (b)
-  (UoW enfileira os apensados com canal), estender a construção da UoW para
-  receber o conjunto de event_types com canal de saída.
-- Golden/`driver` e2e do `shop` — atualização deliberada (§4.4).
+Arquivos (rota (b) resolvida — corpo gerado do UseCase/Handle **não** muda):
+- `codegen/codegen.go` — detecção do produtor durável (`durableProducer`, §4.1:
+  Database real + canal `provider:"rabbitmq"`); trocar o publisher da UoW; emitir
+  o relay/cleanup do produtor em `generateCmdMainFile`.
+- `codegen/sql_wiring.go` — `emitSingleDatabaseWiring` (P1) + `OutboxStore` do
+  produtor + resolução do conjunto de `event_type` carregados pelo canal.
+- `codegen/sqlrt/uow.go.txt` (+ `rtsrc/uow.go.txt` só para o parâmetro na
+  interface, se necessário) — `NewUnitOfWork` do produtor recebe o conjunto de
+  `event_type` do canal e, no `Run`, enfileira esses apensados via
+  `tx.EnqueueOutbox` **antes** do `Commit`, em vez de publicá-los pós-commit
+  (P2/REQ-51.4). O caminho sem esse conjunto (todos os outros módulos) fica
+  byte-idêntico.
+- **NÃO tocados:** `codegen/lower/stmt.go` (emit) e o corpo do UseCase — a rota
+  (b) os deixa intactos; golden/e2e de `wallet` e `shop` — byte-idênticos (§4.4).
+- Fixtures de teste atualizadas: `codegen/anchor_fixture_test.go` (asserções de
+  `AnchorOrders`, exerciser real) + nova `codegen/producer_outbox_test.go`.
 
 Testes (par NFR-4):
-- **wiring (positivo do produtor durável):** fixture sintética (produtor com
+- **wiring (positivo do produtor durável):** fixture sintética dedicada (produtor
   Database real + canal `queue provider:"rabbitmq"`) — `main.go` abre a conexão,
   monta o OutboxStore, constrói `NewDurableOutbox(store, registry, <canal>)`,
   **não** passa o canal para `NewUnitOfWork`, e sobe `StartOutboxRelay`/
-  `StartOutboxCleanup`; o corpo do UseCase enfileira o evento cross-service.
-- **wiring (byte-identidade / negativo):** um produtor **sem** Database real
-  (provider decorativo `"pg"`) continua com `NewUnitOfWork(store, <canal>)`
-  direto, byte-idêntico a antes (REQ-51.6, NFR-25).
+  `StartOutboxCleanup`; a UoW do produtor recebe o conjunto de `event_type` do
+  canal.
+- **wiring (byte-identidade / negativo):** um produtor sem a condição de ativação
+  — canal in-memory sem provider (a forma do `shop`) OU sem Database real —
+  continua com `NewUnitOfWork(store, <canal>)`/`NewUnitOfWork(store)` direto,
+  byte-idêntico (REQ-51.6, NFR-25).
 - **comportamental (crash simulado):** sobre sqlite real + `fakePublisher`, um
-  evento emitido é enfileirado atômico; um `Publish` que falha na 1ª tentativa
-  deixa a linha não entregue (`attempts++`); o `Tick` seguinte re-publica —
-  nenhum evento cross-service perdido (estende `sql_outbox_channel_test.go` para
-  o caminho gerado do produtor, não só o seam manual).
+  evento emitido é enfileirado atômico (linha em `outbox` E `events` na mesma tx;
+  um evento de domínio interno NÃO vai ao outbox — REQ-51.4); um `Publish` que
+  falha na 1ª tentativa deixa a linha não entregue (`attempts++`); o `Tick`
+  seguinte re-publica — nenhum evento cross-service perdido (estende
+  `sql_outbox_channel_test.go` para o caminho gerado do produtor, não só o seam
+  manual).
 
 ### 4.6. Alternativa rejeitada
 

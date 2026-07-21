@@ -106,43 +106,83 @@ são gramaticalmente válidas (dois `AssignStmt` independentes).
    **preserva o binding legítimo** (`list X x where …` continua produzindo o
    binding) — NFR-4.
 
-### REQ-50 — Runtime: `memoryQueryCache.Coalesce` à prova de pânico (ISSUE-10)
+### REQ-50 — Runtime: `Coalesce` à prova de pânico, sem retorno nulo silencioso (ISSUE-10)
 
 **User story:** Como operador de um serviço gerado, quero que um pânico dentro de
-uma Query coalescida não trave para sempre toda goroutine concorrente esperando
-o resultado, nem impeça aquela chave de voltar a coalescer.
+uma Query coalescida não trave para sempre as goroutines concorrentes esperando
+o resultado, não impeça aquela chave de voltar a coalescer, e **não devolva um
+resultado nulo silencioso** aos esperadores (que causaria um segundo pânico no
+wrapper gerado).
+
+> **Refinamento pós-revisão (PR #37, Gemini Code Assist + validação própria):**
+> a versão original deste requisito pedia só "mirror do `defer` do Redis". A
+> validação contra o wrapper gerado (`codegen/decl_query_cache.go:491-504`:
+> `result, err := Coalesce(...); if err != nil { return zero, err }; return
+> result.(T), nil`) mostrou que, num pânico do líder, o esperador recebe
+> `(nil, nil)` e cai em `nil.(T)` — **um segundo pânico** para qualquer tipo de
+> valor. Pior ainda: o adapter Redis "já corrigido" tem o MESMO defeito (o fix
+> da PR #26 fechou o vazamento de goroutine, mas ainda entrega `(nil, nil)` ao
+> esperador). Logo o fix de raiz **injeta um erro** e vale para os **dois**
+> backends (ver REQ-50.5).
 
 1. THE SYSTEM SHALL garantir que, se `fn()` entra em pânico dentro de
    `memoryQueryCache.Coalesce` (`codegen/rtsrc/querycache.go.txt`), o
    `close(fl.done)` e a remoção da chave de `c.flights` **ainda executam** — toda
    goroutine bloqueada em `<-fl.done` é liberada e a chave volta a poder coalescer.
-2. THE SYSTEM SHALL deixar o pânico original **continuar propagando** normalmente
-   após a limpeza (nenhum `recover` que engula o pânico) — o comportamento fica
-   idêntico ao do adapter Redis já corrigido (`redisQueryCache.Coalesce`, J4.1):
-   um `defer` que fecha o canal e remove a chave, sem recuperar o pânico.
-3. THE SYSTEM SHALL manter o caminho **sem pânico** byte-idêntico em
-   comportamento ao atual (uma chamada normal coalesce e limpa exatamente como
-   antes) — a mudança é só de robustez sob falha.
-4. THE SYSTEM SHALL cobrir com um teste **negativo** (uma `fn` que entra em
-   pânico: uma 2ª goroutine esperando o mesmo voo não trava — o teste termina; a
-   MESMA chave coalesce de novo depois) e um teste **positivo** de não-regressão
-   (coalescência normal continua servindo o mesmo resultado a todos os
-   esperadores) — NFR-4.
+2. THE SYSTEM SHALL fazer com que os esperadores liberados recebam um **erro
+   apropriado** (nunca `(nil, nil)` silencioso): um `defer` com uma flag de
+   controle (ex. `completed`) que, quando o corpo NÃO chegou ao fim (pânico),
+   atribui um erro-sentinela a `fl.err` **antes** de `close(fl.done)` — assim o
+   wrapper gerado entra no ramo `if err != nil` e nunca executa `result.(T)`
+   sobre um valor nulo. (Solução sugerida pela revisão da PR #37 e validada
+   contra o wrapper gerado.)
+3. THE SYSTEM SHALL deixar o pânico original do **líder** continuar propagando
+   normalmente (nenhum `recover` que o engula) — a flag e o erro-sentinela
+   protegem só os esperadores; a goroutine que panica segue desenrolando a pilha.
+4. THE SYSTEM SHALL manter o caminho **sem pânico** byte-idêntico em
+   comportamento ao atual: `completed = true` após `fn()` retornar preserva
+   `fl.err` como o erro que `fn` de fato devolveu (um erro de negócio legítimo
+   NÃO é sobrescrito pelo sentinela — o `defer` só injeta quando `!completed`).
+5. THE SYSTEM SHALL aplicar o **mesmo** endurecimento (flag + erro-sentinela a
+   esperadores no pânico) a `redisQueryCache.Coalesce`
+   (`codegen/redisrt/cache.go.txt`), que hoje tem só o `defer` de limpeza
+   (fecha/remove) mas ainda devolve `(nil, nil)` ao esperador sob pânico — os
+   dois backends compartilham o wrapper gerado e o mesmo defeito, então a
+   correção mantém-nos consistentes E corretos.
+6. THE SYSTEM SHALL cobrir cada backend com um par de testes (NFR-4): **negativo**
+   (uma `fn` que entra em pânico — uma 2ª goroutine no mesmo voo é liberada, não
+   trava, e recebe um **erro não-nulo**; a MESMA chave coalesce de novo depois) e
+   **positivo** de não-regressão (coalescência normal serve o mesmo resultado a
+   todos os esperadores; `fn` roda uma vez; um erro de negócio legítimo continua
+   sendo propagado como antes).
 
 ### REQ-51 — Codegen: produtor Outbox → canal cross-service (ISSUE-9, REQ-42.6)
 
 **User story:** Como arquiteto de um sistema distribuído, quero que um
-`PublicEvent` emitido por um módulo produtor e destinado a outro service seja
-**enfileirado no outbox durável dentro da transação de negócio** e publicado no
-canal cross-service **pelo relay**, não direto no commit — só assim a entrega
-cross-service herda a durabilidade at-least-once que REQ-42.6 promete.
+`PublicEvent` emitido por um módulo produtor e destinado a outro service **por um
+canal com transporte real (rabbitmq)** seja **enfileirado no outbox durável
+dentro da transação de negócio** e publicado no canal **pelo relay**, não direto
+no commit — só assim a entrega cross-service herda a durabilidade at-least-once
+que REQ-42.6 promete.
 
-1. THE SYSTEM SHALL, para um módulo produtor que (a) possui um Database real
-   (`recognizedSQLProvider`) e (b) produz um `PublicEvent` que atravessa um canal
-   de saída `via: queue` com provider real, **enfileirar** esse evento via
+> **Condição de ativação (validada na revisão da PR #37 — corrige a versão
+> original):** o caminho produtor-durável ativa **somente** quando o módulo tem
+> (a) um Database real (`recognizedSQLProvider`) **E** (b) um canal de saída com
+> **provider real** (`via: queue provider: "rabbitmq"`). A durabilidade só
+> existe com transporte real (§design infra-providers 3.2a: "A durabilidade
+> cross-service só existe quando há Database real *e* canal com provider real").
+> Consequência importante: o exemplo `shop` produz para um canal `via: queue`
+> **sem** `provider:` (a `QueueChannel` in-memory, mesmo processo) — logo **não
+> ativa** o caminho e permanece **byte-idêntico** (corrige a alegação anterior de
+> que o `shop` mudaria). O exerciser real é uma fixture com `provider:
+> "rabbitmq"` (a âncora de J6, cujo `AnchorOrders` = postgres + canal rabbitmq,
+> já se encaixa).
+
+1. THE SYSTEM SHALL, para um módulo produtor que satisfaz a condição de ativação
+   acima, **enfileirar** o(s) `PublicEvent` carregado(s) pelo canal via
    `tx.EnqueueOutbox` **atomicamente** com a transação de negócio (mesma tx do
-   `Append`), em vez de depender da publicação direta do publisher da
-   UnitOfWork no commit.
+   `Append`), em vez de depender da publicação direta do publisher da UnitOfWork
+   no commit.
 2. THE SYSTEM SHALL construir, para esse módulo produtor, um
    `runtime.DurableOutbox` com o `ChannelTransport` do canal como `publisher`
    (o 3º argumento de `NewDurableOutbox`, já suportado desde J2.4), e iniciar o
@@ -150,42 +190,51 @@ cross-service herda a durabilidade at-least-once que REQ-42.6 promete.
    `StartOutboxCleanup`) em `cmd/<service>/main.go`.
 3. THE SYSTEM SHALL **deixar de passar o canal** como publisher da UnitOfWork do
    produtor (`generateCmdMainFile` hoje emite `runtime.NewUnitOfWork(store,
-   <canal>)`) quando o outbox durável do produtor está ativo — para que nenhum
+   <canal>)`) quando o caminho produtor-durável está ativo — para que nenhum
    evento seja publicado **duas vezes** (uma inline no commit, outra pelo relay).
-4. THE SYSTEM SHALL rotear, no relay, cada linha entregue para o
-   `ChannelTransport` correto por `event_type` (§design 3.2a): no recorte deste
-   ciclo, um único canal de saída por módulo produtor, então todo evento
-   enfileirado para o outbox do produtor vai para esse canal.
+4. THE SYSTEM SHALL **filtrar** o que é enfileirado para o outbox aos tipos de
+   evento que o canal de saída de fato **carrega** (os `PublicEvent` do módulo,
+   `buckets[module].pubEvents`), nunca todo evento apensado indistintamente — um
+   evento de domínio interno não-`PublicEvent` (se houver) não deve atravessar o
+   canal cross-service. No recorte (um canal de saída por módulo, garantido por
+   `producerChannelFor`), todo evento enfileirado vai para esse único canal.
 5. THE SYSTEM SHALL, como **pré-condição** de (1), passar a wirar o adapter
-   `database/sql` para um módulo produtor de **Database único** não-2PC (hoje só
+   `database/sql` para o módulo produtor de **Database único** não-2PC (hoje só
    o caminho 2PC de 2+ Databases ganha a store SQL; um banco único degenera para
    a store in-memory, onde `Tx.EnqueueOutbox` é um no-op e nada persiste) — ver
-   §design 3.1. Sem essa pré-condição, o enqueue de (1) não seria durável.
-6. WHERE um módulo produtor **não** tem Database real, THE SYSTEM SHALL manter o
-   comportamento de hoje (publish direto no commit sobre a store in-memory, sem
-   durabilidade) — exatamente o mesmo trade-off documentado do Marco F, byte-
-   idêntico (NFR-25).
-7. THE SYSTEM SHALL provar o fluxo fim-a-fim com uma fixture-âncora que combine
-   Database real + canal `rabbitmq` no produtor: um "crash simulado" entre o
-   commit e a publicação no canal **não perde** o evento — a linha fica no
-   outbox, não entregue, e o próximo `Tick` a publica (teste comportamental sobre
-   sqlite real, mesmo padrão de `sql_outbox_channel_test.go`); e um teste de
-   **wiring** confirmando que `main.go`/`policies.go`/o código gerado do UseCase
-   passam a enfileirar+relay em vez de publicar direto (NFR-4).
+   §design 4.1/4.2-P1. Sem essa pré-condição, o enqueue de (1) não seria durável.
+6. WHERE um módulo produtor **não** satisfaz a condição de ativação (sem Database
+   real, OU canal in-memory sem provider real como o do `shop`, OU sem canal de
+   saída como o `wallet`), THE SYSTEM SHALL manter o comportamento de hoje
+   byte-idêntico (`shop`: publish in-memory direto no commit; `wallet`: nenhuma
+   mudança) — NFR-25.
+7. THE SYSTEM SHALL provar o fluxo fim-a-fim com uma fixture (dedicada + a âncora
+   de J6, cujo `AnchorOrders` passa a ativar o caminho) que combine Database real
+   + canal `rabbitmq` no produtor: um "crash simulado" entre o commit e a
+   publicação no canal **não perde** o evento — a linha fica no outbox, não
+   entregue (`attempts++`), e o próximo `Tick` a publica (teste comportamental
+   sobre sqlite real + `fakePublisher`, mesmo padrão de
+   `sql_outbox_channel_test.go`, exercitando o **caminho gerado do produtor**); e
+   um teste de **wiring** confirmando que `main.go`/o código gerado passam a
+   enfileirar+relay em vez de publicar direto (NFR-4).
 
 ## 3. Requisitos Não-Funcionais
 
-### NFR-25 — Sem regressão; determinismo; byte-identidade onde aplicável
+### NFR-25 — Sem regressão; determinismo; byte-identidade dos exemplos reais
 
 - Um programa que **não** exercita nenhuma das três correções gera projeto
   byte-idêntico ao de hoje (determinismo NFR-13/21 do Marco J preservado).
-- **Exceção deliberada e esperada** (REQ-51): o exemplo real `shop` **muda** de
-  saída gerada — `shop/Orders` é o exerciser real do produtor→outbox→canal
-  (Database postgres + UseCase `PlaceOrder` + canal `Orders -> Shipping` via
-  queue). Essa mudança é o **comportamento correto novo**, não uma regressão:
-  o golden/`driver.TestGenerateShopE2E*` é atualizado deliberadamente, com o
-  diff justificado (mesmo enquadramento do ripple postgres de J1.2). `wallet`
-  (sem canal de saída) permanece byte-idêntico.
+- **`wallet` E `shop` permanecem byte-idênticos** (corrige a versão anterior
+  desta spec, que previa mudança no `shop`): `wallet` não tem canal de saída;
+  `shop/Orders` produz para um canal `via: queue` **sem** provider real (a
+  `QueueChannel` in-memory), então não satisfaz a condição de ativação de REQ-51
+  e mantém `runtime.NewUnitOfWork(store, ordersChannel)` como hoje.
+  `driver.TestGenerateWalletE2E*`/`TestGenerateShopE2E*` seguem sem regressão.
+- **Atualização esperada de fixture de TESTE (não de exemplo real):** a
+  fixture-âncora de J6 (`codegen/anchor_fixture_test.go`), cujo `AnchorOrders` é
+  postgres + canal `rabbitmq`, **passa a ativar** o caminho produtor-durável —
+  suas asserções de wiring de `AnchorOrders` são atualizadas deliberadamente
+  (é o exerciser pretendido, não uma regressão de exemplo publicado).
 - REQ-49 e REQ-50 não alteram nenhum byte de projeto gerado para os exemplos
   existentes (são correções de parser e de runtime vendorizado sob falha).
 
@@ -217,17 +266,20 @@ O ciclo está completo quando:
 1. `a = load X(id)` seguido de `b = id` no mesmo bloco parseia limpo; o binding
    legítimo (`list X x`) e o alias de `join` continuam funcionando (REQ-49) —
    par de testes verde.
-2. Um pânico em `fn()` dentro de `memoryQueryCache.Coalesce` não vaza goroutine
-   nem trava a chave; o pânico ainda propaga; a coalescência normal não regrediu
-   (REQ-50) — par de testes verde.
+2. Um pânico em `fn()` dentro de `memoryQueryCache.Coalesce` **e** de
+   `redisQueryCache.Coalesce` não vaza goroutine nem trava a chave; os
+   esperadores recebem um **erro** (nunca `nil, nil`); o pânico do líder ainda
+   propaga; a coalescência normal e um erro de negócio legítimo não regridem
+   (REQ-50) — par de testes verde por backend.
 3. Um módulo produtor com Database real + canal `rabbitmq` enfileira o
    `PublicEvent` cross-service no outbox atômico e o relay publica no canal (nunca
    o commit direto); um crash simulado entre commit e publish não perde o evento
-   (REQ-51) — fixture-âncora + teste de wiring verdes. O produtor sem Database
-   real permanece byte-idêntico.
+   (REQ-51) — fixture dedicada + âncora de J6 + teste de wiring verdes. Um
+   produtor sem a condição de ativação permanece byte-idêntico.
 4. `go build ./...` / `go vet ./...` / `gofmt -l .` limpos; os testes de escopo de
-   cada task verdes; o golden do `shop` atualizado deliberadamente com diff
-   justificado; `wallet` sem regressão.
+   cada task verdes; `wallet` E `shop` byte-idênticos (sem regeneração de
+   golden dos exemplos reais); as asserções da fixture-âncora de J6 atualizadas
+   deliberadamente.
 5. `.claude/issues.md` marca ISSUE-9/10/11 como `RESOLVED (commit <hash>)`;
    `.claude/state.md` reflete o Marco K como `done`; `.claude/specs/codegen/gaps.md`
    §G-4 "Residual aberto" atualizado (o item produtor→outbox→canal deixa de estar

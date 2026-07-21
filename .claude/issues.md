@@ -240,8 +240,14 @@ Cada issue é um bloco novo, nesta forma:
   store in-memory, onde `Tx.EnqueueOutbox` é no-op), depois enfileirar o
   `PublicEvent` cross-service na tx (`tx.EnqueueOutbox`), trocar o publisher
   da UoW pelo canal-como-publisher do `DurableOutbox`, e subir o relay.
-  Recorte: um produtor, um Database real, um canal `queue provider:"rabbitmq"`
-  (a forma do `shop/Orders`). Fecha quando o Marco K fechar.
+  **Condição de ativação (validada na revisão da PR #37):** Database real E
+  canal com provider REAL (`rabbitmq`) — não a `QueueChannel` in-memory. Por
+  isso o `shop/Orders` (postgres + canal `via: queue` SEM `provider:`) NÃO
+  ativa e fica byte-idêntico (correção: o registro original desta issue
+  sugeria que o shop mudaria). O exerciser é a âncora de J6 (`AnchorOrders`
+  = postgres + rabbitmq) + uma fixture dedicada. Rota do enqueue resolvida:
+  na construção da UoW (o corpo gerado do UseCase/Handle não muda). Fecha
+  quando o Marco K fechar.
 
 ## ISSUE-10
 - SPEC: infra-providers
@@ -267,9 +273,15 @@ Cada issue é um bloco novo, nesta forma:
   vale uma task pequena e dedicada (fora de Marco J, é `rtsrc/` puro) para
   fechar.
 - EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-9-10-11/`
-  (Marco K, REQ-50 / §design 3, task K2.1) — replica o mesmo padrão de
-  `defer` que `redisQueryCache.Coalesce` já usa (revisão da PR #26), sem
-  `recover`. Fecha quando o Marco K fechar.
+  (Marco K, REQ-50 / §design 3, tasks K2.1/K2.2). A revisão da PR #37
+  (Gemini Code Assist + validação contra o wrapper gerado em
+  `decl_query_cache.go:491-504`) mostrou que o fix é MAIOR que "espelhar o
+  `defer` do Redis": num pânico do líder, o esperador recebe `(nil, nil)` e
+  cai em `result.(T)` → um SEGUNDO pânico. E o `redisQueryCache` tem o MESMO
+  defeito (o fix da PR #26 fechou só o vazamento). Fix de raiz: flag
+  `completed` + erro-sentinela a `fl.err` no `defer` (sem `recover`),
+  aplicado aos DOIS backends (K2.1 memory, K2.2 redis). Fecha quando o
+  Marco K fechar.
 
 ## ISSUE-11
 - SPEC: infra-providers
