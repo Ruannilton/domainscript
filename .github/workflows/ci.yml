@@ -32,3 +32,59 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  # Garante, a cada push/PR, que o transpilador processa TODOS os exemplos de
+  # docs/examples e que cada projeto Go efetivamente emitido compila de verdade
+  # (não só os golden/e2e do pacote de testes) — um guarda de regressão sobre a
+  # saída real do back-end.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build dsc
+        run: go build -o dsc ./cmd/dsc
+
+      - name: Validate all examples and compile every emitted Go project
+        run: |
+          set -euo pipefail
+
+          # Exemplos que o front-end valida (dsc check) mas o back-end ainda
+          # NÃO consegue gerar — limitação conhecida e rastreada, não uma
+          # regressão. Cada entrada tem de apontar a issue que a mantém aberta.
+          #   pizzeria -> ISSUE-7: módulo Kitchen combina UseCase E Policy no
+          #   mesmo módulo (wiring de Wire combinado ainda não suportado).
+          KNOWN_UNGENERATABLE="pizzeria"
+
+          fail=0
+          for dir in docs/examples/*/; do
+            name="$(basename "$dir")"
+
+            # Fase 1 — o transpilador processa CADA exemplo (front-end): todos,
+            # inclusive os ainda não geráveis, precisam validar limpo.
+            echo "::group::dsc check $name"
+            ./dsc check "$dir"
+            echo "::endgroup::"
+
+            # Fase 2 — gera o projeto Go e roda o compilador Go sobre ele.
+            out="$(mktemp -d)"
+            if ./dsc gen "$dir" -o "$out"; then
+              echo "::group::go build (projeto gerado de $name)"
+              # go.sum não é emitido; os projetos gerados podem exigir drivers
+              # reais (ex. pgx desde J1.2), então resolve as deps antes de build.
+              ( cd "$out" && go mod tidy && go build ./... && go vet ./... )
+              echo "::endgroup::"
+            elif printf ' %s ' $KNOWN_UNGENERATABLE | grep -q " $name "; then
+              echo "::warning title=exemplo não gerável::$name valida (check) mas não gera — limitação conhecida (ver KNOWN_UNGENERATABLE em ci.yml); go build pulado"
+            else
+              echo "::error title=falha de geração::$name falhou em 'dsc gen' e não está na lista de exceções conhecidas (KNOWN_UNGENERATABLE em ci.yml)"
+              fail=1
+            fi
+          done
+
+          exit "$fail"
