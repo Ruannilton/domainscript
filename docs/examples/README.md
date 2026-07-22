@@ -10,7 +10,6 @@ Cada exemplo é um projeto válido — `dsc` o valida sem erros nem avisos.
 | [`pizzeria/`](./pizzeria) | Um SaaS multi-tenant com dois módulos (Sales, Kitchen) coreografados por eventos públicos. Foca nas diretivas v6.0 que os outros exemplos não cobrem — `tenant { from: subdomain }`, `tenancy: row_level`, `Idempotency`/`Cache` de módulo, `cache`/`idempotency` por construto, `visibility` de View — e no padrão Snapshot (dependência temporal). |
 
 ## Como validar
-
 Compile a CLI a partir da raiz do repositório e aponte para a pasta do exemplo:
 
 ```sh
