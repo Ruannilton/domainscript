@@ -16,6 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | pending (spec criada, não iniciada) | K1.1 |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -1485,11 +1486,25 @@ criada, execução não iniciada** — próxima task **K1.1** (guarda de fim-de-
 no binding/alias de operação de domínio). Ver `tasks.md` para o mapa de
 dependências (K3.1 é pré-condição do fluxo do produtor).
 
+## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
+
+Marco L ("Correções de dívida técnica"), REQ-52..54 — segundo ciclo de
+manutenção, fecha três dívidas do back-end na raiz até onde codegen/runtime/sema
+alcançam: ISSUE-7 (Wire unificado p/ UseCase+Policy no mesmo módulo — desbloqueia
+o `pizzeria`, remove-o do `KNOWN_UNGENERATABLE` do CI), ISSUE-6 (semântica plena
+dos testes gerados — fatia tratável de 5 itens; acesso NEGADO delimitado por
+exigir nova gramática) e ISSUE-8 (refino §22.7 em `sema` + reclassificação de
+§4.4/§25 como "aguardando spec"). Três fases independentes (L1/L2/L3). **Spec
+criada, execução não iniciada** — próxima task **L1.1** (emissão do `Wire`
+combinado no módulo misto). Ver `tasks.md` para o mapa de dependências.
+
 ## Issues em aberto
 
 Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit
 `3a22df3`): `codegen/decl_collections.go` centraliza a declaração de
 `Collection[T]` var disputado entre `EmitQueries`/`EmitPolicies` num único
 `collections.go` por módulo. ISSUE-9/10/11 têm **spec de correção criada**
-(`.claude/specs/correcoes-issues-9-10-11/`, Marco K) — ainda abertas até a
-execução do Marco K fechá-las.
+(`.claude/specs/correcoes-issues-9-10-11/`, Marco K) e ISSUE-6/7/8 também
+(`.claude/specs/correcoes-issues-6-7-8/`, Marco L) — todas ainda abertas até a
+execução dos respectivos Marcos fechá-las. ISSUE-2/3/4/5 seguem abertas sem spec
+dedicada (itens maiores / front-end / spec-da-linguagem).

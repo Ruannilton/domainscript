@@ -158,6 +158,18 @@ Cada issue é um bloco novo, nesta forma:
   staging. (O item §22.4 — agrupamento por `orderId` — JÁ foi fechado pelo
   ciclo read-side, REQ-39.1/I6.2, e não entra aqui.) Oportunista: fechar cada
   um quando o vizinho for tocado.
+- EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-6-7-8/`
+  (Marco L, REQ-53 / §design 3). Análise de raiz categorizou os seis
+  sub-itens por tratabilidade: cinco fecham em codegen/runtime — `then
+  state` (§22.1, replay+compara campos), `emitted`/`released` em Saga
+  (§22.3, reusa a coleta de §22.4), `mock returns X` (§22.3, X vira o
+  retorno do stub), shrinking de property (§22.5, determinístico) e
+  `rolledback` real (§22.2, dar **staging** à `memoryUnitOfWork`/
+  `MemoryEventStore` em `rtsrc/`). O sexto — cenário de acesso NEGADO —
+  exige NOVA GRAMÁTICA ("como o caller X"), fora do escopo de codegen
+  (natureza de ISSUE-2), **delimitado** para um ciclo de front-end: ISSUE-6
+  fecha só a fatia tratável e mantém esse resíduo apontado. Fecha
+  (parcialmente) quando o Marco L fechar.
 
 ## ISSUE-7
 - SPEC: codegen
@@ -175,6 +187,17 @@ Cada issue é um bloco novo, nesta forma:
   do back-end do exemplo pizzeria (o front-end valida limpo). Fechar exige
   unificar o wiring: um único `Wire(...)` por módulo que registre tanto os
   UseCases (dispatcher/UoW) quanto as Policies (assinaturas de evento).
+- EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-6-7-8/`
+  (Marco L, REQ-52 / §design 2). Achado da análise de raiz: **o próprio
+  código já resolve esta colisão em outros lugares** — `StartWorkers`,
+  `WireQueryCache`, `WireOutboxStore`/`StartOutboxRelay` usam nome próprio
+  em vez de um 2º `Wire`. Fix recomendado: um `Wire` unificado por módulo
+  (`func Wire(u UnitOfWork, d Dispatcher)` no caso misto; casos puros
+  byte-idênticos). O `Kitchen` do pizzeria é a fixture-âncora; ao fechar,
+  `pizzeria` sai da lista `KNOWN_UNGENERATABLE` do CI
+  (`.github/workflows/ci.yml`) e passa a gerar+compilar como wallet/shop.
+  Fecha quando o Marco L fechar (a task L1.3 registra como issue nova
+  qualquer bloqueio ADICIONAL do pizzeria fora da colisão de Wire).
 
 ## ISSUE-8
 - SPEC: codegen
@@ -189,6 +212,17 @@ Cada issue é um bloco novo, nesta forma:
   granularidade por Handle; (c) **itens §25** (avg/min/max/group by, aritmética
   estendida, marshalling FFI detalhado) — declarados planejado/a definir pelo
   spec, sem ação pendente deste lado.
+- EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-6-7-8/`
+  (Marco L, REQ-54 / §design 4). Decisão por item: (b) cobertura §22.7 —
+  a task L3.1 começa pela análise de raiz de `checkHandleErrorCoverage`; se
+  o checker consegue cruzar os ramos `ensure ... else Error` com os cenários
+  de erro testados, refina o warning para o ramo específico (fecha em
+  `sema`); senão, mantém por-Handle e reclassifica como ciclo de sema
+  dedicado, com o motivo. (a) redação GDPR (§4.4) e (c) §25 (agregações/
+  aritmética/FFI) — **reclassificados** de "dívida de codegen" para
+  "aguardando definição no spec da linguagem" (exigem sintaxe nova não
+  definida; não há ação de codegen pendente). Fecha (b) e reclassifica
+  (a)/(c) quando o Marco L fechar.
 
 ## ISSUE-9
 - SPEC: infra-providers
