@@ -68,7 +68,10 @@ func (p *parser) parseOneClause(kw string) ast.QueryClause {
 	case "join":
 		src := p.parsePostfix()
 		alias := ""
-		if p.at(token.IDENT) && !isClauseKw(p.cur().Lit) {
+		// Mesma guarda de linha do binding em parseQueryOp (ISSUE-11): o alias
+		// opcional do join só vale na MESMA linha que a fonte, senão o parser
+		// engoliria o identificador do statement seguinte como alias.
+		if p.at(token.IDENT) && !isClauseKw(p.cur().Lit) && p.sameLineAsPrev() {
 			alias = p.advance().Lit
 		}
 		return ast.QueryClause{Kw: "join", Expr: src, Extra: alias}

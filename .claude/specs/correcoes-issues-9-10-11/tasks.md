@@ -44,7 +44,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
     verde (o guarda não pode regredir nenhum fixture de binding existente);
     `go build ./...` limpo.
 
-- [ ] **K1.2** Mesma guarda no **alias de `join`**. (REQ-49.3, §design 2.1/2.2)
+- [x] **K1.2** Mesma guarda no **alias de `join`**. (REQ-49.3, §design 2.1/2.2)
   - `parser/parse_query.go`: adicionar `&& p.sameLineAsPrev()` à guarda do
     `alias` no `case "join"` de `parseOneClause` (o outro ponto com a mesma
     heurística gananciosa de identificador opcional).

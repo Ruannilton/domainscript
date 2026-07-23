@@ -71,6 +71,30 @@ func TestLegitimateBindingPreserved(t *testing.T) {
 	}
 }
 
+// Regressão ISSUE-11 (REQ-49.3): o alias opcional de `join` não pode cruzar a
+// quebra de linha e roubar o identificador do statement seguinte.
+func TestConsecutiveAssignsDoNotStealJoinAlias(t *testing.T) {
+	cases := map[string]string{
+		"{ y = list Ticket join Foo\nx = id }": "(block (= y (list Ticket {join Foo})) (= x id))",
+		"{ y = list Ticket join Foo\nx = 1 }":  "(block (= y (list Ticket {join Foo})) (= x 1))",
+	}
+	for src, want := range cases {
+		if got := sstmt(parseStmtOK(t, src)); got != want {
+			t.Errorf("%q => %s, quero %s", src, got, want)
+		}
+	}
+}
+
+// REQ-49.3: a guarda de linha não pode quebrar o alias legítimo de join, que
+// segue a fonte na MESMA linha.
+func TestLegitimateJoinAliasPreserved(t *testing.T) {
+	src := "list Ticket t join Order o on t.orderId == o.id"
+	want := "(list Ticket :t {join Order o} {on (== (. t orderId) (. o id))})"
+	if got := sexpr(parseExprOK(t, src)); got != want {
+		t.Errorf("%q => %s, quero %s", src, got, want)
+	}
+}
+
 // signed_url é uma chamada de função comum, não uma operação prefixa.
 func TestSignedUrlIsCall(t *testing.T) {
 	got := sexpr(parseExprOK(t, "signed_url(doc, expires: x)"))

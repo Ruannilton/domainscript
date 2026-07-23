@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1.1 done) | K1.2 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1 done) | K2.1 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1498,6 +1498,23 @@ variantes `x = id` e `x = 1` → dois `AssignStmt`, zero diagnóstico) e
 mantém o binding `t`). Suíte inteira do `parser/` verde; `go build ./...`
 limpo; `gofmt -l` sem apontar os arquivos tocados. Próxima task: **K1.2**
 (mesma guarda no alias de `join` em `parseOneClause`).
+
+Concluído: **K1.2** — mesma guarda de fim-de-linha no **alias de `join`**
+(REQ-49.3, ISSUE-11). `parseOneClause` (`parser/parse_query.go`, `case
+"join":`) ganhou `&& p.sameLineAsPrev()` na guarda do alias opcional,
+reusando o helper `sameLineAsPrev()` já criado em K1.1 — sem ela, um `join
+Foo` seguido na linha seguinte por um statement começando com identificador
+(ex. `x = id`) engolia esse identificador como alias, deixando o `=` órfão.
+Testes pareados (NFR-4) em `parser/parse_query_test.go`:
+`TestConsecutiveAssignsDoNotStealJoinAlias` (`join Foo` numa linha + `x = id`/
+`x = 1` na seguinte → alias vazio, `join` e o statement seguinte parseiam
+como dois nós independentes, zero diagnóstico) e
+`TestLegitimateJoinAliasPreserved` (`join Order o` na MESMA linha do alvo
+mantém o alias `o` intacto). Fase K1 (ISSUE-11) está **completa**. Suíte
+inteira do `parser/` verde; `go build ./...` limpo; `go vet ./...` limpo;
+`gofmt -l` sem apontar os arquivos tocados. Próxima task: **K2.1** (fase K2,
+`memoryQueryCache.Coalesce` — flag + erro-sentinela aos esperadores,
+ISSUE-10).
 
 Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
 produtor).
