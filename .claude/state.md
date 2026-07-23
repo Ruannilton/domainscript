@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1 done) | K2.1 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1 done, K2.1 done) | K2.2 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1515,6 +1515,49 @@ inteira do `parser/` verde; `go build ./...` limpo; `go vet ./...` limpo;
 `gofmt -l` sem apontar os arquivos tocados. Próxima task: **K2.1** (fase K2,
 `memoryQueryCache.Coalesce` — flag + erro-sentinela aos esperadores,
 ISSUE-10).
+
+Concluído: **K2.1** — `memoryQueryCache.Coalesce` à prova de pânico do líder
+(REQ-50.1/50.2/50.3/50.4, ISSUE-10, backend memory). `codegen/rtsrc/
+querycache.go.txt` ganhou o sentinela de pacote `errCoalescedPanic =
+errors.New("coalesced function panicked")` (import `errors` adicionado) e,
+antes de `fn()`, um `defer` que — sob lock — faz `delete(c.flights, key)`, e
+se a flag local `completed` ainda for `false` (ou seja, `fn()` nunca
+terminou, o líder panicou no meio) força `fl.err = errCoalescedPanic` antes
+de `close(fl.done)`; `completed = true` roda logo após `fn()` retornar
+normalmente. **Sem `recover`** em lugar nenhum — o pânico do líder continua
+propagando para quem chamou `Coalesce`; o `defer` só protege quem está
+esperando o mesmo voo. Comentário no código aponta a paridade com
+`redisQueryCache.Coalesce` (`codegen/redisrt/cache.go.txt`, que já tinha o
+`defer` de limpeza da PR #26 mas NÃO a flag/sentinela — isso é o escopo de
+**K2.2**, não tocado aqui). Causa-raiz confirmada por leitura do wrapper
+gerado (`codegen/decl_query_cache.go`): sem o sentinela, um esperador
+liberado por um pânico do líder receberia `(nil, nil)` e o `result.(T)` do
+wrapper panicaria uma SEGUNDA vez para tipos de valor — daí o fix ser um erro
+não-nil aos esperadores, não só um `defer` de limpeza. Testes pareados
+(NFR-4) adicionados a `codegen/decl_query_cache_test.go`, todos batendo
+DIRETO em `runtime.NewMemoryQueryCache()` (sem passar por uma Query cacheada
+gerada — testando o primitivo, não o wiring), embutidos como um novo arquivo
+Go gerado (`widgets/coalesce_panic_sentinel_test.go`) dentro do mesmo projeto
+sintético que `TestQueryCacheBehavior` já monta e roda via
+`gentest`/`runGeneratedTests`:
+`TestCoalescePanicPropagatesToLeaderAndReleasesWaiterWithError` (negativo: um
+`fn` que panica é `recover()`ado pela goroutine líder do teste — Coalesce não
+recupera sozinho —; uma 2ª goroutine no mesmo voo, liberada sob timeout de
+2s, recebe um erro NÃO-nil em vez de travar; a MESMA key coalesce de novo
+depois com um `fn` de sucesso, provando que não ficou presa em `c.flights`),
+`TestCoalesceSingleFlightSameResultNonRegression` (positivo: 8 goroutines na
+mesma key veem o mesmo resultado e `fn` roda exatamente 1 vez — mesmo idioma
+de `TestStampedeProtectionSingleFlight`, mas direto no primitivo) e
+`TestCoalesceBusinessErrorPropagatesNotSentinel` (um `fn` com erro de negócio
+propaga ESSE erro, via `errors.Is`, a todos os esperadores — nunca o
+sentinela de pânico). `go test ./codegen/ -run TestQueryCacheBehavior` verde
+(2.4s) — os 3 novos `TestCoalesce*` rodam dentro dele, no `go test ./...` do
+projeto gerado; sanity rodando também `TestEmitQueryCache*`
+(golden/determinístico/smoke) sem regressão. `go build ./...` limpo; `go vet
+./...` limpo; `gofmt -l` sem apontar `codegen/decl_query_cache_test.go` nem
+`codegen/rtsrc/querycache.go.txt`. `codegen/redisrt/cache.go.txt`
+NÃO tocado (fica para K2.2). Próxima task: **K2.2** (mesmo endurecimento —
+flag + sentinela — no backend `redisQueryCache`, REQ-50.5, mesma fase K2).
 
 Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
 produtor).
