@@ -46,6 +46,31 @@ func TestQueryListJoinWhere(t *testing.T) {
 	}
 }
 
+// Regressão ISSUE-11 (REQ-49.1/49.4): duas atribuições consecutivas no mesmo
+// bloco, a 1ª com RHS de operação de domínio, não devem fazer o binding opcional
+// roubar o identificador do 2º statement através da quebra de linha.
+func TestConsecutiveAssignsDoNotStealBinding(t *testing.T) {
+	cases := map[string]string{
+		"{ order = load Bar(id)\nx = id }": "(block (= order (load (call Bar id))) (= x id))",
+		"{ order = load Bar(id)\nx = 1 }":  "(block (= order (load (call Bar id))) (= x 1))",
+	}
+	for src, want := range cases {
+		if got := sstmt(parseStmtOK(t, src)); got != want {
+			t.Errorf("%q => %s, quero %s", src, got, want)
+		}
+	}
+}
+
+// REQ-49.2/49.5: a guarda de linha não pode quebrar o binding legítimo, que
+// segue o alvo na MESMA linha.
+func TestLegitimateBindingPreserved(t *testing.T) {
+	src := "list Ticket t where t.active"
+	want := "(list Ticket :t {where (. t active)})"
+	if got := sexpr(parseExprOK(t, src)); got != want {
+		t.Errorf("%q => %s, quero %s", src, got, want)
+	}
+}
+
 // signed_url é uma chamada de função comum, não uma operação prefixa.
 func TestSignedUrlIsCall(t *testing.T) {
 	got := sexpr(parseExprOK(t, "signed_url(doc, expires: x)"))

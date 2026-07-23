@@ -26,7 +26,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 ## Fase K1 — Parser: duas atribuições consecutivas (ISSUE-11, REQ-49)
 
-- [ ] **K1.1** Guarda de fim-de-linha no **binding** de operação de domínio.
+- [x] **K1.1** Guarda de fim-de-linha no **binding** de operação de domínio.
   (REQ-49.1/49.2/49.4, §design 2.2)
   - `parser/parser.go`: helper `sameLineAsPrev()` — compara `p.cur().Pos.Line`
     com `p.lastPos.Line` (o último token consumido; validado que após

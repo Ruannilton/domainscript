@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | pending (spec criada, não iniciada) | K1.1 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1.1 done) | K1.2 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1481,10 +1481,26 @@ fecha três issues em aberto na raiz: ISSUE-11 (parser, duas atribuições
 consecutivas — causa-raiz: binding ganancioso de `parseQueryOp`), ISSUE-10
 (`memoryQueryCache.Coalesce` sem `defer`, vaza goroutine sob pânico) e ISSUE-9
 (produtor Outbox→canal cross-service, resíduo do Marco J / REQ-42.6). Três
-fases independentes (K1/K2/K3), executadas em ordem de risco crescente. **Spec
-criada, execução não iniciada** — próxima task **K1.1** (guarda de fim-de-linha
-no binding/alias de operação de domínio). Ver `tasks.md` para o mapa de
-dependências (K3.1 é pré-condição do fluxo do produtor).
+fases independentes (K1/K2/K3), executadas em ordem de risco crescente.
+
+Concluído: **K1.1** — guarda de fim-de-linha no **binding** de operação de
+domínio (REQ-49.1/49.2/49.4, ISSUE-11). Helper `sameLineAsPrev()`
+(`parser/parser.go`) compara `p.cur().Pos.Line` com `p.lastPos.Line` (o fim do
+último token consumido); `parseQueryOp` (`parser/parse_query.go`) ganhou
+`&& p.sameLineAsPrev()` na guarda do binding opcional — sem ela, após
+`order = load Bar(id)` o parser engolia o `x` da linha seguinte (de `x = id`)
+como binding, deixando o `=` órfão (erro "esperava uma expressão, encontrei
+="). O alias de `join` (mesma heurística gananciosa) fica para **K1.2** —
+intocado nesta task. Testes pareados (NFR-4) em `parser/parse_query_test.go`:
+`TestConsecutiveAssignsDoNotStealBinding` (duas atribuições consecutivas,
+variantes `x = id` e `x = 1` → dois `AssignStmt`, zero diagnóstico) e
+`TestLegitimateBindingPreserved` (`list Ticket t where …` na mesma linha
+mantém o binding `t`). Suíte inteira do `parser/` verde; `go build ./...`
+limpo; `gofmt -l` sem apontar os arquivos tocados. Próxima task: **K1.2**
+(mesma guarda no alias de `join` em `parseOneClause`).
+
+Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
+produtor).
 
 ## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
 

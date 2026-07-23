@@ -59,6 +59,14 @@ func (p *parser) peekAt(n int) token.Token {
 // at reporta se o token corrente é do tipo k.
 func (p *parser) at(k token.Kind) bool { return p.cur().Kind == k }
 
+// sameLineAsPrev reporta se o token corrente está na mesma linha do último token
+// consumido (p.lastPos, o fim do span anterior). Serve para decidir consumos
+// opcionais gananciosos — como o binding de uma operação de domínio ou o alias
+// de `join` — que não podem cruzar a fronteira de linha: DomainScript separa
+// statements por quebra de linha, então um IDENT numa linha nova é o início de
+// outro statement, não um binding/alias (ISSUE-11).
+func (p *parser) sameLineAsPrev() bool { return p.cur().Pos.Line == p.lastPos.Line }
+
 // atEnd reporta se o cursor chegou ao EOF.
 func (p *parser) atEnd() bool { return p.cur().Kind == token.EOF }
 
