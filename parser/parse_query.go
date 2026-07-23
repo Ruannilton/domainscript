@@ -33,7 +33,12 @@ func (p *parser) parseQueryOp() ast.Expr {
 	op := p.advance().Lit
 	target := p.parsePostfix()
 	binding := ""
-	if p.at(token.IDENT) && !isClauseKw(p.cur().Lit) {
+	// O binding opcional (list Ticket t) só vale na MESMA linha que o alvo. Sem a
+	// guarda de linha, após `order = load Bar(id)` o parser engoliria o `x` da
+	// linha seguinte (de `x = id`) como binding, deixando o `=` órfão — ISSUE-11:
+	// o binding não pode cruzar a fronteira de linha e roubar o identificador do
+	// statement seguinte.
+	if p.at(token.IDENT) && !isClauseKw(p.cur().Lit) && p.sameLineAsPrev() {
 		binding = p.advance().Lit
 	}
 	clauses := p.parseQueryClauses()
