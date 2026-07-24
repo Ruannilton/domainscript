@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1+K3.2+K3.3 done) | K3.4 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1+K3.2+K3.3+K3.4 done) | K3.5 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1859,6 +1859,82 @@ arquivos tocados (`codegen/sqlrt/uow.go.txt`, `codegen/sql_wiring.go`,
 UseCase **não** tocados (rota (b), §design 4.2-P2). Próxima task: **K3.4**
 (fixture dedicada `producer_outbox_test.go` + comportamental de crash simulado
 fim-a-fim: relay re-publica após falha, nenhum evento perdido — REQ-51.7).
+
+Concluído: **K3.4** — fixture dedicada `codegen/producer_outbox_test.go`
+(ISSUE-9/REQ-51.7, §design correcoes-issues-9-10-11 4.4/4.5), espelhando como
+o lado consumidor ganhou `decl_policy_outbox_test.go` (J2.5): 1 módulo
+produtor "Orders" (`Database MainDb provider:"sqlite"`, DSN de arquivo real —
+deliberadamente sqlite, não postgres como a âncora/Alpha, porque
+`recognizedSQLProvider` reconhece os dois e sqlite evita a decolagem
+"gera-com-postgres/testa-com-sqlite" que outras fixtures precisam) + canal de
+saída `queue provider:"rabbitmq"` para 1 módulo consumidor "Shipping" (uma
+Policy `AtLeastOnce` simples, sem Database próprio — só para o canal ter dois
+lados reais, sem exercitar durabilidade do consumidor, já coberta). O
+Aggregate `Order` tem DOIS `Handle`: `Place` emite o `PublicEvent`
+`OrderPlaced` (o único tipo que o canal carrega) e `Touch` emite o `Event`
+interno `OrderTouched` (nunca cross-service) — para o filtro REQ-51.4 ser
+provado também sobre o conjunto de event_type que vem do canal REAL da
+fixture na geração, não de um mapa escrito à mão como em
+`sql_producer_parity_test.go` (K3.3).
+
+Dois testes novos:
+- `TestProducerOutboxFixtureWiringAndSmokeCompile` — wiring do produtor
+  durável sobre esta fixture dedicada: `cmd/orderssvc/main.go` abre
+  `sqlruntime.Open`, constrói `uow := sqlruntime.NewOutboxUnitOfWork(ordersDB,
+  orders.EventRegistry(), sqlruntime.SQLiteDialect(),
+  map[string]bool{"OrderPlaced": true})` (só `OrderPlaced` — `OrderTouched`
+  nunca aparece em `main.go`, confirmando REQ-51.4 já na geração), monta
+  `ordersOutboxStore`/`ordersOutbox := runtime.NewDurableOutbox(...,
+  ordersChannel)` e sobe `go ordersOutbox.Start(workerCtx)`; provas negativas
+  de que as formas antigas (`NewUnitOfWork(store, ordersChannel)`,
+  `sqlruntime.NewUnitOfWork(ordersDB, ...)` com o canal como publisher)
+  sumiram. Fecha com `gentest.SmokeCompile` (DoD "smoke compile limpo").
+- `TestProducerOutboxDurableRelayRetriesAfterCrash` — o teste comportamental
+  que era o gap genuíno: gera o projeto, embute um arquivo `package orders`
+  (white-box, precisa da var de pacote não-exportada `uow`) que (1) chama
+  `sqlruntime.NewOutboxUnitOfWork` com o MESMO conjunto de event_type do
+  canal real e invoca `PlaceOrderUseCase`/`TouchOrderUseCase` de verdade —
+  confirma outbox+events na mesma tx para `OrderPlaced` e o filtro REQ-51.4
+  para `OrderTouched` (nenhuma linha de outbox) — e (2), o ponto novo,
+  constrói manualmente um `runtime.NewDurableOutbox(store, registry, pub)`
+  (mesma forma que `emitProducerOutboxRelay` monta em `main.go`, mas
+  orquestrado no teste via `Tick` em vez de `Start` para controlar o
+  timing) com um `producerOutboxFakePublisher` (idioma de `fakePublisher`,
+  `sql_outbox_channel_test.go`, redeclarado localmente — pacote gerado
+  diferente) que falha na 1ª tentativa: 1º `Tick` processa a linha que
+  `PlaceOrderUseCase` enfileirou de verdade, `Publish` falha, `attempts`
+  sobe para 1, `delivered_at` continua NULL; 2º `Tick` re-escaneia a MESMA
+  linha, `Publish` sucede, `delivered_at` é marcado, nenhum evento
+  cross-service perdido. Achado de implementação: como `contracts.<Evt>` é
+  um ALIAS DE TIPO para o tipo do módulo de origem (`contracts` importa
+  `orders`, nunca o inverso, `decl_event.go`), o teste embutido em `package
+  orders` referencia `OrderPlaced`/`Touch...` SEM qualificador `contracts.` —
+  importar `domainscript/generated/contracts` dali causaria um ciclo de
+  import (`go test` falhou com exatamente esse erro na primeira tentativa,
+  corrigido removendo o import e usando os tipos locais do próprio pacote).
+
+O que K3.3 já cobria e este teste REAFIRMA (não duplica como se fosse gap):
+`sql_producer_parity_test.go` (`TestLedgerSingleDatabaseProducerOutbox`) já
+prova enqueue-in-tx + filtro REQ-51.4 sobre o Ledger; `channel_rabbitmq_test.go`
+(`TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile`) já prova a
+MESMA forma de wiring sobre Alpha/Beta com smoke compile real. O que era
+GENUINAMENTE novo e é o que este teste fecha: o crash simulado (`Publish`
+falhando 1x, retry no `Tick` seguinte, nenhum evento perdido) rodando sobre o
+**caminho gerado do produtor** (`NewOutboxUnitOfWork`/`EventRegistry()` reais,
+alimentados por um UseCase de verdade) — `sql_outbox_channel_test.go` já
+provava o MESMO mecanismo de retry, mas só via o seam manual
+(`tx.EnqueueOutbox` chamado à mão), nunca através de código gerado.
+
+Verificação: `go test ./codegen/ -run
+"TestProducerOutboxFixtureWiringAndSmokeCompile|TestProducerOutboxDurableRelayRetriesAfterCrash"`
+verde; `go test ./codegen/... ./driver/...` completo sem regressão; `go build
+./...` limpo; `go vet ./...` limpo; `gofmt -l .` sem apontar
+`codegen/producer_outbox_test.go` (único arquivo tocado — nenhuma mudança em
+`codegen`/`sqlrt`/`rtsrc` de produção, task TEST-ONLY conforme o escopo de
+K3.4). Próxima task: **K3.5** (docs/consolidação — `gaps.md` §G-4 remove o
+item produtor→outbox→canal, `.claude/issues.md` marca ISSUE-9
+`RESOLVED`, `CLAUDE.md`/`README.md` atualizados — a última task de Marco K,
+fecha REQ-51 formalmente).
 
 ## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
 
