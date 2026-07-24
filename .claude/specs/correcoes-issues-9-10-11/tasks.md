@@ -147,7 +147,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
   - DoD: escopo verde; `wallet`/`shop` byte-idênticos; `go build`/`go vet`/`gofmt`
     limpos + smoke compile da fixture do produtor.
 
-- [ ] **K3.4** Fixture dedicada + comportamental de crash simulado fim-a-fim.
+- [x] **K3.4** Fixture dedicada + comportamental de crash simulado fim-a-fim.
   (REQ-51.7, §design 4.4/4.5)
   - Nova `codegen/producer_outbox_test.go` (fixture sintética mínima: 1 produtor
     postgres + canal rabbitmq + 1 consumidor), espelhando `decl_policy_outbox_
