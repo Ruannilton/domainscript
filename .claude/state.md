@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c done; tasks.md gained L1.3a-L1.3f to resolve ISSUE-12 before the final pizzeria proof) | L1.3d |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c done; L1.3d PAUSADA por decisão do usuário — ver nota; L1.3e/L1.3f bloqueadas em cascata) | L2.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2258,6 +2258,47 @@ posição de expressão pura não é suportado por Lowerer.Expr") — o item 3
 (`.add`/`AppendList`) já fora resolvido por L1.3a, confirmando que a sequência
 avança para o escopo de L1.3d, não tocado aqui.
 **Próxima task: L1.3d.**
+
+**L1.3d — TENTADA e PAUSADA (decisão do usuário, não uma conclusão de task).**
+Um subagente investigou a rota (b) do task text ("dar a Kitchen um provider
+real como Sales") e a premissa se mostrou ERRADA: trocar `kitchen/mod.ds`'s
+`Database.provider` de `"mongodb"` para `"sqlite"` (e, num segundo teste,
+`"postgres"`) NÃO mudou o erro de geração — confirmado tanto no `pizzeria`
+real quanto numa fixture sintética mínima isolada, criada só para descartar
+qualquer efeito colateral do fixture real. A causa raiz de verdade, lida em
+`codegen/decl_query.go` (`tryEmitListVO`, ~linha 461): a função só reconhece
+`list <nome>` quando `<nome>` resolve a um `*types.VOType` correlacionado via
+um campo `AppendList<VO>` de um Aggregate conhecido (o padrão de
+`wallet`/`list StatementEntry`) — um nome de AGGREGATE (`KitchenTicket`,
+`MenuItem`) resolve a `*types.ShapeType`, nunca `*types.VOType`, então a
+checagem falha SEMPRE, **independente de provider**. É um gap de codegen
+genuíno e provider-agnóstico ("`list <Aggregate> ... as View`" nunca foi
+implementado), não um problema de fixture. Achado colateral relevante:
+`sales/read.ds`'s `GetAvailableMenu`/`GetActiveOrders` têm a MESMA forma
+(`list MenuItem`/`list Order`, o próprio Aggregate, sem correlação via
+`AppendList`) e NUNCA foram de fato exercitadas — a geração do `pizzeria`
+sempre falha em Kitchen primeiro (ordem alfabética de módulos), então é
+plausível que a Query de Sales tropece no MESMO erro se a geração algum dia
+chegar lá.
+
+Nenhuma mudança foi commitada/pushada — o branch de investigação
+(`claude/marco-l-l1.3d`, local, nunca aberto como PR) foi revertido para o
+estado de `main` antes de ser abandonado. Apresentadas três opções ao
+usuário: (a) estender `EmitQuery`/`tryEmitListVO` para suportar `list
+<Aggregate>` de verdade (a rota antes rejeitada como grande demais, mas que
+parece inevitável — bloqueia Kitchen E, latentemente, Sales); (b') reescrever
+as Queries de Kitchen/Sales para a forma já suportada (fixture-only, sem
+risco de codegen); ou parar aqui e seguir para as Fases L2/L3 (independentes
+de L1). **O usuário escolheu parar.** `tasks.md` marca L1.3d como
+⛔ BLOQUEADA (não `[x]`) com a análise completa embutida na própria task, e
+L1.3e/L1.3f ficam bloqueadas em cascata (dependem de L1.3d fechar de
+verdade). ISSUE-12 (`.claude/issues.md`) ganhou uma nota "CORREÇÃO" no item 4
+documentando o achado, sem apagar o registro original (convenção do arquivo).
+Nenhuma tentativa adicional de L1.3d/e/f está planejada neste ciclo — retomar
+exige uma decisão explícita futura entre (a)/(b') antes de prosseguir.
+
+**Próxima task (Fase L2, independente de L1): L2.1** — `then state { ... }`
+(§22.1, asserção de estado real em vez de erro de geração, REQ-53.1).
 
 ## Issues em aberto
 

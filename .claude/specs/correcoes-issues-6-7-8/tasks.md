@@ -53,6 +53,18 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 > REQ-52 — cada uma é um fix de codegen genuíno e independente, com seu próprio
 > par de testes; ver ISSUE-12 (`.claude/issues.md`) para a análise de raiz
 > completa de cada ponto.
+>
+> **PAUSADO em L1.3d (decisão do usuário):** L1.3a/L1.3b/L1.3c fecharam limpo.
+> L1.3d tentou a rota (b) (dar a Kitchen um provider real) e a investigação
+> mostrou que a premissa estava ERRADA — o gap (`list <Aggregate>` não
+> suportado por `tryEmitListVO`, `codegen/decl_query.go`) é provider-agnóstico,
+> um gap de codegen genuíno que provavelmente também afeta `sales/read.ds`
+> (nunca exercitado). Nem rota (a) (estender o codegen) nem (b') (reescrever
+> as Queries) foram tentadas — o usuário optou por PARAR aqui e seguir para as
+> Fases L2/L3 (independentes de L1) em vez de perseguir o fechamento completo
+> de `pizzeria` agora. L1.3d/L1.3e/L1.3f ficam bloqueadas, sem tentativa
+> adicional neste ciclo — ver a nota "CORREÇÃO" em ISSUE-12 item 4
+> (`.claude/issues.md`) e `.claude/state.md` para o registro completo.
 
 - [x] **L1.3a** Corrigir o typo do fixture: `items List<TicketItem>` →
   `items AppendList<TicketItem>`. (ISSUE-12 item 3)
@@ -92,24 +104,31 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
   - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos; wallet/shop sem
     regressão.
 
-- [ ] **L1.3d** Read Side de `Kitchen`: decidir o destino de `list
-  KitchenTicket` sem provider real por trás. (ISSUE-12 item 4)
+- [ ] **L1.3d** ⛔ **BLOQUEADA** — Read Side de `Kitchen`: decidir o destino de
+  `list KitchenTicket` sem provider real por trás. (ISSUE-12 item 4)
   - Investigar: `Query GetBoardTickets` faz `list KitchenTicket where ...` —
     o seam in-memory (`runtime.Query[T]`, `codegen/decl_query.go`, E8.1) exige
     correlacionar o VO/Aggregate listado a um campo `AppendList<VO>` de um
     Aggregate conhecido; listar o PRÓPRIO Aggregate diretamente, sem um
     provider real (`Kitchen.MainDb` usa `"mongodb"`, decorativo) por trás,
     não é uma forma coberta hoje.
-  - Duas rotas possíveis (decidir na task, documentar a escolha):
-    (a) estender o seam in-memory para suportar `list <Aggregate>` sem
-    provider real (um gap de codegen genuíno, mais trabalho); ou
-    (b) ajustar o `pizzeria` para não depender dessa forma (ex. reescrever a
-    Query, ou aceitar que Kitchen precisa de um provider real como Sales) —
-    mais rápido, mas altera o fixture em vez do codegen.
-  - **Testes pareados:** conforme a rota escolhida.
-  - DoD: escopo verde; decisão documentada em `gaps.md`/ISSUE-12.
+  - ~~Duas rotas possíveis (decidir na task, documentar a escolha): (a)
+    estender o seam in-memory... ou (b) ajustar o `pizzeria`...~~ **Rota (b)
+    tentada e REJEITADA por investigação empírica** (ver ISSUE-12 item 4,
+    nota "CORREÇÃO"): trocar o provider de Kitchen não muda nada — a causa
+    raiz (`tryEmitListVO`, `codegen/decl_query.go:461`, só reconhece `list
+    <VO correlacionado via AppendList>`, nunca `list <Aggregate>` direto,
+    **independente de provider**) é um gap de codegen genuíno, não um
+    problema de fixture. `sales/read.ds` tem a MESMA forma e provavelmente o
+    MESMO bug latente, nunca exercitado. Só rota (a) (estender
+    `EmitQuery`/`tryEmitListVO`) ou (b') (reescrever as Queries para a forma
+    já suportada) fecham isto de verdade — nenhuma tentada ainda.
+  - **Decisão do usuário: parar aqui, não perseguir (a) nem (b') agora —
+    seguir para as Fases L2/L3 (independentes de L1).** Task fica BLOQUEADA,
+    sem tentativa adicional neste ciclo.
+  - DoD: NÃO cumprido — ver acima.
 
-- [ ] **L1.3e** Guarda F5/G3: suportar um módulo que é SIMULTANEAMENTE
+- [ ] **L1.3e** ⛔ **BLOQUEADA** (depende de L1.3d) — Guarda F5/G3: suportar um módulo que é SIMULTANEAMENTE
   produtor de canal de saída E dono de uma Policy/Query cacheada local, no
   MESMO service. (ISSUE-12 item 5, o bloqueio arquitetural central)
   - `codegen/codegen.go:1143` (o `if producerChannel != nil && needsDispatcher
@@ -131,7 +150,8 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
   - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos; nenhuma regressão
     em nenhuma fixture de canal/Policy existente (Marco F/J/K).
 
-- [ ] **L1.3f** Prova com o `pizzeria` + limpeza do CI. (REQ-52.5/52.6/52.7,
+- [ ] **L1.3f** ⛔ **BLOQUEADA** (depende de L1.3d/L1.3e) — Prova com o
+  `pizzeria` + limpeza do CI. (REQ-52.5/52.6/52.7,
   §design 2.3 — só depois de L1.3a-L1.3e fecharem ISSUE-12 por completo)
   - Teste e2e (padrão `driver.TestGenerate*`): `GenerateProject` sobre
     `docs/examples/pizzeria` gera e o Go compila (`go build`/`go vet` sobre os
