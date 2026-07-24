@@ -339,8 +339,21 @@ Cada issue é um bloco novo, nesta forma:
   `completed` + erro-sentinela a `fl.err` no `defer` (sem `recover`),
   aplicado aos DOIS backends (K2.1 memory, K2.2 redis). Fecha quando o
   Marco K fechar.
-
-## ISSUE-11
+- RESOLVED (commits `9d5fe16`/`bc6df20`, K2.1/K2.2): fix de raiz aplicado
+  aos DOIS backends, exatamente como analisado acima. `memoryQueryCache.
+  Coalesce`/`redisQueryCache.Coalesce` (`codegen/rtsrc/querycache.go.txt`/
+  `codegen/redisrt/cache.go.txt`) ganharam um sentinela de pacote
+  (`errCoalescedPanic = errors.New("coalesced function panicked")`) e uma
+  flag `completed`: o `defer` (instalado ANTES de `fn()` rodar) sempre
+  remove a chave de `c.flights` e fecha `fl.done`; se `completed` continua
+  `false` quando o `defer` roda (o líder panicou, `fn()` nunca retornou),
+  `fl.err` é forçado ao sentinela ANTES do `close` — nenhum esperador
+  recebe `(nil, nil)` nunca mais. Sem `recover()`: o pânico do líder segue
+  propagando normalmente. Par de testes por backend (NFR-4): pânico do
+  líder libera o esperador com erro não-nil sob timeout e a MESMA chave
+  coalesce de novo depois (negativo); N goroutines concorrentes recebem o
+  mesmo resultado com `fn` rodando uma única vez, e um erro de negócio
+  legítimo propaga como está, nunca o sentinela (positivo/não-regressão).
 - SPEC: infra-providers
 - TASK: J6.1 (fixture-âncora multi-service)
 - DESCRIPTION: o **parser** (`parser/parse_stmt.go`) falha em analisar DUAS
@@ -374,3 +387,17 @@ Cada issue é um bloco novo, nesta forma:
   statement intermediária evita o bug porque o token após `load Bar(id)`
   deixa de ser um IDENT. Fix: guardar o binding (e o alias de `join`, mesmo
   padrão latente) por `sameLineAsPrev()`. Fecha quando o Marco K fechar.
+- RESOLVED (commits `3a7437e`/`2abce08`, K1.1/K1.2): fix de raiz aplicado
+  nos DOIS pontos que compartilhavam a mesma heurística gananciosa de
+  identificador opcional. Novo helper `sameLineAsPrev()`
+  (`parser/parser.go`) compara `p.cur().Pos.Line` com `p.lastPos.Line` (o
+  fim do último token consumido); a guarda do **binding** opcional em
+  `parseQueryOp` (K1.1) e a guarda do **alias** opcional de `join` em
+  `parseOneClause` (K1.2, `parser/parse_query.go`) ganharam `&&
+  p.sameLineAsPrev()`. Par de testes por ponto (NFR-4): duas atribuições
+  consecutivas (`x = id`/`x = 1`) não roubam mais o identificador da 2ª
+  como binding/alias, zero diagnóstico (negativo/regressão); um binding
+  (`list Ticket t where ...`) ou alias (`join Order o`) legítimo na MESMA
+  linha do alvo continua intacto (positivo). Suíte inteira do `parser/`
+  verde em ambas as tasks — nenhum fixture de binding/alias existente
+  regrediu.
