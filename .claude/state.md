@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2 done; L1.3 blocked by ISSUE-12) | L1.3 (blocked) |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2 done; tasks.md gained L1.3a-L1.3f to resolve ISSUE-12 before the final pizzeria proof) | L1.3a |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2123,11 +2123,20 @@ pizzeria + limpeza do CI") não pode prosseguir como planejada até ISSUE-12
 fechar (ou uma decisão explícita de trocar a fixture-âncora de L1.3) —
 provavelmente precisa de um recorte novo, maior que REQ-52 sozinho.
 Verificação: `go build ./...`, `go vet ./...`, `gofmt -l` limpos sobre os
-arquivos tocados; `go test ./codegen/... ./driver/...` verde. **Próxima
-task: L1.3 — BLOQUEADA por ISSUE-12** (ver acima; precisa de re-escopo antes
-de prosseguir — não tentar "provar o pizzeria" sem antes resolver os cinco
-pontos registrados, e não remover `pizzeria` de `KNOWN_UNGENERATABLE` no CI
-enquanto isso).
+arquivos tocados; `go test ./codegen/... ./driver/...` verde.
+
+Re-escopo (decisão do usuário: tacklear ISSUE-12 agora, em vez de pular para
+L2/L3): `.claude/specs/correcoes-issues-6-7-8/tasks.md` ganhou **L1.3a-L1.3f**
+entre L1.2 e a prova final, uma task por defeito de ISSUE-12, em ordem
+crescente de risco — L1.3a (typo do fixture, `items List<TicketItem>` →
+`AppendList<TicketItem>`), L1.3b (`lowerAccessCondition` para
+`caller.hasRole(...)` isolado), L1.3c (`emitApply` sem `BuiltinLowerer`),
+L1.3d (Read Side de Kitchen sem provider real — decisão entre estender o
+seam ou ajustar o fixture), L1.3e (a guarda F5/G3 em si — o bloqueio
+arquitetural central, exige desenho antes de implementar), e L1.3f (a prova
+final com `pizzeria` + limpeza do CI, antiga L1.3, só depois dos cinco
+fecharem). Tabela de rastreabilidade e mapa de dependências do `tasks.md`
+atualizados de acordo. **Próxima task: L1.3a.**
 
 ## Issues em aberto
 

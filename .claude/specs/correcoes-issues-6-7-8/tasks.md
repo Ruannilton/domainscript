@@ -45,16 +45,104 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
     dispatcher)`; service com módulos puros byte-idêntico.
   - DoD: escopo verde.
 
-- [ ] **L1.3** Prova com o `pizzeria` + limpeza do CI. (REQ-52.5/52.6/52.7, §design 2.3)
+> **ISSUE-12 (achado de L1.2):** `pizzeria` está bloqueado por CINCO defeitos
+> independentes além da colisão de Wire (já fechada por L1.1) — a guarda F5/G3
+> (canal produtor + Dispatcher no mesmo service) e quatro gaps mais cedo no
+> pipeline. As tasks L1.3a-L1.3e abaixo resolvem cada um, na ordem de menor
+> para maior risco, ANTES da prova final (agora L1.3f). Nenhuma delas amplia
+> REQ-52 — cada uma é um fix de codegen genuíno e independente, com seu próprio
+> par de testes; ver ISSUE-12 (`.claude/issues.md`) para a análise de raiz
+> completa de cada ponto.
+
+- [ ] **L1.3a** Corrigir o typo do fixture: `items List<TicketItem>` →
+  `items AppendList<TicketItem>`. (ISSUE-12 item 3)
+  - `docs/examples/pizzeria/kitchen/domain.ds`: `.add(...)` só é mapeado
+    (`codegen/goname/types.go:111`) para um campo `AppendList<T>`; `List<T>`
+    comum não suporta `.add`. O padrão correto já existe em
+    `wallet/domain.ds:88` (`entries AppendList<StatementEntry>`).
+  - Confirmar que a mudança não quebra nenhum outro uso de `items` no
+    `pizzeria` (read.ds/policy.ds) — `AppendList<T>` deve ser um superset
+    compatível de leitura.
+  - DoD: escopo verde (front-end continua validando pizzeria limpo); não é
+    um fix de codegen, só do fixture — sem par de teste de codegen novo.
+
+- [ ] **L1.3b** `lowerAccessCondition`: suportar uma condição de acesso que é
+  SÓ `caller.hasRole(...)` (sem `&&`/`||`/`==` compondo). (ISSUE-12 item 1)
+  - `codegen/decl_aggregate.go:341` (`lowerAccessCondition`): hoje só trata
+    `BinaryExpr` (composto) ou cai no fallback genérico `l.Expr(cond)`, que
+    rejeita `CallExpr` puro. Adicionar o caso "condição é diretamente uma
+    chamada de `caller.hasRole(...)`/outro predicado de `caller` reconhecido"
+    como uma forma de primeira classe, gerando o `if` equivalente sem passar
+    pelo `Lowerer.Expr` genérico.
+  - **Testes pareados (NFR-4):** `access { X requires caller.hasRole("r") }`
+    sozinho (sem composição) gera e compila; a forma composta já suportada
+    (`caller.authenticated && caller.hasRole(...)`) continua byte-idêntica.
+  - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos.
+
+- [ ] **L1.3c** `emitApply`: anexar `BuiltinLowerer` (builtins de função
+  utilizáveis dentro de `Apply`). (ISSUE-12 item 2)
+  - `codegen/decl_aggregate.go:274` (`emitApply`): constrói o `Lowerer` sem
+    `.WithBuiltins(...)`, ao contrário de `emitUseCasesBytes`/
+    `emitPolicyExecute`/Saga/Query, que sempre anexam um `BuiltinLowerer`.
+    Qualquer builtin (`now()`/`uuid()`/`random(...)`) usado dentro de um
+    `Apply` falha hoje. Corrigir para anexar o mesmo `BuiltinLowerer` que os
+    outros emissores já usam.
+  - **Testes pareados:** um `Apply` que usa `now()`/`uuid()` gera e compila;
+    um `Apply` sem builtin nenhum (o caso comum, wallet/shop) byte-idêntico.
+  - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos; wallet/shop sem
+    regressão.
+
+- [ ] **L1.3d** Read Side de `Kitchen`: decidir o destino de `list
+  KitchenTicket` sem provider real por trás. (ISSUE-12 item 4)
+  - Investigar: `Query GetBoardTickets` faz `list KitchenTicket where ...` —
+    o seam in-memory (`runtime.Query[T]`, `codegen/decl_query.go`, E8.1) exige
+    correlacionar o VO/Aggregate listado a um campo `AppendList<VO>` de um
+    Aggregate conhecido; listar o PRÓPRIO Aggregate diretamente, sem um
+    provider real (`Kitchen.MainDb` usa `"mongodb"`, decorativo) por trás,
+    não é uma forma coberta hoje.
+  - Duas rotas possíveis (decidir na task, documentar a escolha):
+    (a) estender o seam in-memory para suportar `list <Aggregate>` sem
+    provider real (um gap de codegen genuíno, mais trabalho); ou
+    (b) ajustar o `pizzeria` para não depender dessa forma (ex. reescrever a
+    Query, ou aceitar que Kitchen precisa de um provider real como Sales) —
+    mais rápido, mas altera o fixture em vez do codegen.
+  - **Testes pareados:** conforme a rota escolhida.
+  - DoD: escopo verde; decisão documentada em `gaps.md`/ISSUE-12.
+
+- [ ] **L1.3e** Guarda F5/G3: suportar um módulo que é SIMULTANEAMENTE
+  produtor de canal de saída E dono de uma Policy/Query cacheada local, no
+  MESMO service. (ISSUE-12 item 5, o bloqueio arquitetural central)
+  - `codegen/codegen.go:1143` (o `if producerChannel != nil && needsDispatcher
+    { return erro }`): hoje `generateCmdMainFile` recusa combinar os dois.
+    Investigar se o Wire combinado de L1.1 (`Wire(uow, dispatcher)`) já
+    resolve o lado de EMISSÃO (o módulo consegue registrar Policies E
+    UseCases no mesmo pacote) — o que falta é o lado de CONSTRUÇÃO em
+    `main.go`: hoje o `uow` é construído com `NewUnitOfWork(store,
+    dispatcher)` OU `NewUnitOfWork(store, <canal>)`, nunca os dois ao mesmo
+    tempo (a UoW só aceita 1 publisher). Desenhar a solução (ex.: o
+    `dispatcher` publica localmente E o canal assina o Dispatcher para o(s)
+    tipo(s) de `PublicEvent` que atravessam, em vez de o canal ser o
+    publisher direto da UoW) ANTES de implementar — é uma mudança de design,
+    não um fix mecânico. Documentar a decisão em `design.md` antes de tocar
+    código, se a mudança for não-trivial.
+  - **Testes pareados:** fixture sintética com módulo produtor+Policy local no
+    mesmo service → gera e compila; `wallet`/`shop`/fixtures existentes de
+    canal (sem essa combinação) byte-idênticos.
+  - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos; nenhuma regressão
+    em nenhuma fixture de canal/Policy existente (Marco F/J/K).
+
+- [ ] **L1.3f** Prova com o `pizzeria` + limpeza do CI. (REQ-52.5/52.6/52.7,
+  §design 2.3 — só depois de L1.3a-L1.3e fecharem ISSUE-12 por completo)
   - Teste e2e (padrão `driver.TestGenerate*`): `GenerateProject` sobre
     `docs/examples/pizzeria` gera e o Go compila (`go build`/`go vet` sobre os
     bytes em disco, com `go mod tidy` condicional como wallet/shop).
   - `.github/workflows/ci.yml`: remover `pizzeria` de `KNOWN_UNGENERATABLE` — a
     partir daqui o job `examples` gera+compila o pizzeria como os demais.
-  - Se surgir um bloqueio adicional na geração do pizzeria (fora da colisão de
-    Wire), **registrar nova issue** e não ampliar REQ-52 (REQ-52.7).
+  - Se surgir um bloqueio adicional na geração do pizzeria (fora do já
+    mapeado por ISSUE-12), **registrar nova issue** e não ampliar REQ-52
+    (REQ-52.7).
   - DoD: `dsc gen docs/examples/pizzeria` sai 0 e builda; e2e verde; wallet/shop
-    sem regressão; fecha a Fase L1.
+    sem regressão; fecha a Fase L1; ISSUE-12 marcada `RESOLVED`.
 
 ---
 
@@ -154,7 +242,7 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 
 | REQ | Tasks | Issue |
 |---|---|---|
-| REQ-52 (Wire unificado + pizzeria + CI) | L1.1, L1.2, L1.3 | ISSUE-7 |
+| REQ-52 (Wire unificado + pizzeria + CI) | L1.1, L1.2, L1.3a-L1.3f | ISSUE-7, ISSUE-12 |
 | REQ-53.1 (then state) | L2.1 | ISSUE-6 |
 | REQ-53.2 (saga emitted/released) | L2.2 | ISSUE-6 |
 | REQ-53.3 (mock returns X) | L2.3 | ISSUE-6 |
@@ -167,7 +255,9 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 ## Mapa de dependências
 
 ```
-L1.1 ──▶ L1.2 ──▶ L1.3           (Wire combinado → call site → pizzeria+CI)
+L1.1 ──▶ L1.2 ──▶ L1.3a ──▶ L1.3b ──▶ L1.3c ──▶ L1.3d ──▶ L1.3e ──▶ L1.3f
+        (Wire combinado → call site → ISSUE-12: typo, hasRole, builtins,
+         read-side Kitchen, F5/G3 → prova final+CI)
 L2.1  L2.2  L2.3  L2.4  L2.5      (independentes entre si; cada um par NFR-4)
 L2.6  (doc, independente)
 L3.1  L3.2                        (independentes; L3.2 é doc)
