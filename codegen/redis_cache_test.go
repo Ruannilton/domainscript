@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -293,6 +294,178 @@ func TestRedisQueryCacheSetSkipsNonPositiveTTL(t *testing.T) {
 	c.SetErr(ctx, "key-2", &notFoundError{ID: "x"}, -1)
 	if _, _, hit := c.Get(ctx, "key-2"); hit {
 		t.Fatal("Get: esperava hit=false depois de SetErr com ttl<=0")
+	}
+}
+
+// TestRedisCoalescePanicPropagatesToLeaderAndReleasesWaiterWithError prova
+// REQ-50.5 (o MESMO endurecimento de REQ-50.1-50.3, agora no backend redis):
+// um pânico dentro do fn de Coalesce (a) continua propagando para quem
+// CHAMOU Coalesce (nenhum recover dentro de Coalesce) e (b) ainda assim
+// libera qualquer OUTRA goroutine esperando o mesmo voo em progresso, com um
+// erro NÃO-nil (nunca (nil, nil), que panicaria de novo no type assertion do
+// wrapper gerado — ver a doc de errCoalescedPanic em cache.go.txt). Também
+// prova que a MESMA key volta a coalescer depois — não fica presa em
+// c.flights para sempre. Coalesce nunca toca c.client, então um fakeCmdable
+// vazio (nenhuma operação Get/Set/Incr configurada) já basta.
+func TestRedisCoalescePanicPropagatesToLeaderAndReleasesWaiterWithError(t *testing.T) {
+	c := newRedisQueryCache(newFakeCmdable(), "ns-coalesce-panic")
+	key := "panic-key"
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan struct{})
+
+	go func() {
+		defer close(leaderDone)
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("esperava que o pânico do fn do líder propagasse para quem chamou Coalesce, não propagou")
+			}
+		}()
+		c.Coalesce(key, func() (any, error) {
+			close(entered)
+			<-release
+			panic("boom: fn do líder panicou de propósito")
+		})
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("o líder nunca entrou em fn a tempo")
+	}
+
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := c.Coalesce(key, func() (any, error) {
+			return "should-not-run", nil
+		})
+		waiterErr <- err
+	}()
+
+	// Dá tempo do waiter chegar no Coalesce e ficar parado no voo em
+	// progresso antes de liberar o líder para panicar.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	select {
+	case err := <-waiterErr:
+		if err == nil {
+			t.Fatal("esperava um erro NÃO-nil ao acordar de um voo cujo líder panicou (nunca (nil, nil)), got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("o waiter travou para sempre após o pânico do líder (vazamento de goroutine que REQ-50.5 deveria evitar)")
+	}
+
+	<-leaderDone
+
+	// A MESMA key coalesce de NOVO depois do pânico — não ficou presa em
+	// c.flights para sempre.
+	got, err := c.Coalesce(key, func() (any, error) {
+		return "fresh-after-panic", nil
+	})
+	if err != nil {
+		t.Fatalf("Coalesce da mesma key após o pânico: erro inesperado: %v", err)
+	}
+	if got != "fresh-after-panic" {
+		t.Fatalf("Coalesce da mesma key após o pânico: got %v, want fresh-after-panic", got)
+	}
+}
+
+// TestRedisCoalesceSingleFlightSameResultNonRegression prova a não-regressão
+// do caminho feliz (REQ-50, par positivo): N goroutines coalescendo a MESMA
+// key veem o MESMO resultado e fn roda exatamente 1 vez.
+func TestRedisCoalesceSingleFlightSameResultNonRegression(t *testing.T) {
+	c := newRedisQueryCache(newFakeCmdable(), "ns-coalesce-singleflight")
+	key := "single-flight-key"
+	var calls int64
+
+	const n = 8
+	results := make(chan any, n)
+	errs := make(chan error, n)
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	var once sync.Once
+
+	for i := 0; i < n; i++ {
+		go func() {
+			v, err := c.Coalesce(key, func() (any, error) {
+				atomic.AddInt64(&calls, 1)
+				once.Do(func() {
+					close(entered)
+					<-gate
+				})
+				return "same-result", nil
+			})
+			results <- v
+			errs <- err
+		}()
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nenhuma goroutine entrou em fn a tempo")
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("goroutine %d: erro inesperado: %v", i, err)
+		}
+		if v := <-results; v != "same-result" {
+			t.Fatalf("goroutine %d: got %v, want same-result", i, v)
+		}
+	}
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("esperava fn rodar exatamente 1 vez apesar de %d chamadas concorrentes, got %d", n, got)
+	}
+}
+
+// TestRedisCoalesceBusinessErrorPropagatesNotSentinel prova o outro lado de
+// REQ-50.5: um erro de NEGÓCIO devolvido por fn (não um pânico) propaga esse
+// MESMO erro a todos os esperadores — o sentinela de pânico
+// (errCoalescedPanic, não-exportado neste pacote) nunca deveria aparecer
+// aqui, já que completed=true roda antes do defer decidir se sobrescreve
+// fl.err.
+func TestRedisCoalesceBusinessErrorPropagatesNotSentinel(t *testing.T) {
+	c := newRedisQueryCache(newFakeCmdable(), "ns-coalesce-bizerr")
+	key := "business-error-key"
+	bizErr := errors.New("business error de teste")
+
+	const n = 4
+	errs := make(chan error, n)
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	var once sync.Once
+
+	for i := 0; i < n; i++ {
+		go func() {
+			_, err := c.Coalesce(key, func() (any, error) {
+				once.Do(func() {
+					close(entered)
+					<-gate
+				})
+				return nil, bizErr
+			})
+			errs <- err
+		}()
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nenhuma goroutine entrou em fn a tempo")
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+
+	for i := 0; i < n; i++ {
+		err := <-errs
+		if !errors.Is(err, bizErr) {
+			t.Fatalf("goroutine %d: esperava o erro de negócio %v propagado a todos os esperadores (não o sentinela de pânico), got %v", i, bizErr, err)
+		}
 	}
 }
 `

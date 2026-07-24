@@ -321,6 +321,18 @@ func (c *redisQueryCache) InvalidateAll() {
 	}
 }
 
+// errCoalescedPanic é o sentinela que TODO esperador de um voo cujo líder
+// panicou recebe (ISSUE-10/REQ-50.5) — nunca um (nil, nil) puro. O wrapper de
+// Query cacheada gerado (codegen/decl_query_cache.go) faz um type assertion
+// DIRETO "result.(T)" sobre o retorno bem-sucedido de Coalesce — um esperador
+// que recebesse (nil, nil) porque o líder panicou no meio da atribuição
+// panicaria de NOVO nesse type assertion para tipos de valor. Um erro
+// não-nil aqui corta o wrapper antes do assertion rodar. Mesmo sentinela (com
+// a MESMA mensagem, por paridade/grepabilidade entre os dois backends) que
+// errCoalescedPanic em rtsrc/querycache.go.txt — dois `var` não-exportados
+// distintos, um por pacote, sem conflito de compilação.
+var errCoalescedPanic = errors.New("coalesced function panicked")
+
 // Coalesce implementa runtime.QueryCache — local por processo (ver a doc do
 // arquivo), mesmo mecanismo single-flight de memoryQueryCache.Coalesce.
 func (c *redisQueryCache) Coalesce(key string, fn func() (any, error)) (any, error) {
@@ -334,19 +346,30 @@ func (c *redisQueryCache) Coalesce(key string, fn func() (any, error)) (any, err
 	c.flights[key] = fl
 	c.mu.Unlock()
 
-	// defer (revisão da PR #26): se fn() panica, a limpeza e o close(fl.done)
-	// ainda precisam rodar — sem isso, toda goroutine concorrente/futura
-	// bloqueada em "<-fl.done" (acima) travaria pra sempre (vazamento de
-	// goroutine + a MESMA key nunca mais coalesce de novo, já que nunca sai
-	// de c.flights). O panic original continua propagando normalmente depois
-	// do defer (nenhum recover aqui).
+	// defer + flag completed (endurecimento K2.2, ISSUE-10/REQ-50.5; espelha
+	// memoryQueryCache.Coalesce em rtsrc/querycache.go.txt, que recebeu o
+	// MESMO tratamento em K2.1): a limpeza da PR #26 (delete(c.flights, key) +
+	// close(fl.done)) já garantia que nenhuma goroutine ficasse presa em
+	// "<-fl.done" para sempre se fn() panicasse — mas ainda liberava os
+	// esperadores com fl.err == nil, um (nil, nil) que o wrapper gerado (ver
+	// errCoalescedPanic acima) não sabe distinguir de um sucesso real.
+	// completed só vira true DEPOIS de fn() retornar normalmente; se o defer
+	// roda com completed==false, é porque fn() panicou, e fl.err é forçado
+	// para o sentinela antes do close. Nenhum recover(): o pânico do líder
+	// continua propagando pela pilha exatamente como antes — este defer só
+	// protege quem está ESPERANDO, não intercepta o pânico do líder.
+	completed := false
 	defer func() {
 		c.mu.Lock()
 		delete(c.flights, key)
 		c.mu.Unlock()
+		if !completed {
+			fl.err = errCoalescedPanic
+		}
 		close(fl.done)
 	}()
 
 	fl.value, fl.err = fn()
+	completed = true
 	return fl.value, fl.err
 }

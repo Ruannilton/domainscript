@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1 done, K2.1 done) | K2.2 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done) | K3.1 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1558,6 +1558,50 @@ projeto gerado; sanity rodando também `TestEmitQueryCache*`
 `codegen/rtsrc/querycache.go.txt`. `codegen/redisrt/cache.go.txt`
 NÃO tocado (fica para K2.2). Próxima task: **K2.2** (mesmo endurecimento —
 flag + sentinela — no backend `redisQueryCache`, REQ-50.5, mesma fase K2).
+
+Concluído: **K2.2** — `redisQueryCache.Coalesce` à prova de pânico do líder
+(REQ-50.5, ISSUE-10, backend redis). Mesmo endurecimento de K2.1, mirrorado
+no adapter distribuído: `codegen/redisrt/cache.go.txt` ganhou o sentinela de
+pacote `errCoalescedPanic = errors.New("coalesced function panicked")` (MESMA
+mensagem que o sentinela do backend memory, para grepabilidade — dois `var`
+não-exportados distintos, um por pacote, sem conflito de compilação; `errors`
+já estava importado, nenhum import novo) e, dentro de `Coalesce`, o `defer`
+de limpeza da PR #26 ganhou a flag `completed` + `if !completed { fl.err =
+errCoalescedPanic }` antes do `close(fl.done)`, com `completed = true` logo
+após `fn()` retornar normalmente — **sem `recover`**, mesma invariante: o
+pânico do líder continua propagando para quem chamou `Coalesce`, o `defer` só
+protege quem está esperando o mesmo voo. Comentário do arquivo atualizado
+para refletir o novo comportamento (flag+sentinela, não só limpeza),
+cross-referenciando `memoryQueryCache.Coalesce` (`rtsrc/querycache.go.txt`)
+para a nota de paridade. Testes pareados (NFR-4) adicionados dentro do string
+Go embutido `redisCacheTest` (`codegen/redis_cache_test.go`) — que já roda,
+via `TestRedisQueryCacheAdapter`, como `package redisruntime` (white-box)
+compilado e testado de verdade num projeto Go sintético efêmero
+(`gentest.WriteFiles`/`RunTests`), já que `cache.go.txt` não é compilado
+diretamente por este módulo. As 3 novas funções (renomeadas com prefixo
+`TestRedis` para não colidir semanticamente com as equivalentes do backend
+memory, embora vivam em pacotes diferentes) constroem `*redisQueryCache` via
+`newRedisQueryCache(newFakeCmdable(), ns)` — `Coalesce` nunca toca `c.client`,
+então um `fakeCmdable` vazio (nenhum Get/Set/Incr configurado) já basta, zero
+conexão real: `TestRedisCoalescePanicPropagatesToLeaderAndReleasesWaiterWithError`
+(negativo: um `fn` que panica é `recover()`ado pela goroutine líder do teste;
+uma 2ª goroutine no mesmo voo, liberada sob timeout de 2s, recebe um erro
+NÃO-nil em vez de travar; a MESMA key coalesce de novo depois com um `fn` de
+sucesso), `TestRedisCoalesceSingleFlightSameResultNonRegression` (positivo: 8
+goroutines na mesma key veem o mesmo resultado e `fn` roda exatamente 1 vez)
+e `TestRedisCoalesceBusinessErrorPropagatesNotSentinel` (um `fn` com erro de
+negócio propaga ESSE erro, via `errors.Is`, a todos os esperadores — nunca o
+sentinela de pânico). Import `sync/atomic` adicionado ao string embutido
+(necessário para os novos testes; `sync` já estava presente). Fase K2
+(ISSUE-10) está **completa** nos DOIS backends. `go test ./codegen/ -run
+TestRedisQueryCacheAdapter` verde (~37s, roda `go mod tidy` + `go test ./...`
+do projeto sintético, incluindo os 3 novos testes); sanity re-rodando `go
+test ./codegen/ -run TestRedisQueryCache` sem regressão. `go build ./...`
+limpo; `go vet ./...` limpo; `gofmt -l codegen/redis_cache_test.go
+codegen/redisrt/cache.go.txt` sem saída. Próxima task: **K3.1** (fase K3,
+"Produtor Outbox → canal cross-service" — detecção do produtor durável,
+predicado puro sem emissão, REQ-51 condição de ativação, ISSUE-9; a maior/
+mais arriscada peça restante do plano).
 
 Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
 produtor).
