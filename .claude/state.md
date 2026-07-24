@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1+K3.2+K3.3+K3.4 done) | K3.5 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2+K3 done) | K.fim |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1935,6 +1935,53 @@ K3.4). Próxima task: **K3.5** (docs/consolidação — `gaps.md` §G-4 remove o
 item produtor→outbox→canal, `.claude/issues.md` marca ISSUE-9
 `RESOLVED`, `CLAUDE.md`/`README.md` atualizados — a última task de Marco K,
 fecha REQ-51 formalmente).
+
+Concluído: **K3.5** — docs + consolidação, fechando REQ-51 formalmente
+(§design 4.4, NFR-25). Task só-docs, nenhum código tocado:
+
+- `.claude/specs/codegen/gaps.md` §G-4: a linha "Outbox" da tabela por
+  categoria atualizada para refletir o fechamento (produtor→canal
+  cross-service agora real, não só a tabela SQL); o item "Outbox → canal
+  cross-service (REQ-42.6, ISSUE-9)" da subseção "Residual aberto" riscado
+  e substituído por uma nota de fechamento (K3.1-K3.4, com o fluxo completo
+  descrito: `durableProducer` → `emitSingleDatabaseWiring` →
+  `NewOutboxUnitOfWork` (enqueue in-tx) → `NewDurableOutbox` com o canal
+  como publisher + relay/cleanup → prova comportamental de crash simulado
+  sobre o caminho gerado). O parágrafo "Fechar o residual exige" reescrito
+  para "Fechar o restante exige" (só sobra o item (b), categorias fora do
+  recorte de Marco J — o item (a), específico do produtor→outbox, foi
+  removido por não haver mais nada a fechar ali).
+- `.claude/issues.md`: ISSUE-9 ganhou uma entrada `RESOLVED (commits
+  1137ba9/e2f3ec9/9fd30f0/c580e1f, K3.1-K3.4)` — os 4 hashes de merge das
+  PRs #47-#50 — resumindo o fluxo completo implementado e apontando de
+  volta para `gaps.md` §G-4. ISSUE-10/ISSUE-11 **não** tocadas aqui —
+  ficam para **K.fim** (a task de fechamento do Marco K inteiro,
+  explicitamente pede marcar as três issues juntas).
+- `CLAUDE.md`: dois pontos. (1) O parágrafo "Current state" (linha ~20)
+  reescrito — a frase que descrevia o residual como sobrevivendo à
+  fechada de Marco J foi substituída por uma descrição do fechamento via
+  Marco K; a lista de spec sets ganhou a 6ª entrada
+  (`correcoes-issues-9-10-11`, antes ausente — corrigido um descuido de
+  J7.1/tasks anteriores que nunca a listaram apesar da spec já existir).
+  (2) O parágrafo "Infra providers" no bloco de milestones (linha ~280)
+  também reescrito — mantém o relato histórico de que J7.1 encontrou o
+  residual (não reescreve a história), mas agora aponta para o fechamento
+  por Marco K logo em seguida, com um novo parágrafo "Correções de dívida
+  técnica" descrevendo K1/K2/K3 (K1/K2 done, K3.1-K3.4 done, K3.5/K.fim
+  restantes).
+- `README.md` (raiz): conferido — não faz nenhuma afirmação sobre o
+  produtor publicar direto no commit; nada a mudar ali.
+- Confirmação (sem `go test ./...` — CI roda a suíte na PR, CLAUDE.md):
+  `go build ./...`/`go vet ./...`/`gofmt -l .` limpos; nenhuma mudança de
+  código-fonte nesta task, então `wallet`/`shop`/a âncora seguem
+  byte-idênticos por construção (nada foi tocado que pudesse afetá-los).
+
+Próxima task: **K.fim** — revisão de DoD do Marco K inteiro
+(`requirements.md` §5): as três issues fechadas com par de testes (REQ-50
+nos DOIS backends); `wallet`/`shop` byte-idênticos; âncora de J6 atualizada;
+`.claude/issues.md` marca ISSUE-9/10/11 `RESOLVED` (ISSUE-9 já está, falta
+10/11); `.claude/state.md` marca o Marco K `done`. Última task do plano
+inteiro.
 
 ## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
 

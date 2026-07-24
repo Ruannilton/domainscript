@@ -22,13 +22,13 @@ infrastructure providers (REQ-41..48, Marco J) — is **also complete**: it
 closes gap G-4 / ISSUE-3 for a deliberate 5-provider slice — Postgres
 (Database), a durable Outbox, RabbitMQ (cross-service channel), Redis (Cache
 + RateLimit) and S3 (FileStorage) — each opt-in behind the seam that already
-exists. One residual gap survives the closure and is tracked, not hidden:
-the outbox's PRODUCER side (a module emitting a `PublicEvent` to a
-cross-service channel) still publishes straight on commit instead of
-enqueuing through the durable outbox — only the CONSUMER side (a local
-`AtLeastOnce` Policy with a real Database) gets a real `DurableOutbox`
-(REQ-42.6, see ISSUE-9's final-status note and
-`.claude/specs/codegen/gaps.md` §G-4 "Residual aberto"). Five spec sets are the source of truth and
+exists. A maintenance cycle, `.claude/specs/correcoes-issues-9-10-11/` (Marco
+K, REQ-49..51), closed the residual gap Marco J left open: a module with a
+real Database and a `provider:"rabbitmq"` outbound channel now enqueues its
+cross-service `PublicEvent` into the durable outbox atomically with the
+business transaction, and the relay (with the channel as its publisher)
+delivers it — no more publish-straight-on-commit for that path (REQ-42.6,
+ISSUE-9, resolved). Six spec sets are the source of truth and
 are written in Portuguese:
 
 - `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
@@ -41,6 +41,8 @@ are written in Portuguese:
   Smart Partial Loading (REQ-33..40).
 - `.claude/specs/infra-providers/{requirements,design,tasks}.md` — real infra
   providers, 5-provider slice of G-4 (REQ-41..48, NFR-21..24, Marco J).
+- `.claude/specs/correcoes-issues-9-10-11/{requirements,design,tasks}.md` —
+  maintenance cycle closing ISSUE-9/10/11 (REQ-49..51, Marco K).
 
 Work now is maintenance and extension, not greenfield. Still follow the spec
 flow: a task references the REQ it satisfies (`(REQ-n)`) and the design section
@@ -280,9 +282,30 @@ de Infraestrutura" — a 5-provider slice of gap G-4 / ISSUE-3: Postgres
 (Database), durable Outbox, RabbitMQ (cross-service channel), Redis (Cache +
 RateLimit), S3 (FileStorage), each opt-in behind the existing seam — **also
 complete**; infra providers closes here. J7.1's DoD review found one residual
-gap that survives the closure: the outbox's producer side (a module emitting
-a cross-service `PublicEvent`) still publishes straight on commit instead of
-enqueuing through the durable outbox (REQ-42.6) — tracked in ISSUE-9 (final
-status) and `.claude/specs/codegen/gaps.md` §G-4, not silently dropped. The
-rest of G-4 (other databases, gRPC channel, Dynamo idempotency, layered
-cache, GCS/Azure) stays explicitly out of this slice, for a future cycle.
+gap that survived the closure: the outbox's producer side (a module emitting
+a cross-service `PublicEvent`) still published straight on commit instead of
+enqueuing through the durable outbox (REQ-42.6) — tracked in ISSUE-9. That
+residual is now closed by the `correcoes-issues-9-10-11` maintenance cycle
+below (Marco K, K3.1-K3.4): a module with a real Database and a
+`provider:"rabbitmq"` outbound channel enqueues its cross-service
+`PublicEvent` into the outbox atomically with the business transaction, and
+the relay (channel as publisher) delivers it. The rest of G-4 (other
+databases, gRPC channel, Dynamo idempotency, layered cache, GCS/Azure) stays
+explicitly out of this slice, for a future cycle.
+
+Correções de dívida técnica
+(`.claude/specs/correcoes-issues-9-10-11/tasks.md`): Marco K — a maintenance
+cycle closing three standing issues found during earlier cycles. K1 (parser:
+two consecutive assignments no longer steal the next statement's identifier,
+ISSUE-11, REQ-49) and K2 (`Coalesce` panic-safety on both the memory and
+Redis query-cache backends, ISSUE-10, REQ-50) are done. K3 (the outbox
+producer→channel residual above, ISSUE-9, REQ-51) has K3.1-K3.4 done —
+`durableProducer` detects the activation condition, the producer's
+UnitOfWork runs over real `database/sql` and enqueues into the outbox
+in-tx via the distinct `sqlruntime.NewOutboxUnitOfWork`, the relay (channel
+as publisher) replaces the direct-on-commit publish, and a dedicated fixture
+plus an end-to-end crash-simulation test (over the *generated* producer
+path, not just the runtime seam) prove it. `wallet`/`shop` stay
+byte-identical throughout (neither satisfies the activation condition).
+Remaining: K3.5 (docs consolidation) and K.fim (final DoD review closing
+Marco K).
