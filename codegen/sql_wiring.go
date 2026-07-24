@@ -141,6 +141,70 @@ func moduleOutboxDatabaseName(prog *program.Program, moduleName string) string {
 	return names[0]
 }
 
+// durableProducer reporta se moduleName qualifica para o caminho de produtor
+// durável do Outbox → canal cross-service (ISSUE-9/REQ-51, §design
+// correcoes-issues-9-10-11 4.1): um PREDICADO PURO, sem nenhuma emissão —
+// Fase K3.1 só decide "ativa ou não"; o wiring de verdade (abrir a conexão
+// real, trocar o publisher da UoW, subir o relay) é K3.2+.
+//
+// Condição de ativação (validada na revisão da PR #37, §design 4.1), as DUAS
+// precisam valer:
+//  1. o módulo tem EXATAMENTE 1 Database "real" (recognizedSQLProvider —
+//     hoje "sqlite"/"postgres", case-insensitive).
+//  2. o módulo tem um canal de SAÍDA (producerChannelFor) cujo provider
+//     resolve como "rabbitmq" (channelProviderKind) — não basta `via: queue`
+//     sozinho: a QueueChannel in-memory (sem `provider:` real) não é um
+//     transporte durável, então a condição fica falsa (o caso do `shop`,
+//     REQ-51.6/NFR-25).
+//
+// "Exatamente 1" Database real (não "1 ou mais"): a leitura do design
+// (§4.1 "Sem 2PC", §4.2-P1 "banco único, não-2PC") e de usecase2PCPlan
+// (decl_usecase.go) mostra que 2+ Database reais no mesmo módulo já
+// disparam o caminho XA existente (moduleMarks.xaDatabases,
+// emitXADatabaseWiring) — um caso ortogonal, de coordenação distribuída
+// entre bancos, que esta função não deve reconhecer como "produtor durável
+// de banco único": um módulo com 2 Databases reais devolve false aqui,
+// deixando-o inteiramente para o caminho 2PC já existente (nenhuma
+// colisão/duplicação de wiring).
+//
+// producerChannelFor pode devolver erro (mais de um canal de saída via
+// "queue" no mesmo módulo, ou um `via` não suportado — o guard F5
+// pré-existente): seguindo a mesma convenção dos chamadores existentes de
+// producerChannelFor (generateCmdMainFile, codegen.go), esse erro é
+// propagado ao chamador de durableProducer, não silenciado como "false" —
+// um erro de geração legítimo não deve ser mascarado por um predicado
+// booleano.
+func durableProducer(prog *program.Program, module string) (bool, error) {
+	mod := prog.Modules[module]
+	if mod == nil {
+		return false, nil
+	}
+
+	var realDBs int
+	for _, db := range mod.Databases {
+		if _, ok := recognizedSQLProvider(db.Provider); ok {
+			realDBs++
+		}
+	}
+	if realDBs != 1 {
+		return false, nil
+	}
+
+	ch, err := producerChannelFor(prog, module)
+	if err != nil {
+		return false, err
+	}
+	if ch == nil {
+		return false, nil
+	}
+
+	kind, err := channelProviderKind(ch)
+	if err != nil {
+		return false, err
+	}
+	return kind == "rabbitmq", nil
+}
+
 // generateSQLRuntimeFiles copia sqlrt.Sources() (verbatim, mesmo padrão de
 // generateRuntimeFiles) para sqlruntime/*.go — só chamado quando
 // programNeedsSQLAdapter devolve true.

@@ -93,7 +93,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 > **Rota (b) resolvida** (§design 4.2-P2): o enqueue mora na construção da UoW,
 > o corpo gerado do UseCase/Handle **não** muda.
 
-- [ ] **K3.1** Detecção do produtor durável (predicado puro, sem emissão).
+- [x] **K3.1** Detecção do produtor durável (predicado puro, sem emissão).
   (REQ-51 condição de ativação, §design 4.1)
   - `codegen/codegen.go` (ou `sql_wiring.go`): função `durableProducer(prog,
     module)` — true sse o módulo tem 1 Database real (`recognizedSQLProvider`) E
