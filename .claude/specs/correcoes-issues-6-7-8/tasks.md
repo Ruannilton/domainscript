@@ -204,19 +204,154 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
     > nomeando o campo. `then state` em Test de UseCase/Saga/Policy virou erro
     > de geração claro, junto dos guards que já existiam.
 
-- [ ] **L2.2** `emitted`/`released` a partir de passo de Saga (§22.3). (REQ-53.2,
-  §design 3.2)
-  - `codegen/gentest.go` (helpers de Saga): reusar a coleta de eventos de
-    §22.4/Policy para afirmar `emitted Evento(...)`/`released` de um passo.
-  - **Testes pareados:** passo que emite o evento (passa) e um `then` que espera
-    um evento não emitido (falha).
+> **RE-ESCOPO de L2.2 e L2.3 (validação de coerência, pós-L2.1).** Depois de
+> L1.3d e L2.1 terem premissas erradas, as cinco tasks restantes da Fase L2/L3
+> foram validadas EMPIRICAMENTE (não só por leitura) antes de qualquer
+> implementação. L2.4, L2.5, L2.6, L3.1 e L3.2 são **coerentes** — seus textos
+> seguem intactos. **L2.2 e L2.3 tinham premissa errada** e foram reescritas
+> abaixo como cadeias menores, cada elo independentemente verificável. Os
+> textos originais estão preservados na nota de cada cadeia, não reescritos.
 
-- [ ] **L2.3** `mock Target returns X` influencia o fluxo (§22.3). (REQ-53.3,
-  §design 3.2)
-  - Auditar `emitSagaMock`: fazer `X` ser o retorno efetivo do alvo mockado
-    (hoje ignorado). A auditoria decide a forma (stub-função substituível).
-  - **Testes pareados:** `X` que desvia o resultado do passo seguinte (observável)
-    e o caso sem mock (inalterado).
+<!-- ------------------------- Cadeia L2.2 ------------------------- -->
+
+> **L2.2 (original) — premissa ERRADA em dois níveis.** Texto original:
+> *"`codegen/gentest.go` (helpers de Saga): reusar a coleta de eventos de
+> §22.4/Policy para afirmar `emitted Evento(...)`/`released` de um passo."*
+> Ambos os níveis foram refutados por reprodução empírica:
+>
+> **(a) Não existe "erro de geração claro".** ISSUE-6 e §design 3.1 afirmam
+> que `emit` dentro de um passo de Saga dá erro claro. **Não dá.** Uma fixture
+> mínima (Saga com `step Reserve { up { emit OrderCancelled(state.id) } }`)
+> valida no front-end, `dsc gen` sai **0**, e o Go emitido **não compila**:
+> `shop/sagas.go:18:18: undefined: events`. Causa: `StmtLowerer.emitStmt`
+> (`codegen/lower/stmt.go`) sem `WithEmitDispatch` cai no ramo `events =
+> append(events, ...)`, mas a assinatura do passo é `func(ctx, state *S) error`
+> — não existe `events` no escopo. É falha **SILENCIOSA**, pior que erro claro.
+>
+> **(b) O fix prescrito não é aplicável.** "Reusar a coleta de §22.4/Policy"
+> pressupõe o var de pacote `policyDispatcher` que `Wire` escreve e o teste
+> reatribui. Um passo de Saga não tem dispatcher nem `events`. Confirmado no
+> runtime: `Step[S]` (`codegen/rtsrc/saga.go.txt:45`) tem `Up/Down/OnInfraError
+> func(ctx, state *S) error` — `state` é o ÚNICO receptor, sem `Tx`/`EventStore`
+> (o próprio `codegen/decl_saga.go:562` documenta "`state` ser o único receptor,
+> então storeGoName fica vazio"). O `SagaStore` de `mode async` guarda
+> `SagaStatus`, não eventos. Logo o passo não pode nem apensar a um stream nem
+> despachar um `Handle` de Aggregate — e o exemplo do §22.3 (`Order emitted
+> OrderCancelled`) afirma justamente que um **Aggregate** emitiu.
+
+- [ ] **L2.2a** Fechar a falha SILENCIOSA: `emit` em passo de Saga vira erro de
+  geração claro. (REQ-53.2, achado (a) acima)
+  - `codegen/decl_saga.go` (`emitSagaStepPhaseFunc`) ou o ponto equivalente:
+    detectar um `emit` no corpo de `up`/`down`/`onInfraError` e falhar a geração
+    com mensagem clara ("`emit` em passo de Saga ainda não é suportado — o passo
+    não tem Tx/Dispatcher; ver L2.2b/L2.2c"), em vez de emitir Go que referencia
+    um `events` inexistente.
+  - **Não** implementa o `emit` de verdade — só troca miscompilação silenciosa
+    por diagnóstico. Valor imediato e independente de qualquer decisão de design.
+  - **Testes pareados (NFR-4):** passo com `emit` → erro de geração claro (a
+    fixture da nota (a) acima serve); Saga sem `emit` nenhum (a fixture de
+    `gentest_saga_test.go`) → Go byte-idêntico.
+  - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos; wallet/shop sem
+    regressão.
+
+- [ ] **L2.2b** **(design, sem código)** Decidir COMO um passo de Saga emite.
+  (REQ-53.2, achado (b) acima)
+  - Registrar a decisão em `design.md` ANTES de implementar. As rotas, com o
+    que já se sabe:
+    (i) **Dispatcher publish-only** — dar ao passo um dispatcher reatribuível,
+    o MESMO mecanismo de Policy (`WithEmitDispatch` + var de pacote). É a única
+    rota que não inventa transação dentro do passo, e é a que torna a "coleta
+    de §22.4" do texto original de fato reusável (L2.2c/L2.2d). Não permite
+    `Order emitted ...` (Aggregate emitindo), só o passo publicando.
+    (ii) **Dar `Tx` ao passo** — muda o contrato de `Step[S]` e de `RunSaga`
+    (`rtsrc/saga.go.txt`); habilita despachar `Handle` de Aggregate de dentro
+    do passo, cobrindo o exemplo literal do §22.3. Custo alto, mexe no núcleo
+    transacional (NFR-30).
+    (iii) **Delimitar** — declarar `emit` em passo fora de escopo, mantendo
+    só L2.2a. Fecha a lacuna de segurança sem prometer a feature.
+  - DoD: `design.md` atualizado com a rota escolhida e o porquê das descartadas;
+    nenhuma mudança de código.
+
+- [ ] **L2.2c** Implementar o caminho de `emit` escolhido em L2.2b.
+  (REQ-53.2 — só se L2.2b escolher (i) ou (ii))
+  - Escopo depende inteiramente de L2.2b; não iniciar antes dela.
+  - **Testes pareados:** passo que emite → o evento chega ao destino escolhido e
+    o projeto **compila** (smoke); Saga sem `emit` → byte-idêntica.
+  - DoD: escopo verde; wallet/shop sem regressão.
+
+- [ ] **L2.2d** Asserção `Subject emitted X` no `then` de um Test de Saga.
+  (REQ-53.2, depende de L2.2c)
+  - `codegen/gentest.go` (`emitSagaThenAssert`): hoje o `default` rejeita o verbo
+    `emitted` ("forma de then não suportada para Saga nesta fase de H4"). Só
+    depois de L2.2c existir um canal de eventos é que a coleta do §22.4/Policy
+    passa a ter o que coletar.
+  - **Testes pareados:** passo que emite o evento (o teste gerado passa) e um
+    `then` que espera um evento não emitido (o teste gerado **falha** com
+    mensagem clara — mesmo padrão de `runGeneratedTestsExpectingFailure`, L2.1).
+  - DoD: escopo verde.
+
+> **`released` (§22.3) — DELIMITADO, sem task.** `tickets released` aparece
+> **uma única vez em todo o spec** (linha 1153, dentro do exemplo do §22.3) e
+> não tem nenhuma definição operacional em lugar nenhum; `grep '"released"'` no
+> código inteiro devolve **zero** ocorrências (o parser captura o verbo
+> genericamente em `ThenAssert.Verb`, ninguém consome). Não é implementável sem
+> antes DEFINIR a semântica no spec da linguagem — mesma natureza do "acesso
+> NEGADO" (L2.6) e de ISSUE-2. Documentar junto com L2.6, não implementar.
+
+<!-- ------------------------- Cadeia L2.3 ------------------------- -->
+
+> **L2.3 (original) — premissa literalmente certa, mas SUBDIMENSIONADA.** Texto
+> original: *"Auditar `emitSagaMock`: fazer `X` ser o retorno efetivo do alvo
+> mockado (hoje ignorado). A auditoria decide a forma (stub-função
+> substituível)."* A auditoria foi feita e confirma o sintoma —
+> `emitSagaMock` (`codegen/gentest.go`) constrói `X` e o descarta com `_ =
+> goExpr` — mas o fix não cabe em "trocar o retorno do stub", por TRÊS camadas
+> ausentes, todas verificadas:
+>
+> 1. **Não há canal de valor.** `Call<Nome>` é emitido como `func Call<Nome>(ctx,
+>    n <Notif>) error` (`codegen/decl_io.go:445`) — devolve só `error`. O
+>    próprio comentário de `emitSagaMock` já dizia: "o valor não influencia o
+>    fluxo de negócio nesta fase".
+> 2. **A forma que consumiria o valor não existe.** A única sintaxe do spec para
+>    capturar o retorno é `result = call PaymentRequest(...)` — que está no
+>    **exemplo de Saga do próprio spec** (§18.2, linha 1030). Reproduzido:
+>    passa o front-end e falha a geração com `codegen: QueryExpr.Op "call"
+>    (chamada síncrona via Adapter/Notification) não é suportado — fora do
+>    escopo de G1a`. Nunca foi implementada.
+> 3. **Não existe contrato de resposta de Adapter.** Nenhuma seção do spec
+>    define tipo de resposta para `Adapter`/`Notification`; o `PaymentResult(...)`
+>    do exemplo §22.3 **não é declarado em lugar nenhum** do spec (`grep` por
+>    `PaymentResult` acha só as 2 linhas do próprio exemplo).
+
+- [ ] **L2.3a** **(design/spec, sem código)** Definir o contrato de RESPOSTA de
+  Adapter. (REQ-53.3, camada 3 acima)
+  - Sem isto L2.3 não tem alvo: não há tipo que `X` possa assumir. Decidir e
+    registrar em `design.md` (e sinalizar se exige mudança no spec da
+    linguagem, como o `released`/acesso NEGADO): p.ex. `Adapter X returns
+    <Tipo>` declarado, ou resposta tipada pela própria `Notification`, ou
+    delimitar como item de front-end para um ciclo futuro.
+  - DoD: `design.md` atualizado com a decisão e o motivo; nenhuma mudança de
+    código.
+
+- [ ] **L2.3b** Implementar `result = call Adapter(...)` (§18.2).
+  (REQ-53.3, camada 2 — depende de L2.3a)
+  - `codegen/lower/builtins.go` (`QueryExprPure`, hoje erro explícito para
+    `Op == "call"`) + `codegen/decl_io.go` (`Call<Nome>` passa a devolver
+    `(<Tipo>, error)` conforme L2.3a). É a forma do EXEMPLO DE SAGA do spec —
+    fechar isto tem valor próprio, independente de teste.
+  - **Testes pareados:** um passo com `result = call X(...)` gera e compila; um
+    passo que só chama `X(...)` como statement (a forma de hoje) segue
+    byte-idêntico.
+  - DoD: escopo verde; wallet/shop sem regressão.
+
+- [ ] **L2.3c** `mock ... returns X` injeta X como retorno do stub.
+  (REQ-53.3, a task original — depende de L2.3b)
+  - `codegen/gentest.go` (`emitSagaMock`): trocar o `_ = goExpr` por um stub que
+    devolve `X` de verdade. A var de pacote substituível (`send<Nome>Fn`) já
+    existe desde H4 — só falta o canal de valor que L2.3b cria.
+  - **Testes pareados:** `X` que desvia o resultado do passo seguinte
+    (observável no teste gerado) e o caso sem mock (inalterado).
+  - DoD: escopo verde.
 
 - [ ] **L2.4** Shrinking do contra-exemplo de `property` (§22.5). (REQ-53.4,
   §design 3.2)
@@ -291,8 +426,9 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 |---|---|---|
 | REQ-52 (Wire unificado + pizzeria + CI) | L1.1, L1.2, L1.3a-L1.3f | ISSUE-7, ISSUE-12 |
 | REQ-53.1 (then state) | L2.1 | ISSUE-6 |
-| REQ-53.2 (saga emitted/released) | L2.2 | ISSUE-6 |
-| REQ-53.3 (mock returns X) | L2.3 | ISSUE-6 |
+| REQ-53.2 (saga `emitted`) | L2.2a, L2.2b, L2.2c, L2.2d | ISSUE-6 |
+| REQ-53.2 (saga `released`) | — **delimitado**, sem semântica no spec | ISSUE-6 |
+| REQ-53.3 (mock returns X) | L2.3a, L2.3b, L2.3c | ISSUE-6 |
 | REQ-53.4 (shrinking) | L2.4 | ISSUE-6 |
 | REQ-53.5 (rolledback/staging) | L2.5 | ISSUE-6 |
 | REQ-53.7 (acesso NEGADO — delimitado) | L2.6 | ISSUE-6 |
@@ -305,7 +441,12 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 L1.1 ──▶ L1.2 ──▶ L1.3a ──▶ L1.3b ──▶ L1.3c ──▶ L1.3d ──▶ L1.3e ──▶ L1.3f
         (Wire combinado → call site → ISSUE-12: typo, hasRole, builtins,
          read-side Kitchen, F5/G3 → prova final+CI)
-L2.1  L2.2  L2.3  L2.4  L2.5      (independentes entre si; cada um par NFR-4)
+L2.1 (done)  L2.4  L2.5           (independentes entre si; cada um par NFR-4)
+L2.2a ──▶ L2.2b ──▶ L2.2c ──▶ L2.2d   (emit em passo de Saga: erro claro →
+                                       design → implementação → asserção;
+                                       L2.2a é independente e imediata)
+L2.3a ──▶ L2.3b ──▶ L2.3c             (mock returns X: contrato de resposta →
+                                       "result = call ..." §18.2 → o mock)
 L2.6  (doc, independente)
 L3.1  L3.2                        (independentes; L3.2 é doc)
                         └─▶ L.fim
