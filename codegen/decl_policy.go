@@ -293,8 +293,51 @@ func EmitPolicy(pkg string, decl *ast.PolicyDecl, model *types.Model, tab *symbo
 // task.
 func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, sharedCollectionVars map[string]string) ([]byte, error) {
 	e := emit.New(pkg)
+	runtimeAlias, needsEmitDispatcher, outboxDBName, err := emitPolicyDeclsAndVars(e, decls, model, tab, prog, module, reg, adapters, sharedCollectionVars)
+	if err != nil {
+		return nil, err
+	}
+	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg, needsEmitDispatcher, outboxDBName); err != nil {
+		return nil, fmt.Errorf("codegen: Policy Wire: %w", err)
+	}
+	return e.Bytes()
+}
+
+// emitPoliciesCombinedBytes gera policies.go de um módulo MISTO (UseCase E
+// Policy no mesmo módulo, L1.1/REQ-52): idêntico a EmitPolicies até os vars de
+// pacote e os subscribers, mas a "func Wire" final é a COMBINADA
+// (emitCombinedWireFunc: "func Wire(u runtime.UnitOfWork, d runtime.Dispatcher)"
+// fazendo "uow = u" ALÉM de assinar as Policies), não a "func Wire(d
+// runtime.Dispatcher)" só-Policy — de forma que não colida com a Wire dos
+// UseCases (usecases.go, gerado SEM Wire próprio no caso misto via
+// emitUseCasesBytes(..., emitWire=false)). Chamada só por generateModuleFiles
+// no ramo misto; os casos puros seguem por EmitUseCases/EmitPolicies, sem
+// mudança de assinatura nem de saída.
+func emitPoliciesCombinedBytes(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, sharedCollectionVars map[string]string) ([]byte, error) {
+	e := emit.New(pkg)
+	runtimeAlias, needsEmitDispatcher, outboxDBName, err := emitPolicyDeclsAndVars(e, decls, model, tab, prog, module, reg, adapters, sharedCollectionVars)
+	if err != nil {
+		return nil, err
+	}
+	if err := emitCombinedWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg, needsEmitDispatcher, outboxDBName); err != nil {
+		return nil, fmt.Errorf("codegen: Wire combinado (UseCase+Policy): %w", err)
+	}
+	return e.Bytes()
+}
+
+// emitPolicyDeclsAndVars emite, sobre e (policies.go), TUDO que EmitPolicies
+// emite MENOS a "func Wire" final: os vars de pacote (runtime.Collection[T] de
+// list/count, policyDispatcher de emit) e o subscriber de cada PolicyDecl.
+// Devolve o alias do runtime, se algum corpo usa "emit" (needsEmitDispatcher) e
+// o Database do outbox durável do módulo (outboxDBName, "" no caso comum) — os
+// três que o CHAMADOR repassa ao emissor de Wire escolhido. Extraído de
+// EmitPolicies (L1.1/REQ-52) para ser reusado tanto pela Wire só-Policy
+// (EmitPolicies → emitPolicyWireFunc) quanto pela Wire combinada de um módulo
+// misto (emitPoliciesCombinedBytes → emitCombinedWireFunc): a saída até aqui é
+// idêntica nos dois casos, byte a byte igual ao que EmitPolicies sempre gerou.
+func emitPolicyDeclsAndVars(e *emit.Emitter, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, sharedCollectionVars map[string]string) (runtimeAlias string, needsEmitDispatcher bool, outboxDBName string, err error) {
 	ctxAlias := e.Import("context")
-	runtimeAlias := e.Import(RuntimeImportPath)
+	runtimeAlias = e.Import(RuntimeImportPath)
 
 	// list/count -> runtime.Collection[T] (H4, §22.4) e emit -> runtime.
 	// Dispatcher (H4, §22.4): ver a doc do arquivo. Ambos guardados — um
@@ -319,7 +362,7 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 			}
 		}
 	}
-	needsEmitDispatcher := false
+	needsEmitDispatcher = false
 	for _, decl := range decls {
 		if policyBodyHasEmit(decl.Execute) {
 			needsEmitDispatcher = true
@@ -340,8 +383,8 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 		if i > 0 {
 			e.Line("")
 		}
-		if err := emitPolicyDecl(e, decl, model, tab, module, reg, adapters, ctxAlias, runtimeAlias, typeToVar, needsEmitDispatcher); err != nil {
-			return nil, fmt.Errorf("codegen: Policy %s: %w", decl.Name, err)
+		if derr := emitPolicyDecl(e, decl, model, tab, module, reg, adapters, ctxAlias, runtimeAlias, typeToVar, needsEmitDispatcher); derr != nil {
+			return "", false, "", fmt.Errorf("codegen: Policy %s: %w", decl.Name, derr)
 		}
 	}
 
@@ -351,15 +394,10 @@ func EmitPolicies(pkg string, decls []*ast.PolicyDecl, model *types.Model, tab *
 	// declara nenhum Database real — o caminho de sempre, memoryOutbox,
 	// nenhuma mudança de Go emitido (NFR-21/23). Ver a doc de
 	// moduleOutboxDatabaseName (sql_wiring.go) e de emitPolicyWireFunc abaixo.
-	var outboxDBName string
 	if prog != nil {
 		outboxDBName = moduleOutboxDatabaseName(prog, module)
 	}
-	if err := emitPolicyWireFunc(e, runtimeAlias, decls, model, tab, prog, module, reg, needsEmitDispatcher, outboxDBName); err != nil {
-		return nil, fmt.Errorf("codegen: Policy Wire: %w", err)
-	}
-
-	return e.Bytes()
+	return runtimeAlias, needsEmitDispatcher, outboxDBName, nil
 }
 
 // emitPolicyDecl emite o subscriber Go de um único PolicyDecl: assinatura
@@ -570,9 +608,91 @@ func moduleNeedsDurableOutbox(tab *symbols.SymbolTable, prog *program.Program, m
 // próprio), nada disto é emitido: "o := runtime.NewOutbox(d)" continua var
 // LOCAL de Wire, Go byte-idêntico ao de antes desta task (NFR-21/23).
 func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, needsEmitDispatcher bool, outboxDBName string) error {
-	infos, err := resolvePolicyWireInfos(e, tab, prog, module, decls)
+	pre, err := emitPolicyWirePreamble(e, runtimeAlias, decls, tab, prog, module, outboxDBName)
 	if err != nil {
 		return err
+	}
+
+	e.Line("// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,")
+	e.Line("// para uma Policy cross-service via canal \"queue\" da topologia, no seu")
+	e.Line("// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —")
+	e.Line("// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,")
+	e.Line("// §design 3.11).")
+
+	var funcErr error
+	e.Block(fmt.Sprintf("func Wire(d %s.Dispatcher)", runtimeAlias), func() {
+		funcErr = emitPolicyWireBody(e, runtimeAlias, pre, model, tab, module, reg, needsEmitDispatcher)
+	})
+	if funcErr != nil {
+		return funcErr
+	}
+
+	if pre.needsDurableOutbox {
+		emitOutboxRelayAndCleanupStarters(e, runtimeAlias)
+	}
+	return nil
+}
+
+// emitCombinedWireFunc emite a "func Wire" ÚNICA de um módulo MISTO (UseCase E
+// Policy, L1.1/REQ-52.1/52.2, §design 2.2): "func Wire(u runtime.UnitOfWork, d
+// runtime.Dispatcher)" cujo corpo faz "uow = u" como PRIMEIRO statement (injeta
+// a var de pacote dos UseCases, o que emitUOWWireFunc fazia no seu Wire próprio,
+// suprimido no caso misto) e, em seguida, EXATAMENTE o mesmo corpo de
+// emitPolicyWireFunc (emitPolicyWireBody: policyDispatcher, canais, outbox,
+// o.Subscribe(...)). As declarações de pacote pré-Wire (vars de canal,
+// outboxStore/WireOutboxStore/o) e os starters de relay/cleanup são idênticos
+// ao caso só-Policy (emitPolicyWirePreamble/emitOutboxRelayAndCleanupStarters,
+// reusados) — a ÚNICA diferença em relação a emitPolicyWireFunc é a assinatura
+// (mais o param "u") e o "uow = u" prependido. Evita as duas "func Wire"
+// (usecases.go + policies.go) que colidiriam no mesmo pacote Go.
+func emitCombinedWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, model *types.Model, tab *symbols.SymbolTable, prog *program.Program, module string, reg *goname.VOOperatorRegistry, needsEmitDispatcher bool, outboxDBName string) error {
+	pre, err := emitPolicyWirePreamble(e, runtimeAlias, decls, tab, prog, module, outboxDBName)
+	if err != nil {
+		return err
+	}
+
+	e.Line("// Wire injeta a unit of work dos UseCases (\"uow = u\") E registra cada Policy")
+	e.Line("// deste pacote no runtime.Dispatcher/Outbox — um único ponto de entrada")
+	e.Line("// combinado para um módulo que declara UseCase E Policy (L1.1, REQ-52), sem")
+	e.Line("// duas \"func Wire\" colidindo no mesmo pacote. Chamada por cmd/<service>/")
+	e.Line("// main.go na inicialização (wiring in-memory, §design 3.11).")
+
+	var funcErr error
+	e.Block(fmt.Sprintf("func Wire(u %s.UnitOfWork, d %s.Dispatcher)", runtimeAlias, runtimeAlias), func() {
+		e.Line("uow = u")
+		funcErr = emitPolicyWireBody(e, runtimeAlias, pre, model, tab, module, reg, needsEmitDispatcher)
+	})
+	if funcErr != nil {
+		return funcErr
+	}
+
+	if pre.needsDurableOutbox {
+		emitOutboxRelayAndCleanupStarters(e, runtimeAlias)
+	}
+	return nil
+}
+
+// policyWirePreamble carrega o resultado de emitPolicyWirePreamble: os
+// policyWireInfo já resolvidos (cada Policy + seu canal, se cross-service) e a
+// decisão de outbox durável — reusados por emitPolicyWireFunc (só-Policy) e por
+// emitCombinedWireFunc (módulo misto), que compartilham corpo de Wire idêntico
+// (emitPolicyWireBody) e só diferem na assinatura da função.
+type policyWirePreamble struct {
+	infos              []policyWireInfo
+	durableInfos       []policyWireInfo
+	needsDurableOutbox bool
+}
+
+// emitPolicyWirePreamble emite as declarações de PACOTE que precisam vir ANTES
+// da "func Wire" (vars de runtime.ChannelTransport das Policy cross-service, e,
+// quando há outbox durável, outboxStore/WireOutboxStore/o) e devolve os infos
+// resolvidos para o corpo de Wire. Extraído de emitPolicyWireFunc (L1.1) sem
+// nenhuma mudança na ordem/no conteúdo emitido, para que o Wire combinado do
+// módulo misto reuse EXATAMENTE estas declarações.
+func emitPolicyWirePreamble(e *emit.Emitter, runtimeAlias string, decls []*ast.PolicyDecl, tab *symbols.SymbolTable, prog *program.Program, module string, outboxDBName string) (policyWirePreamble, error) {
+	infos, err := resolvePolicyWireInfos(e, tab, prog, module, decls)
+	if err != nil {
+		return policyWirePreamble{}, err
 	}
 
 	// durableInfos: as Policy AtLeastOnce com alvo "d" — o subconjunto que
@@ -621,62 +741,55 @@ func emitPolicyWireFunc(e *emit.Emitter, runtimeAlias string, decls []*ast.Polic
 		e.Line("")
 	}
 
-	e.Line("// Wire registra cada Policy deste pacote no runtime.Dispatcher/Outbox (ou,")
-	e.Line("// para uma Policy cross-service via canal \"queue\" da topologia, no seu")
-	e.Line("// próprio runtime.ChannelTransport, var de pacote acima — REQ-26.5) —")
-	e.Line("// chamada por cmd/<service>/main.go na inicialização (wiring in-memory,")
-	e.Line("// §design 3.11).")
+	return policyWirePreamble{infos: infos, durableInfos: durableInfos, needsDurableOutbox: needsDurableOutbox}, nil
+}
 
-	var outboxDeclared bool
-	var funcErr error
-	e.Block(fmt.Sprintf("func Wire(d %s.Dispatcher)", runtimeAlias), func() {
-		if needsEmitDispatcher {
-			// 1ª linha, SEMPRE (H4, §22.4, ver a doc do arquivo): nunca
-			// condicionada a canal/Delivery por Policy, ao contrário do
-			// resto deste corpo — "d" é sempre o runtime.Dispatcher que o
-			// chamador (cmd/<service>/main.go) já constrói para este
-			// parâmetro, então sempre disponível aqui.
-			e.Line("policyDispatcher = d")
-		}
-		for _, info := range infos {
-			decl := info.decl
-			target := "d"
-			if info.channel != nil {
-				candidates := []channelEventCandidate{{evtDecl: info.evt.decl, goPtrType: info.evt.goPtrType}}
-				if err := emitChannelTransportVar(e, info.varName, "=", info.channel, candidates, model, tab, module, reg, runtimeAlias, false, false); err != nil {
-					funcErr = fmt.Errorf("Policy %s: canal %s -> %s: %w", decl.Name, info.channel.From, info.channel.To, err)
-					return
-				}
-				target = info.varName
-			}
-
-			if policyIsAtLeastOnce(decl) {
-				if target == "d" {
-					if !outboxDeclared {
-						if needsDurableOutbox {
-							emitDurableOutboxConstruction(e, runtimeAlias, durableInfos)
-						} else {
-							e.Line("o := %s.NewOutbox(d)", runtimeAlias)
-						}
-						outboxDeclared = true
-					}
-					e.Line("o.Subscribe(%q, %s)", decl.On, decl.Name)
-				} else {
-					outboxVar := target + "Outbox"
-					e.Line("%s := %s.NewOutbox(%s)", outboxVar, runtimeAlias, target)
-					e.Line("%s.Subscribe(%q, %s)", outboxVar, decl.On, decl.Name)
-				}
-			} else {
-				e.Line("%s.Subscribe(%q, %s)", target, decl.On, decl.Name)
-			}
-		}
-	})
-	if funcErr != nil {
-		return funcErr
+// emitPolicyWireBody emite o CORPO de "func Wire" (posicionado dentro do bloco
+// da função pelo chamador): a 1ª linha "policyDispatcher = d" quando algum
+// corpo usa emit, e o d.Subscribe/o.Subscribe/<canal>Outbox.Subscribe por
+// Policy. Extraído de emitPolicyWireFunc (L1.1) sem mudança de conteúdo, para
+// ser reusado idêntico pela Wire combinada do módulo misto (que só prepende
+// "uow = u" antes desta chamada).
+func emitPolicyWireBody(e *emit.Emitter, runtimeAlias string, pre policyWirePreamble, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, needsEmitDispatcher bool) error {
+	if needsEmitDispatcher {
+		// 1ª linha, SEMPRE (H4, §22.4, ver a doc do arquivo): nunca
+		// condicionada a canal/Delivery por Policy, ao contrário do
+		// resto deste corpo — "d" é sempre o runtime.Dispatcher que o
+		// chamador (cmd/<service>/main.go) já constrói para este
+		// parâmetro, então sempre disponível aqui.
+		e.Line("policyDispatcher = d")
 	}
+	outboxDeclared := false
+	for _, info := range pre.infos {
+		decl := info.decl
+		target := "d"
+		if info.channel != nil {
+			candidates := []channelEventCandidate{{evtDecl: info.evt.decl, goPtrType: info.evt.goPtrType}}
+			if err := emitChannelTransportVar(e, info.varName, "=", info.channel, candidates, model, tab, module, reg, runtimeAlias, false, false); err != nil {
+				return fmt.Errorf("Policy %s: canal %s -> %s: %w", decl.Name, info.channel.From, info.channel.To, err)
+			}
+			target = info.varName
+		}
 
-	if needsDurableOutbox {
-		emitOutboxRelayAndCleanupStarters(e, runtimeAlias)
+		if policyIsAtLeastOnce(decl) {
+			if target == "d" {
+				if !outboxDeclared {
+					if pre.needsDurableOutbox {
+						emitDurableOutboxConstruction(e, runtimeAlias, pre.durableInfos)
+					} else {
+						e.Line("o := %s.NewOutbox(d)", runtimeAlias)
+					}
+					outboxDeclared = true
+				}
+				e.Line("o.Subscribe(%q, %s)", decl.On, decl.Name)
+			} else {
+				outboxVar := target + "Outbox"
+				e.Line("%s := %s.NewOutbox(%s)", outboxVar, runtimeAlias, target)
+				e.Line("%s.Subscribe(%q, %s)", outboxVar, decl.On, decl.Name)
+			}
+		} else {
+			e.Line("%s.Subscribe(%q, %s)", target, decl.On, decl.Name)
+		}
 	}
 	return nil
 }

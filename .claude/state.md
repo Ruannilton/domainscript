@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1 done) | L1.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2034,9 +2034,47 @@ alcançam: ISSUE-7 (Wire unificado p/ UseCase+Policy no mesmo módulo — desblo
 o `pizzeria`, remove-o do `KNOWN_UNGENERATABLE` do CI), ISSUE-6 (semântica plena
 dos testes gerados — fatia tratável de 5 itens; acesso NEGADO delimitado por
 exigir nova gramática) e ISSUE-8 (refino §22.7 em `sema` + reclassificação de
-§4.4/§25 como "aguardando spec"). Três fases independentes (L1/L2/L3). **Spec
-criada, execução não iniciada** — próxima task **L1.1** (emissão do `Wire`
-combinado no módulo misto). Ver `tasks.md` para o mapa de dependências.
+§4.4/§25 como "aguardando spec"). Três fases independentes (L1/L2/L3). Ver
+`tasks.md` para o mapa de dependências.
+
+Concluído: **L1.1** (emissão do `Wire` combinado no módulo misto,
+REQ-52.1/52.2/52.3, §design 2.2). Raiz: `generateModuleFiles`
+(`codegen/codegen.go`) recusava de propósito um módulo com UseCase E Policy,
+porque `emitUOWWireFunc` (usecases.go → `func Wire(u UnitOfWork)`) e
+`emitPolicyWireFunc` (policies.go → `func Wire(d Dispatcher)`) emitiam duas
+`func Wire` no mesmo pacote Go (colisão "redeclared in this block"). Estratégia
+de extração escolhida — **variantes internas, sem mudar a assinatura pública de
+`EmitUseCases`/`EmitPolicies`** (25 call sites de teste seguem intactos, e os
+casos puros byte-idênticos por construção, pois seguem literalmente o mesmo
+caminho de antes): (1) `EmitUseCases` passou a delegar a `emitUseCasesBytes(...,
+emitWire bool)`, que só pula a chamada de `emitUOWWireFunc` quando `emitWire=false`
+(caso misto); (2) `EmitPolicies` foi fatiada em `emitPolicyDeclsAndVars` (tudo
+menos a `func Wire`, reusável) + a Wire; `emitPolicyWireFunc` foi decomposta em
+`emitPolicyWirePreamble` (declarações de pacote pré-Wire) + `emitPolicyWireBody`
+(corpo do Wire, posicionado dentro do bloco pelo chamador), ambos reusados
+idênticos; (3) o novo `emitCombinedWireFunc` reusa preamble+body e só troca a
+assinatura para `func Wire(u UnitOfWork, d Dispatcher)` prependendo `uow = u`;
+(4) o novo `emitPoliciesCombinedBytes` monta policies.go do módulo misto
+(decls/vars + Wire combinado). `generateModuleFiles` removeu a guarda, calcula
+`mixed := hasUseCases && hasPolicies` e roteia: usecases.go via
+`emitUseCasesBytes(..., !mixed)` e policies.go via `emitPoliciesCombinedBytes`
+quando misto (senão os emissores públicos de sempre). O call site em
+`generateCmdMainFile` (`codegen.go`, ~1343-1352) **já** montava `Wire(uow,
+dispatcher)` corretamente para o módulo misto (append de `"uow"` quando
+`hasUseCases`, `"dispatcher"` quando `hasPolicies`) — nada a mudar ali nesta
+task (é a próxima, L1.2, que basicamente escreve o teste que prova isso).
+Testes (par NFR-4, `codegen/mixed_wire_test.go`, novo):
+`TestGenerateMixedModuleWiresCombinedWireAndCompiles` (fixture sintética Kitchen
+UseCase+Policy local → gera, exatamente 1 `func Wire(` no pacote, assinatura
+combinada, `uow = u`, `kitchen.Wire(uow, dispatcher)` em main.go,
+`gentest.SmokeCompile` verde) +
+`TestGeneratePureUseCaseModuleKeepsSingleArgWire` /
+`TestGeneratePurePolicyModuleKeepsSingleArgWire` (guardas de byte-identidade dos
+casos puros — Wire single-arg preservada). Verificação: `go build ./...`,
+`go vet ./codegen/...`, `gofmt -l` limpos; `go test ./codegen/... ./driver/...`
+verde (232s, zero regressões — wallet/shop golden/e2e intactos). **Próxima task:
+L1.2** (call site em `main.go` para o módulo misto — provavelmente só o teste,
+pois o call site já funciona por construção).
 
 ## Issues em aberto
 

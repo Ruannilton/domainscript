@@ -132,6 +132,23 @@ func EmitUseCase(pkg string, decl *ast.UseCaseDecl, aggregates map[string]*ast.A
 // precisa (usecase2PCPlan), preservando byte a byte a saída de módulos sem
 // UseCase cross-database (wallet, shop).
 func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl) ([]byte, error) {
+	return emitUseCasesBytes(pkg, decls, aggregates, prog, model, tab, module, reg, adapters, true)
+}
+
+// emitUseCasesBytes é o corpo real de EmitUseCases. O parâmetro emitWire
+// controla se a "func Wire(u runtime.UnitOfWork)" própria dos UseCases é
+// emitida neste arquivo (usecases.go), L1.1/REQ-52.1/52.2:
+//
+//   - true — caso PURO (o módulo só tem UseCase, nenhuma Policy): byte-idêntico
+//     ao que EmitUseCases sempre gerou (wallet/shop). É o único chamador
+//     externo via EmitUseCases/EmitUseCase (API pública inalterada).
+//   - false — módulo MISTO (UseCase E Policy no mesmo módulo): usecases.go só
+//     declara "var uow" (sem Wire próprio); o wiring vem de um único Wire
+//     combinado emitido em policies.go (emitCombinedWireFunc, decl_policy.go),
+//     que faz "uow = u" ALÉM de assinar as Policies — evita duas "func Wire"
+//     colidindo no mesmo pacote Go, a razão da guarda que generateModuleFiles
+//     mantinha antes desta task.
+func emitUseCasesBytes(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*ast.AggregateDecl, prog *program.Program, model *types.Model, tab *symbols.SymbolTable, module string, reg *goname.VOOperatorRegistry, adapters map[string]*ast.AdapterDecl, emitWire bool) ([]byte, error) {
 	e := emit.New(pkg)
 	ctxAlias := e.Import("context")
 	runtimeAlias := e.Import(RuntimeImportPath)
@@ -140,7 +157,9 @@ func EmitUseCases(pkg string, decls []*ast.UseCaseDecl, aggregates map[string]*a
 	e.Line("// UseCases deste pacote — só a declaração de pacote; a instância de verdade")
 	e.Line("// vem do wiring (E9.1, Wire abaixo).")
 	e.Line("var uow %s.UnitOfWork", runtimeAlias)
-	emitUOWWireFunc(e, runtimeAlias)
+	if emitWire {
+		emitUOWWireFunc(e, runtimeAlias)
+	}
 
 	anyNeeds2PC := false
 	for _, decl := range decls {
