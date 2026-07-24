@@ -54,7 +54,7 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 > par de testes; ver ISSUE-12 (`.claude/issues.md`) para a análise de raiz
 > completa de cada ponto.
 
-- [ ] **L1.3a** Corrigir o typo do fixture: `items List<TicketItem>` →
+- [x] **L1.3a** Corrigir o typo do fixture: `items List<TicketItem>` →
   `items AppendList<TicketItem>`. (ISSUE-12 item 3)
   - `docs/examples/pizzeria/kitchen/domain.ds`: `.add(...)` só é mapeado
     (`codegen/goname/types.go:111`) para um campo `AppendList<T>`; `List<T>`

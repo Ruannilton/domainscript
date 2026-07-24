@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2 done; tasks.md gained L1.3a-L1.3f to resolve ISSUE-12 before the final pizzeria proof) | L1.3a |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a done; tasks.md gained L1.3a-L1.3f to resolve ISSUE-12 before the final pizzeria proof) | L1.3b |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2137,6 +2137,36 @@ arquitetural central, exige desenho antes de implementar), e L1.3f (a prova
 final com `pizzeria` + limpeza do CI, antiga L1.3, só depois dos cinco
 fecharem). Tabela de rastreabilidade e mapa de dependências do `tasks.md`
 atualizados de acordo. **Próxima task: L1.3a.**
+
+Concluído: **L1.3a** — o typo do fixture confirmado e corrigido:
+`docs/examples/pizzeria/kitchen/domain.ds`, `state { items List<TicketItem>
+}` (linha 79) virou `items AppendList<TicketItem>`, o mesmo padrão que
+`wallet/domain.ds:88` (`entries AppendList<StatementEntry>`) já usa — só
+`AppendList<T>` mapeia `.add(...)` (`codegen/goname/types.go:111`), e
+`Apply TicketItemAdded { state.items.add(event.item) }`
+(`kitchen/domain.ds:112`) precisa exatamente disso. Varredura de `items` em
+toda a árvore `docs/examples/pizzeria/` confirmou só três outras ocorrências,
+nenhuma afetada: `kitchen/read.ds:6` (`View KitchenTicketVW { items
+List<TicketItem> ... }`) é um campo de View populado via `Query
+GetBoardTickets` (`... as KitchenTicketVW`), e List<T> comum continua uma
+projeção de leitura válida para um Aggregate field agora `AppendList<T>` — o
+front-end aceitou sem diagnóstico novo, confirmando empiricamente que
+`AppendList<T>` é superset compatível de leitura do `List<T>` da View; as
+outras duas (`sales/application.ds:55,65,69`, `cmd.items List<OrderItemRequest>`)
+são um campo de Command completamente não relacionado (módulo Sales, tipo
+diferente), fora do escopo do typo. Verificação: `go build -o /tmp/dsc-check
+./cmd/dsc && /tmp/dsc-check docs/examples/pizzeria` — exit 0, sem
+diagnósticos (front-end continua validando `pizzeria` limpo, mesmo padrão do
+README); `go build ./...` limpo; `gofmt -l .` sem saída (nenhum `.go` tocado
+— fix só de fixture, sem par de teste de codegen novo, conforme o DoD da
+task). Sanity check opcional (não exigido pelo DoD): `dsc gen
+docs/examples/pizzeria -o /tmp/pizzeria-gen-test` falha agora com `Handle
+Create: access: codegen: CallExpr com Fn *ast.MemberExpr não suportado em
+Lowerer.Expr` — exatamente o bloqueio item 1 de ISSUE-12
+(`caller.hasRole("system_sales")` isolado em `kitchen/domain.ds:90-91`),
+confirmando que a sequência de erros documentada em ISSUE-12 se mantém
+íntegra e que o próximo bloqueio na fila é mesmo o escopo de L1.3b.
+**Próxima task: L1.3b.**
 
 ## Issues em aberto
 

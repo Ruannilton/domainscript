@@ -76,7 +76,7 @@ Aggregate KitchenTicket {
     state {
         id        TicketId
         orderRef  ExternalOrderRef
-        items     List<TicketItem>
+        items     AppendList<TicketItem>
         status    TicketStatus
         cookId    CookId
         createdAt CreatedAt
