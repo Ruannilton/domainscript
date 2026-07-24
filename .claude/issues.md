@@ -492,6 +492,38 @@ Cada issue é um bloco novo, nesta forma:
        correlacionar o VO a um campo `AppendList<VO>` de um ÚNICO Aggregate
        conhecido — listar o PRÓPRIO Aggregate (`KitchenTicket`) diretamente,
        sem provider real por trás, não é uma forma coberta.
+  - **CORREÇÃO (achado durante a tentativa de L1.3d — a premissa acima do
+    item 4 estava ERRADA):** a task L1.3d tentou a rota (b) — dar a Kitchen
+    um provider real (`"sqlite"`) — presumindo que o provider fosse a única
+    diferença entre a Query de Kitchen (falha) e a de Sales (funciona).
+    **Não é.** Trocar o provider de Kitchen NÃO mudou o erro (confirmado
+    empiricamente, inclusive numa fixture mínima isolada com `"sqlite"` E
+    `"postgres"`). A causa raiz de verdade, lida em `codegen/decl_query.go`
+    (`tryEmitListVO`, ~linha 461): `if _, ok :=
+    qc.env.TypeOfName(voName).(*types.VOType); !ok { return false, nil }` —
+    a função SÓ reconhece `list <nome>` quando `<nome>` resolve a um
+    `*types.VOType` correlacionado via campo `AppendList<VO>` de um
+    Aggregate conhecido (o padrão de `wallet`, `list StatementEntry`). Um
+    NOME DE AGGREGATE (`KitchenTicket`, `MenuItem`) resolve a
+    `*types.ShapeType`, não `*types.VOType` — a checagem falha SEMPRE,
+    **independente de provider**. É um gap de codegen genuíno e
+    provider-agnóstico (a forma "`list <Aggregate> ... as View`" nunca foi
+    implementada), não um problema do `pizzeria`. **Achado ainda mais
+    importante:** `sales/read.ds`'s `GetAvailableMenu`/`GetActiveOrders` têm
+    a MESMA forma (`list MenuItem`/`list Order`, o próprio Aggregate, sem
+    correlação via `AppendList`) e NUNCA foram de fato exercitadas — a
+    geração do `pizzeria` sempre falha em Kitchen primeiro (ordem
+    alfabética de módulos), então ninguém tinha confirmado que a Query de
+    Sales realmente funciona. É plausível que ela tropece no MESMO erro se
+    a geração algum dia chegar lá. **Decisão do usuário (não perseguir agora):**
+    em vez de (a) estender `tryEmitListVO`/`EmitQuery` para suportar `list
+    <Aggregate>` de verdade (a rota antes rejeitada como grande demais, mas
+    que parece inevitável), ou (b') reescrever as Queries de Kitchen/Sales
+    para a forma já suportada, o usuário optou por **parar aqui, registrar
+    e seguir para as Fases L2/L3** (independentes de L1) em vez de perseguir
+    o fechamento completo de `pizzeria` agora. L1.3d/L1.3e/L1.3f ficam
+    **BLOQUEADAS**, sem tentativa adicional neste ciclo — ver
+    `.claude/state.md` para o registro completo da decisão.
   - **Conclusão:** o `pizzeria` está bloqueado por PELO MENOS CINCO defeitos
     independentes (F5/G3 + os quatro acima), nenhum deles dentro do escopo de
     REQ-52 (Wire unificado) — REQ-52.7 pede exatamente isto: registrar como
