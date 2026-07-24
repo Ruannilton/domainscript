@@ -72,7 +72,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
       sentinela).
   - DoD: `go test ./codegen/ -run <novos>` verde; `go build ./...` limpo.
 
-- [ ] **K2.2** `redisQueryCache.Coalesce`: o **mesmo** endurecimento. (REQ-50.5,
+- [x] **K2.2** `redisQueryCache.Coalesce`: o **mesmo** endurecimento. (REQ-50.5,
   §design 3.2/3.3)
   - `codegen/redisrt/cache.go.txt`: hoje tem só o `defer` de limpeza (PR #26);
     adicionar a flag `completed` + `if !completed { fl.err = <sentinela> }` antes
