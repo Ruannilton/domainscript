@@ -18,7 +18,7 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 
 ## Fase L1 — Wire unificado: UseCase + Policy no mesmo módulo (ISSUE-7, REQ-52)
 
-- [ ] **L1.1** Emissão do `Wire` combinado para o módulo misto. (REQ-52.1/52.2/52.3,
+- [x] **L1.1** Emissão do `Wire` combinado para o módulo misto. (REQ-52.1/52.2/52.3,
   §design 2.2)
   - `codegen/codegen.go`: remover o guarda `if hasUseCases && hasPolicies`
     (linha ~502); rotear o caso misto para um `emitCombinedWireFunc` (novo) que

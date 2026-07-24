@@ -474,13 +474,13 @@ type moduleMarks struct {
 // por categoria não-vazia — ver a doc de Generate) e devolve as moduleMarks
 // da categorização (ver a doc de moduleMarks).
 //
-// Um módulo com UseCase E Policy é recusado com um erro de geração claro:
-// tanto emitUOWWireFunc (decl_usecase.go) quanto emitPolicyWireFunc
-// (decl_policy.go) emitem "func Wire(...)" — coexistindo no mesmo pacote Go,
-// colidiriam (erro de compilação). Nem o wallet nem o shop (as duas fixtures
-// reais de hoje) combinam UseCase e Policy no mesmo módulo; combinar as duas
-// infra numa única Wire fica para quando um exemplo real precisar disso (ver
-// a doc de decl_policy.go). Worker NÃO reproduz essa colisão mesmo quando
+// Um módulo com UseCase E Policy (o caso "mixed", L1.1/REQ-52) gera um único
+// Wire COMBINADO: usecases.go é emitido SEM seu Wire próprio
+// (emitUseCasesBytes(..., emitWire=false)) e policies.go emite "func Wire(u
+// UnitOfWork, d Dispatcher)" (emitPoliciesCombinedBytes → emitCombinedWireFunc)
+// que injeta a uow dos UseCases E assina as Policies — antes desta task os dois
+// emissores produziam duas "func Wire" no mesmo pacote Go (colisão), o que
+// justificava a guarda de geração que existia aqui. Worker NÃO reproduz essa colisão mesmo quando
 // coexiste com UseCase e/ou Policy no mesmo módulo: seu ponto de entrada é
 // "StartWorkers", um nome próprio que nunca colide com "Wire" (ver a doc de
 // decl_worker.go) — por isso não há guarda equivalente para Worker aqui.
@@ -499,9 +499,16 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 	hasUseCases := len(b.usecases) > 0
 	hasPolicies := len(b.policies) > 0
 	hasWorkers := len(b.workers) > 0
-	if hasUseCases && hasPolicies {
-		return nil, moduleMarks{}, fmt.Errorf("módulo %s: UseCase e Policy no mesmo módulo ainda não têm wiring combinado suportado (cada um gera seu próprio Wire — colidiriam); ver a doc de decl_policy.go", moduleName)
-	}
+	// mixed (L1.1, REQ-52): um módulo que declara UseCase E Policy ao mesmo
+	// tempo. Antes desta task era recusado com um erro de geração, porque
+	// emitUOWWireFunc (usecases.go) e emitPolicyWireFunc (policies.go) emitiam
+	// duas "func Wire" no mesmo pacote Go (colisão). Agora usecases.go é gerado
+	// SEM seu Wire próprio (emitUseCasesBytes(..., emitWire=false)) e policies.go
+	// emite um único Wire COMBINADO ("func Wire(u UnitOfWork, d Dispatcher)",
+	// emitPoliciesCombinedBytes → emitCombinedWireFunc) que injeta a uow dos
+	// UseCases e assina as Policies. Casos PUROS (só UseCase / só Policy) seguem
+	// por EmitUseCases/EmitPolicies, byte-idênticos.
+	mixed := hasUseCases && hasPolicies
 
 	reg := goname.NewVOOperatorRegistry()
 	for _, vo := range b.vos {
@@ -613,7 +620,10 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 				hasIdempotency = true
 			}
 		}
-		content, err := EmitUseCases(pkg, repaired, aggregates, prog, model, tab, moduleName, reg, adapterByName)
+		// No caso misto (L1.1), usecases.go NÃO emite seu Wire próprio — o
+		// wiring vem do Wire combinado em policies.go (ver a doc de "mixed"
+		// acima). No caso puro (só UseCase), byte-idêntico ao de sempre.
+		content, err := emitUseCasesBytes(pkg, repaired, aggregates, prog, model, tab, moduleName, reg, adapterByName, !mixed)
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("usecases.go: %w", err)
 		}
@@ -697,7 +707,18 @@ func generateModuleFiles(b moduleBucket, moduleName string, model *types.Model, 
 
 	var outboxDatabase string
 	if hasPolicies {
-		content, err := EmitPolicies(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName, sharedCollectionVars)
+		// No caso misto (L1.1), policies.go emite o Wire COMBINADO ("func
+		// Wire(u UnitOfWork, d Dispatcher)", emitPoliciesCombinedBytes) em vez
+		// da Wire só-Policy — de forma que não colida com a Wire dos UseCases
+		// (usecases.go, gerado sem Wire próprio acima). No caso puro (só
+		// Policy), EmitPolicies gera o mesmo Go de sempre, byte-idêntico.
+		var content []byte
+		var err error
+		if mixed {
+			content, err = emitPoliciesCombinedBytes(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName, sharedCollectionVars)
+		} else {
+			content, err = EmitPolicies(pkg, b.policies, model, tab, prog, moduleName, reg, adapterByName, sharedCollectionVars)
+		}
 		if err != nil {
 			return nil, moduleMarks{}, fmt.Errorf("policies.go: %w", err)
 		}
