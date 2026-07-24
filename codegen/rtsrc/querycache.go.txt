@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -166,6 +167,15 @@ func (c *memoryQueryCache) InvalidateAll() {
 	c.entries = make(map[string]cacheEntry)
 }
 
+// errCoalescedPanic is the sentinel error every waiter of a panicked
+// Coalesce leader gets (ISSUE-10/REQ-50): never a bare (nil, nil). The
+// generated cached-Query wrapper (codegen/decl_query_cache.go) does
+// result.(T) on a successful Coalesce return — a waiter that got (nil, nil)
+// because the leader panicked mid-assignment would panic AGAIN on that type
+// assertion for value types. A non-nil error short-circuits the wrapper
+// before the assertion ever runs.
+var errCoalescedPanic = errors.New("coalesced function panicked")
+
 // Coalesce implements QueryCache.
 func (c *memoryQueryCache) Coalesce(key string, fn func() (any, error)) (any, error) {
 	c.mu.Lock()
@@ -178,13 +188,29 @@ func (c *memoryQueryCache) Coalesce(key string, fn func() (any, error)) (any, er
 	c.flights[key] = fl
 	c.mu.Unlock()
 
+	// defer + completed flag (ISSUE-10/REQ-50; mirrors redisQueryCache.Coalesce
+	// in codegen/redisrt/cache.go.txt, which gets the SAME hardening): if fn()
+	// panics, this defer still runs, so (a) the key is evicted from c.flights
+	// (the SAME key can coalesce again later) and (b) every waiter blocked on
+	// "<-fl.done" is released instead of leaking forever. completed==false at
+	// that point means fn() never finished, so fl.err is forced to the
+	// sentinel above instead of staying nil — see the sentinel's own doc for
+	// why a plain nil isn't safe here. No recover(): the leader's panic keeps
+	// propagating up the stack exactly as before; this defer only protects
+	// the WAITERS.
+	completed := false
+	defer func() {
+		c.mu.Lock()
+		delete(c.flights, key)
+		c.mu.Unlock()
+		if !completed {
+			fl.err = errCoalescedPanic
+		}
+		close(fl.done)
+	}()
+
 	fl.value, fl.err = fn()
-	close(fl.done)
-
-	c.mu.Lock()
-	delete(c.flights, key)
-	c.mu.Unlock()
-
+	completed = true
 	return fl.value, fl.err
 }
 

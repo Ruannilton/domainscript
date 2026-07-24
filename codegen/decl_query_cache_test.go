@@ -709,9 +709,205 @@ func TestNoCacheBypassesReadButRepopulates(t *testing.T) {
 }
 `
 
+// coalescePanicSentinelTest is appended to cacheBehaviorTest — same embedded
+// generated-project file, same "domainscript/generated/runtime" import — but
+// exercises runtime.QueryCache.Coalesce DIRECTLY (runtime.NewMemoryQueryCache
+// (), no cached Query wrapper involved): this is testing the low-level
+// primitive from ISSUE-10/REQ-50 (memoryQueryCache.Coalesce panic-safety),
+// not Query-cache wiring behavior, so it skips all the GetWidget/countingStore
+// machinery above.
+const coalescePanicSentinelTest = `
+// TestCoalescePanicPropagatesToLeaderAndReleasesWaiterWithError proves REQ-50.1
+// -50.3: a panic inside Coalesce's fn (a) keeps propagating to whoever CALLED
+// Coalesce (no recover inside Coalesce itself) and (b) still releases every
+// OTHER goroutine waiting on the same in-flight key, handing them a non-nil
+// error instead of leaving them blocked forever (the pre-fix goroutine leak)
+// or waking them with (nil, nil) (which would panic a second time in the
+// generated wrapper's result.(T) — see querycache.go.txt's errCoalescedPanic
+// doc). It also proves REQ-50.2: the SAME key coalesces again afterwards —
+// the key isn't left stuck in c.flights forever.
+func TestCoalescePanicPropagatesToLeaderAndReleasesWaiterWithError(t *testing.T) {
+	cache := runtime.NewMemoryQueryCache()
+	key := "panic-key"
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan struct{})
+
+	go func() {
+		defer close(leaderDone)
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("esperava que o pânico do fn do líder propagasse para quem chamou Coalesce, não propagou")
+			}
+		}()
+		cache.Coalesce(key, func() (any, error) {
+			close(entered)
+			<-release
+			panic("boom: fn do líder panicou de propósito")
+		})
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("o líder nunca entrou em fn a tempo")
+	}
+
+	waiterErr := make(chan error, 1)
+	go func() {
+		_, err := cache.Coalesce(key, func() (any, error) {
+			return "should-not-run", nil
+		})
+		waiterErr <- err
+	}()
+
+	// Dá tempo do waiter chegar no Coalesce e ficar parado no voo em
+	// progresso (mesmo idioma do gate/entered de countingStore acima) antes
+	// de liberar o líder para panicar.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	select {
+	case err := <-waiterErr:
+		if err == nil {
+			t.Fatal("esperava um erro NÃO-nil ao acordar de um voo cujo líder panicou (nunca (nil, nil)), got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("o waiter travou para sempre após o pânico do líder (vazamento de goroutine que REQ-50.2 deveria evitar)")
+	}
+
+	<-leaderDone
+
+	// A MESMA key coalesce de NOVO depois do pânico — não ficou presa em
+	// c.flights para sempre (REQ-50.2).
+	got, err := cache.Coalesce(key, func() (any, error) {
+		return "fresh-after-panic", nil
+	})
+	if err != nil {
+		t.Fatalf("Coalesce da mesma key após o pânico: erro inesperado: %v", err)
+	}
+	if got != "fresh-after-panic" {
+		t.Fatalf("Coalesce da mesma key após o pânico: got %v, want fresh-after-panic", got)
+	}
+}
+
+// TestCoalesceSingleFlightSameResultNonRegression prova a não-regressão do
+// caminho feliz (REQ-50, par positivo): N goroutines coalescendo a MESMA key
+// veem o MESMO resultado e fn roda exatamente 1 vez — mesmo idioma de
+// TestStampedeProtectionSingleFlight acima, mas direto contra
+// runtime.NewMemoryQueryCache(), sem passar por uma Query gerada.
+func TestCoalesceSingleFlightSameResultNonRegression(t *testing.T) {
+	cache := runtime.NewMemoryQueryCache()
+	key := "single-flight-key"
+	var calls int64
+
+	const n = 8
+	results := make(chan any, n)
+	errs := make(chan error, n)
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	var once sync.Once
+
+	for i := 0; i < n; i++ {
+		go func() {
+			v, err := cache.Coalesce(key, func() (any, error) {
+				atomic.AddInt64(&calls, 1)
+				once.Do(func() {
+					close(entered)
+					<-gate
+				})
+				return "same-result", nil
+			})
+			results <- v
+			errs <- err
+		}()
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nenhuma goroutine entrou em fn a tempo")
+	}
+	// Dá tempo das outras N-1 goroutines chamarem Coalesce e ficarem
+	// esperando o mesmo voo em progresso antes de liberar.
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("goroutine %d: erro inesperado: %v", i, err)
+		}
+		if v := <-results; v != "same-result" {
+			t.Fatalf("goroutine %d: got %v, want same-result", i, v)
+		}
+	}
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("esperava fn rodar exatamente 1 vez apesar de %d chamadas concorrentes, got %d", n, got)
+	}
+}
+
+// TestCoalesceBusinessErrorPropagatesNotSentinel prova o outro lado de
+// REQ-50.4: um erro de NEGÓCIO devolvido por fn (não um pânico) propaga esse
+// MESMO erro a todos os esperadores — o sentinela de pânico
+// (errCoalescedPanic, não-exportado em runtime) nunca deveria aparecer aqui,
+// já que completed=true roda antes do defer decidir se sobrescreve fl.err.
+func TestCoalesceBusinessErrorPropagatesNotSentinel(t *testing.T) {
+	cache := runtime.NewMemoryQueryCache()
+	key := "business-error-key"
+	bizErr := errors.New("business error de teste")
+
+	const n = 4
+	errs := make(chan error, n)
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	var once sync.Once
+
+	for i := 0; i < n; i++ {
+		go func() {
+			_, err := cache.Coalesce(key, func() (any, error) {
+				once.Do(func() {
+					close(entered)
+					<-gate
+				})
+				return nil, bizErr
+			})
+			errs <- err
+		}()
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nenhuma goroutine entrou em fn a tempo")
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+
+	for i := 0; i < n; i++ {
+		err := <-errs
+		if !errors.Is(err, bizErr) {
+			t.Fatalf("goroutine %d: esperava o erro de negócio %v propagado a todos os esperadores (não o sentinela de pânico), got %v", i, bizErr, err)
+		}
+	}
+}
+`
+
 func TestQueryCacheBehavior(t *testing.T) {
 	prog := parseCacheFixture(t)
 	files := cacheSmokeFiles(t, prog)
 	files[filepath.Join("widgets", "cache_behavior_test.go")] = []byte(cacheBehaviorTest)
+	files[filepath.Join("widgets", "coalesce_panic_sentinel_test.go")] = []byte(
+		"package widgets\n\n" +
+			`import (
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"domainscript/generated/runtime"
+)
+` + coalescePanicSentinelTest)
 	runGeneratedTests(t, files)
 }

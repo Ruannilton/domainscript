@@ -56,7 +56,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 ## Fase K2 — Runtime: `Coalesce` à prova de pânico (ISSUE-10, REQ-50)
 
-- [ ] **K2.1** `memoryQueryCache.Coalesce`: flag + erro-sentinela aos esperadores.
+- [x] **K2.1** `memoryQueryCache.Coalesce`: flag + erro-sentinela aos esperadores.
   (REQ-50.1/50.2/50.3/50.4, §design 3.2)
   - `codegen/rtsrc/querycache.go.txt`: `var errCoalescedPanic = errors.New(...)`
     de pacote; instalar, antes de `fn()`, o `defer` que faz `delete(c.flights,
