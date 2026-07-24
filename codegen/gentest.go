@@ -303,6 +303,11 @@ func scanTestNeeds(decls []*ast.TestDecl, aggregates map[string]*ast.AggregateDe
 			if len(sc.Then.Events) > 0 {
 				needsReflect = true
 			}
+			// "then state { ... }" (§22.1, REQ-53.1) compara cada campo por
+			// reflect.DeepEqual — ver emitAggregateThenState.
+			if sc.Then.State != nil {
+				needsReflect = true
+			}
 			for _, a := range sc.Then.Asserts {
 				if a.Error != "" {
 					needsErrors = true
@@ -401,7 +406,54 @@ func emitAggregateScenarioBody(e *emit.Emitter, sl *lower.StmtLowerer, sc *ast.S
 	allArgs := append([]string{callerGo}, argsGo...)
 	e.Line("events, err := %s.%s(%s)", receiver, h.Name, strings.Join(allArgs, ", "))
 
+	if sc.Then.State != nil {
+		return emitAggregateThenState(e, sl, sc.Then.State, agg, receiver, reflectAlias)
+	}
 	return emitAggregateThen(e, sl, sc.Then, errorsAlias, reflectAlias)
+}
+
+// emitAggregateThenState emite a asserção "then state { ... }" (§22.1,
+// REQ-53.1): o estado esperado do Aggregate DEPOIS do when.
+//
+// Uma chamada de Handle NUNCA muda o state por si só — Apply é um método
+// separado (ver emitHandle/emitApply em decl_aggregate.go: o corpo de um
+// Handle só valida e faz "emit", quem muta o state é apply<Evento>, invocado
+// pelo Load EventSourced / pela UnitOfWork). Por isso o "replay" é
+// obrigatório aqui: reaplicamos ao receiver, na ordem, cada evento devolvido
+// pelo Handle, reusando emitApplyDispatch (gentest_property.go) — a MESMA
+// correspondência Event->apply<Event> que Load<Nome> EventSourced e §22.5 já
+// geram, nunca uma segunda implementação (NFR-15). Só depois disso os campos
+// declarados são comparados.
+//
+// A comparação é por reflect.DeepEqual (não "!="): um campo de state pode ser
+// um VO cujo tipo Go não é comparável (slice/map dentro do struct), caso em
+// que "!=" nem compilaria — o mesmo motivo pelo qual emitAggregateThen compara
+// eventos assim.
+//
+// (A mensagem do "default" do switch de replay diz "gerador de property
+// (§22.5)" — emitApplyDispatch é compartilhado com §22.5 e seu texto é
+// mantido intocado de propósito, para que o wallet/shop gerados sigam
+// byte-idênticos; o caso é inalcançável na prática, todo evento emitido tem
+// Apply, REQ-5.)
+func emitAggregateThenState(e *emit.Emitter, sl *lower.StmtLowerer, obj *ast.ObjectExpr, agg *ast.AggregateDecl, receiver, reflectAlias string) error {
+	e.Block("if err != nil", func() {
+		e.Line("t.Fatalf(%q, err)", "esperava sucesso, erro inesperado: %v")
+	})
+	emitApplyDispatch(e, agg, receiver, "events")
+	for i, entry := range obj.Entries {
+		goExpr, hoisted, err := sl.ExprHoisted(entry.Value)
+		if err != nil {
+			return fmt.Errorf("then state.%s: %w", entry.Key, err)
+		}
+		emitLines(e, hoisted)
+		field := goname.ExportField(entry.Key)
+		wantVar := fmt.Sprintf("wantState%d", i)
+		e.Line("%s := %s", wantVar, goExpr)
+		e.Block(fmt.Sprintf("if !%s.DeepEqual(%s.state.%s, %s)", reflectAlias, receiver, field, wantVar), func() {
+			e.Line("t.Errorf(%q, %s.state.%s, %s)", "state."+entry.Key+": got %+v, want %+v", receiver, field, wantVar)
+		})
+	}
+	return nil
 }
 
 // emitAggregateGiven emite UMA GivenClause (uma de possivelmente várias no
@@ -847,8 +899,8 @@ func emitUseCaseScenarioBody(e *emit.Emitter, sl *lower.StmtLowerer, sc *ast.Sce
 	if sc.Then == nil {
 		return fmt.Errorf("cenário sem \"then\"")
 	}
-	if sc.Then.Error != "" || len(sc.Then.Events) > 0 {
-		return fmt.Errorf("\"then [eventos]\"/\"then error\" (fora de um bloco {...}) são de Aggregate — Test %s é de UseCase, use \"then { Subject emitted ..., committed/rolledback }\" (§22.2)", uc.Name)
+	if sc.Then.Error != "" || len(sc.Then.Events) > 0 || sc.Then.State != nil {
+		return fmt.Errorf("\"then [eventos]\"/\"then error\"/\"then state\" (fora de um bloco {...}) são de Aggregate — Test %s é de UseCase, use \"then { Subject emitted ..., committed/rolledback }\" (§22.2)", uc.Name)
 	}
 
 	e.Line("store := %s.NewMemoryEventStore()", runtimeAlias)
@@ -1189,8 +1241,8 @@ func emitSagaScenarioBody(e *emit.Emitter, sl *lower.StmtLowerer, sc *ast.Scenar
 	if sc.Then == nil {
 		return fmt.Errorf("cenário sem \"then\"")
 	}
-	if sc.Then.Error != "" || len(sc.Then.Events) > 0 {
-		return fmt.Errorf("\"then [eventos]\"/\"then error\" (fora de um bloco {...}) são de Aggregate — Test %s é de Saga, use \"then { ... }\" (§22.3)", saga.Name)
+	if sc.Then.Error != "" || len(sc.Then.Events) > 0 || sc.Then.State != nil {
+		return fmt.Errorf("\"then [eventos]\"/\"then error\"/\"then state\" (fora de um bloco {...}) são de Aggregate — Test %s é de Saga, use \"then { ... }\" (§22.3)", saga.Name)
 	}
 
 	// Reset: desfaz qualquer mock/fail-step de um cenário ANTERIOR (mesma
@@ -1472,8 +1524,8 @@ func emitPolicyScenarioBody(e *emit.Emitter, sl *lower.StmtLowerer, sc *ast.Scen
 	if sc.Then == nil {
 		return fmt.Errorf("cenário sem \"then\"")
 	}
-	if sc.Then.Error != "" || len(sc.Then.Events) > 0 {
-		return fmt.Errorf("\"then [eventos]\"/\"then error\" (fora de um bloco {...}) são de Aggregate — Test %s é de Policy, use \"then { ... }\" (§22.4)", policy.Name)
+	if sc.Then.Error != "" || len(sc.Then.Events) > 0 || sc.Then.State != nil {
+		return fmt.Errorf("\"then [eventos]\"/\"then error\"/\"then state\" (fora de um bloco {...}) são de Aggregate — Test %s é de Policy, use \"then { ... }\" (§22.4)", policy.Name)
 	}
 
 	e.Line("ctx := %s.Background()", contextAlias)
