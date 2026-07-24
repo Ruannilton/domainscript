@@ -295,17 +295,15 @@ explicitly out of this slice, for a future cycle.
 
 Correções de dívida técnica
 (`.claude/specs/correcoes-issues-9-10-11/tasks.md`): Marco K — a maintenance
-cycle closing three standing issues found during earlier cycles. K1 (parser:
-two consecutive assignments no longer steal the next statement's identifier,
-ISSUE-11, REQ-49) and K2 (`Coalesce` panic-safety on both the memory and
-Redis query-cache backends, ISSUE-10, REQ-50) are done. K3 (the outbox
-producer→channel residual above, ISSUE-9, REQ-51) has K3.1-K3.4 done —
+cycle that closed three standing issues found during earlier cycles —
+**complete**. K1 (parser: two consecutive assignments no longer steal the
+next statement's identifier, ISSUE-11, REQ-49), K2 (`Coalesce` panic-safety
+on both the memory and Redis query-cache backends, ISSUE-10, REQ-50), and K3
+(the outbox producer→channel residual above, ISSUE-9, REQ-51) are all done:
 `durableProducer` detects the activation condition, the producer's
 UnitOfWork runs over real `database/sql` and enqueues into the outbox
 in-tx via the distinct `sqlruntime.NewOutboxUnitOfWork`, the relay (channel
 as publisher) replaces the direct-on-commit publish, and a dedicated fixture
 plus an end-to-end crash-simulation test (over the *generated* producer
-path, not just the runtime seam) prove it. `wallet`/`shop` stay
+path, not just the runtime seam) prove it. `wallet`/`shop` stayed
 byte-identical throughout (neither satisfies the activation condition).
-Remaining: K3.5 (docs consolidation) and K.fim (final DoD review closing
-Marco K).

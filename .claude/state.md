@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2+K3 done) | K.fim |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1982,6 +1982,49 @@ nos DOIS backends); `wallet`/`shop` byte-idênticos; âncora de J6 atualizada;
 `.claude/issues.md` marca ISSUE-9/10/11 `RESOLVED` (ISSUE-9 já está, falta
 10/11); `.claude/state.md` marca o Marco K `done`. Última task do plano
 inteiro.
+
+Concluído: **K.fim** — revisão de DoD do Marco K inteiro
+(`requirements.md` §5, 5 critérios), fechando o plano
+`correcoes-issues-9-10-11` por completo. Revisão item a item:
+
+1. Duas atribuições consecutivas parseiam limpo; binding/alias legítimos
+   preservados (REQ-49) — **satisfeito** (K1.1/K1.2, par de testes por
+   ponto, suíte inteira do `parser/` verde).
+2. Pânico em `fn()` dentro de `Coalesce` nos DOIS backends não vaza
+   goroutine nem trava a chave; esperadores recebem erro, nunca
+   `(nil, nil)`; pânico do líder ainda propaga; coalescência normal e erro
+   de negócio legítimo não regridem (REQ-50) — **satisfeito** (K2.1/K2.2,
+   par de testes por backend).
+3. Produtor com Database real + canal rabbitmq enfileira o `PublicEvent`
+   cross-service no outbox atômico e o relay publica (nunca o commit
+   direto); crash simulado entre commit e publish não perde o evento
+   (REQ-51) — **satisfeito** (K3.1-K3.4: fixture dedicada + âncora de J6 +
+   teste de wiring + comportamental fim-a-fim sobre o caminho GERADO do
+   produtor, não só o seam manual). Produtor sem a condição de ativação
+   permanece byte-idêntico (`shop/Orders`, canal sem provider real).
+4. `go build`/`go vet`/`gofmt -l` limpos em toda task; testes de escopo de
+   cada task verdes; `wallet` E `shop` byte-idênticos em toda a fase K3
+   (confirmado repetidamente via `driver.TestGenerate{Wallet,Shop}E2E*`,
+   nenhuma regeneração de golden); asserções da âncora de J6
+   (`AnchorOrders`) atualizadas deliberadamente em K3.2 e de novo em K3.3
+   (a natureza incremental do wiring do produtor) — **satisfeito**.
+5. `.claude/issues.md` marca as três issues `RESOLVED`: ISSUE-9 já estava
+   (K3.5); esta task adiciona as entradas `RESOLVED` de **ISSUE-10**
+   (commits `9d5fe16`/`bc6df20`, K2.1/K2.2) e **ISSUE-11** (commits
+   `3a7437e`/`2abce08`, K1.1/K1.2), cada uma resumindo o fix de raiz e
+   confirmando que a causa-raiz analisada no registro original bateu com
+   a implementação real. `.claude/specs/codegen/gaps.md` §G-4 já refletia
+   o fechamento desde K3.5 — **satisfeito**.
+
+Sem `go test ./...` local neste fechamento (CI roda a suíte completa nas
+PRs, conforme CLAUDE.md) — só `go build ./...`/`go vet ./...`/`gofmt -l .`
+confirmados limpos; nenhuma mudança de código-fonte nesta task (só
+`.claude/issues.md`/`.claude/state.md`), então nada a regenerar.
+
+**Marco K (`correcoes-issues-9-10-11`, REQ-49..51) está FECHADO** — as
+três issues (ISSUE-9/10/11) resolvidas na raiz, cada uma com par de
+testes, `wallet`/`shop` sem regressão em nenhuma das 9 tasks (K1.1, K1.2,
+K2.1, K2.2, K3.1-K3.5, K.fim).
 
 ## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
 

@@ -177,7 +177,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 ## Fechamento do Marco K
 
-- [ ] **K.fim** Revisão de DoD (requirements §5): as três issues fechadas com par
+- [x] **K.fim** Revisão de DoD (requirements §5): as três issues fechadas com par
   de testes (REQ-50 nos DOIS backends); `wallet`/`shop` byte-idênticos; âncora de
   J6 atualizada; `.claude/issues.md` marca ISSUE-9/10/11 `RESOLVED`;
   `.claude/state.md` marca o Marco K `done`; `gaps.md` §G-4 atualizado. (Sem
