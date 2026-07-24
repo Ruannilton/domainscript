@@ -2168,6 +2168,54 @@ confirmando que a sequência de erros documentada em ISSUE-12 se mantém
 íntegra e que o próximo bloqueio na fila é mesmo o escopo de L1.3b.
 **Próxima task: L1.3b.**
 
+Concluído: **L1.3b** — `lowerAccessCondition` (`codegen/decl_aggregate.go:341`)
+ganhou o caso "condição é diretamente `caller.hasRole(<role>)`", uma nova
+função `lowerCallerHasRole` (ao lado de `lowerCallerVOEquality`, mesmo
+molde: `(goExpr string, handled bool, err error)`, `handled=false` sem erro
+quando a forma não casa). O ponto de entrada `lowerAccessCondition` agora,
+antes de cair no fallback genérico `l.Expr(cond)` para uma condição que não
+é `BinaryExpr`, checa se `cond` é um `*ast.CallExpr` e tenta
+`lowerCallerHasRole` primeiro; como a função inteira já recursava
+`bin.Left`/`bin.Right` de volta a si mesma para `AND`/`OR`, a forma
+composta (`caller.authenticated and caller.hasRole(...)`) passa a funcionar
+de graça, sem mudança adicional — o `CallExpr` puro é alcançado tanto
+direto quanto como um dos lados de um `and`. `lowerCallerHasRole` reconhece
+`call.Fn` via `isCallerMemberExpr` (já existente) com `.Name == "hasRole"`,
+exige exatamente 1 argumento posicional (erro claro e específico se não —
+"caller.hasRole espera exatamente 1 argumento", em vez de deixar cair no
+fallback genérico e confuso), loweriza o argumento via `l.Expr` (um literal
+string já funciona pelo caminho genérico, `Lowerer.literal`/`token.STRING`)
+e o receptor via `l.Expr(mem.X)` (o mesmo truque de
+`lowerCallerVOEquality` para obter o texto Go de "caller" sem acessar o
+método não-exportado `Lowerer.callerGoName` de outro pacote), emitindo
+`<callerGo>.HasRole(<argGo>)` — o método que `runtime.Caller`
+(`codegen/rtsrc/caller.go.txt`) já expõe. Três testes novos em
+`codegen/access_hasrole_test.go` (fixture sintética `Aggregate Item` com
+`access { Create requires caller.hasRole("admin") }`, análoga em espírito a
+`kitchen/domain.ds:90-93` do pizzeria, sem tocar o fixture real):
+`TestGenerateAccessConditionBareHasRoleCompiles` (forma isolada, gera e
+`gentest.SmokeCompile`s, confirma `caller.HasRole("admin")` no Go emitido),
+`TestGenerateAccessConditionComposedHasRoleCompiles` (forma composta
+`caller.authenticated and caller.hasRole("admin")`, confirma
+`caller.Authenticated() && caller.HasRole("admin")` e compila — capacidade
+nova, sem baseline byte-idêntico anterior: nenhuma fixture prévia exercitava
+essa combinação) e
+`TestLowerAccessConditionHasRoleArityMismatchFailsExplicitly` (aridade
+errada, `caller.hasRole()`, produz o erro claro em vez do fallback
+genérico). Sanity check opcional (não exigido pelo DoD): `dsc gen
+docs/examples/pizzeria` — o erro do item 1 de ISSUE-12
+(`caller.hasRole("system_sales")`) desapareceu; o próximo bloqueio na
+sequência é exatamente o item 2 documentado (`Apply TicketCreated {
+state.createdAt = CreatedAt(now()) }` → "CallExpr sobre \"now\" não é
+construção de VO/Event/Command conhecida"), confirmando que a sequência de
+ISSUE-12 se mantém íntegra e que o próximo escopo é mesmo L1.3c
+(`emitApply`/`BuiltinLowerer`), não tocado aqui. Verificação: `go build
+./...`, `go vet ./...`, `gofmt -l` limpos; `go test ./codegen/...
+./driver/...` verde (nenhuma regressão nos testes existentes de access —
+`caller.authenticated` sozinho e a igualdade `caller.id == self.id`/VO
+seguem cobertos pelos testes pré-existentes, inalterados).
+**Próxima task: L1.3c.**
+
 ## Issues em aberto
 
 Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit

@@ -341,6 +341,15 @@ func blockReferencesIdent(b *ast.Block, name string) bool {
 func lowerAccessCondition(l *lower.Lowerer, env *lower.TypeEnv, cond ast.Expr) (string, error) {
 	bin, ok := cond.(*ast.BinaryExpr)
 	if !ok {
+		if call, ok := cond.(*ast.CallExpr); ok {
+			goExpr, handled, err := lowerCallerHasRole(l, call)
+			if err != nil {
+				return "", err
+			}
+			if handled {
+				return goExpr, nil
+			}
+		}
 		return l.Expr(cond)
 	}
 
@@ -438,4 +447,37 @@ func lowerCallerVOEquality(l *lower.Lowerer, env *lower.TypeEnv, bin *ast.Binary
 		return fmt.Sprintf("%s %s %s", convertedCaller, opGo, otherGo), true, nil
 	}
 	return fmt.Sprintf("%s %s %s", otherGo, opGo, convertedCaller), true, nil
+}
+
+// lowerCallerHasRole implementa o outro caso especial de lowerAccessCondition
+// (ISSUE-12 item 1): call é literalmente "caller.hasRole(<role>)" — um
+// CallExpr cujo Fn é o MemberExpr "caller.hasRole", fora do escopo de
+// lowerCallerVOEquality (que só trata igualdade/desigualdade). Ao contrário
+// de caller.id/caller.authenticated (MemberExpr puro, tratado por
+// Lowerer.member/callerMember), caller.hasRole é uma chamada explícita — o
+// próprio doc de callerMember (codegen/lower/expr.go) já apontava essa
+// intenção, nunca conectada a um chamador. handled=false (sem erro) quando
+// call não casa essa forma — o chamador segue para o dispatch normal
+// (Lowerer.Expr), que hoje rejeita qualquer CallExpr cujo Fn não seja um
+// Ident nu (construção de tipo) com um erro claro.
+func lowerCallerHasRole(l *lower.Lowerer, call *ast.CallExpr) (goExpr string, handled bool, err error) {
+	mem, ok := isCallerMemberExpr(call.Fn)
+	if !ok || mem.Name != "hasRole" {
+		return "", false, nil
+	}
+
+	if len(call.Args) != 1 {
+		return "", false, fmt.Errorf("codegen: access: caller.hasRole espera exatamente 1 argumento (o papel), recebeu %d", len(call.Args))
+	}
+
+	callerGo, err := l.Expr(mem.X)
+	if err != nil {
+		return "", false, err
+	}
+	roleGo, err := l.Expr(call.Args[0].Value)
+	if err != nil {
+		return "", false, err
+	}
+
+	return fmt.Sprintf("%s.HasRole(%s)", callerGo, roleGo), true, nil
 }
