@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c done; L1.3d PAUSADA por decisão do usuário — ver nota; L1.3e/L1.3f bloqueadas em cascata) | L2.1 |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d PAUSADA por decisão do usuário — ver nota; L1.3e/L1.3f bloqueadas em cascata) | L2.2 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2297,8 +2297,81 @@ documentando o achado, sem apagar o registro original (convenção do arquivo).
 Nenhuma tentativa adicional de L1.3d/e/f está planejada neste ciclo — retomar
 exige uma decisão explícita futura entre (a)/(b') antes de prosseguir.
 
-**Próxima task (Fase L2, independente de L1): L2.1** — `then state { ... }`
-(§22.1, asserção de estado real em vez de erro de geração, REQ-53.1).
+Concluído: **L2.1** — `then state { ... }` (§22.1, REQ-53.1, ISSUE-6),
+branch `claude/marco-l-l2.1`. **A premissa da task estava errada** (mesmo
+padrão de L1.3d, agora corrigido ANTES de implementar, não no meio): o texto
+de `tasks.md` escopava L2.1 como um fix só de `codegen/gentest.go` ("onde hoje
+erra"). Reprodução empírica antes de começar mostrou que `then state { ... }`
+**nem parseava** — `driver.CheckSource` sobre um `.test.ds` com essa forma
+devolve `esperava '[', 'error' ou '{' após then, encontrei IDENT` mais uma
+cascata de "membro de scenario inesperado", porque
+`parser/parse_testfile.go:parseThen` só reconhecia `[`, `error` e `{`. O
+`codegen` jamais via a cláusula. Escopo real, em três camadas: (a)
+`ast/test.go` — campo novo `ThenClause.State *ObjectExpr` e parâmetro
+correspondente em `NewThenClause`, espelhando exatamente o `GivenClause.State`
+que já existia; (b) `parser/parse_testfile.go` — caso `p.atIdentLit("state")`
+em `parseThen` (simétrico ao de `parseGivenBody`, reusando
+`parseConfigObject`), os 4 call sites de `NewThenClause` atualizados e a
+mensagem do default estendida para `'[', 'error', 'state' ou '{'`; (c)
+`codegen/gentest.go` — `emitAggregateThenState` novo, mais `sc.Then.State` em
+`scanTestNeeds` (liga o import de `reflect`) e nos guards de
+UseCase/Saga/Policy (que passam a rejeitar `then state` com erro de geração
+claro, como já faziam com `then [eventos]`/`then error`).
+
+**Nenhuma regra nova de sema, por decisão explícita:** `GivenClause.State` não
+é validado hoje — `sema/rules_test_files.go:checkTestFile` faz só checagens de
+existência (o próprio doc do arquivo diz que shape/tipo "fica para uma
+evolução") e não desce nas entradas de `given state`; verificado também que
+nem `astutil` nem o `resolver` visitam cláusulas de teste. Espelhar a postura
+leniente foi a escolha consistente; nada quebra sem a regra.
+
+**Achado que moldou o codegen — "o `Handle` gerado NÃO aplica o estado".** A
+suspeita de que bastaria ler `receiver.state` depois de `events, err :=
+receiver.Handle(...)` é falsa: `emitHandle` (`codegen/decl_aggregate.go`) só
+emite checagem de `access`, o corpo do Handle e `return events, nil` — quem
+muta o state é `apply<Evento>`, um método separado (`emitApply`), invocado
+pelo `Load<Nome>` EventSourced / pela UnitOfWork, nunca pelo próprio Handle
+(vale para StateStored e EventSourced igualmente). Ou seja, o "replay via o
+`Apply` gerado" do texto original da task estava **certo** — foi só o
+"codegen-only" que estava errado. `emitAggregateThenState` portanto: (1)
+`if err != nil { t.Fatalf }`; (2) replay via `emitApplyDispatch`
+(`gentest_property.go`, o helper de §22.5 — a MESMA correspondência
+`Event -> apply<Event>` que `Load<Nome>` já gera, nunca uma 2ª
+implementação, NFR-15); (3) uma asserção por campo declarado,
+`reflect.DeepEqual` (não `!=`: um VO pode ter tipo Go não-comparável) com
+`t.Errorf("state.<campo>: got %+v, want %+v", ...)` — diff claro por campo,
+`Errorf` e não `Fatalf` para que todos os campos divergentes apareçam de uma
+vez.
+
+**Testes.** Parser (par NFR-4 na camada de front-end,
+`parser/parse_testfile_test.go`): `TestTestThenState` (a forma nova popula
+`ThenClause.State`, com `Error`/`Events`/`Asserts` zerados) e
+`TestTestThenFormsUnaffectedByState` (não-regressão: `then [...]`/`then error
+X`/`then { ... }` seguem parseando, todas com `State == nil`). Codegen
+(`codegen/gentest_thenstate_test.go`, fixture sintética nova — nem wallet nem
+shop têm Aggregate StateStored com `.test.ds`, mesmo precedente das fatias
+anteriores de H4): `TestEmitThenStateGolden` (+ golden novo
+`codegen/testdata/tests_thenstate_counter.go.golden`),
+`TestEmitThenStateDeterministic` (NFR-13), `TestEmitThenStateSmokeCompile`
+(NFR-14), `TestEmitThenStateRunGreen` (metade positiva: `then state
+{ count: Count(5) }` bate com o estado pós-replay, `go test ./...` sobre o
+projeto gerado passa) e `TestEmitThenStateRunRedOnDivergence` (metade
+negativa: `Count(99)` faz o teste GERADO falhar; o helper novo
+`runGeneratedTestsExpectingFailure` exige exit != 0 e casa a mensagem
+`state.count: got ... want 99` — prova que a asserção não é vacuamente
+verdadeira). A fixture é deliberadamente construída para que o replay seja
+indispensável: o `given state` semeia `count = 1` e só o `apply` do evento
+emitido leva a `5` — sem replay o teste positivo falharia.
+
+**Verificação:** `go build ./...`, `go vet ./...` e `gofmt -l .` limpos;
+`go test ./parser/... ./ast/... ./sema/... ./codegen/... ./driver/...` verde
+(zero regressões — os goldens/e2e de `wallet` e `shop` seguem byte-idênticos,
+como esperado: o caminho novo só ativa com `sc.Then.State != nil`, e a
+mensagem do `default` de `emitApplyDispatch` foi mantida intocada de
+propósito para preservar essa byte-identidade).
+
+**Próxima task (Fase L2, independente de L1): L2.2** — `emitted`/`released` a
+partir de passo de Saga (§22.3, REQ-53.2).
 
 ## Issues em aberto
 

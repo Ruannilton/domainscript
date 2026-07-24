@@ -166,22 +166,26 @@ func (p *parser) parseEntityList() []*ast.GivenEntity {
 	return entities
 }
 
-// parseThen parseia a asserção "then" nas formas "[eventos]", "error Name" e
-// "{ asserts }".
+// parseThen parseia a asserção "then" nas formas "[eventos]", "error Name",
+// "{ asserts }" e "state { ... }" (§22.1, asserção de estado de um Aggregate
+// StateStored — simétrica ao "given state { ... }" de parseGivenBody).
 func (p *parser) parseThen() *ast.ThenClause {
 	start := p.cur().Pos
 	p.advance() // "then"
 	switch {
 	case p.atIdentLit("error"):
 		p.advance()
-		return ast.NewThenClause(p.parseName(), nil, nil, p.spanFrom(start))
+		return ast.NewThenClause(p.parseName(), nil, nil, nil, p.spanFrom(start))
+	case p.atIdentLit("state"):
+		p.advance()
+		return ast.NewThenClause("", nil, nil, p.parseConfigObject(), p.spanFrom(start))
 	case p.at(token.LBRACK):
-		return ast.NewThenClause("", p.parseBracketExprs(), nil, p.spanFrom(start))
+		return ast.NewThenClause("", p.parseBracketExprs(), nil, nil, p.spanFrom(start))
 	case p.at(token.LBRACE):
-		return ast.NewThenClause("", nil, p.parseThenAsserts(), p.spanFrom(start))
+		return ast.NewThenClause("", nil, p.parseThenAsserts(), nil, p.spanFrom(start))
 	default:
-		p.errorf(p.cur().Pos, "esperava '[', 'error' ou '{' após then, encontrei %s", p.cur().Kind)
-		return ast.NewThenClause("", nil, nil, p.spanFrom(start))
+		p.errorf(p.cur().Pos, "esperava '[', 'error', 'state' ou '{' após then, encontrei %s", p.cur().Kind)
+		return ast.NewThenClause("", nil, nil, nil, p.spanFrom(start))
 	}
 }
 

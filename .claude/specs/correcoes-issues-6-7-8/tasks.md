@@ -171,11 +171,38 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
 > Cinco sub-itens independentes (L2.1–L2.5), cada um com par NFR-4 sobre o
 > projeto gerado. L2.6 delimita o item que fica fora (acesso NEGADO).
 
-- [ ] **L2.1** `then state { ... }` (§22.1, asserção de estado). (REQ-53.1, §design 3.2)
+- [x] **L2.1** `then state { ... }` (§22.1, asserção de estado). (REQ-53.1, §design 3.2)
   - `codegen/gentest.go`: onde hoje erra, reconstruir o estado do Aggregate
     (replay via o `Apply` gerado) e emitir uma asserção por campo declarado.
   - **Testes pareados:** um `then state` que bate (passa) e um que diverge
     (falha com diff claro).
+  - > **Correção de premissa (achado na execução, mesmo padrão de L1.3d).** O
+    > texto acima escopava L2.1 como um fix SÓ de codegen ("onde hoje erra").
+    > A premissa estava errada: `then state { ... }` **não parseava** —
+    > `parser/parse_testfile.go:parseThen` só reconhecia `[`, `error` e `{`, e
+    > qualquer `.test.ds` com essa forma morria no front-end
+    > (`esperava '[', 'error' ou '{' após then, encontrei IDENT`), sem jamais
+    > chegar ao `codegen/gentest.go`. O escopo real foi de três camadas:
+    > (a) `ast/test.go` — novo campo `ThenClause.State *ObjectExpr`, espelhando
+    > o `GivenClause.State` que já existia; (b) `parser/parse_testfile.go` —
+    > novo caso `state` em `parseThen` (simétrico ao de `parseGivenBody`), 4
+    > call sites de `NewThenClause` atualizados e mensagem de erro do default
+    > estendida; (c) `codegen/gentest.go` — `emitAggregateThenState`. **Nenhuma
+    > regra nova de sema**, de propósito: `GivenClause.State` também não é
+    > validado hoje (`sema/rules_test_files.go` é deliberadamente só de
+    > existência), e nem `astutil` nem o resolver descem nessas cláusulas —
+    > a postura leniente foi espelhada, não quebrada.
+    >
+    > O "replay via o `Apply` gerado" do texto original, esse, estava **certo**
+    > e é indispensável: um `Handle` gerado só valida e devolve eventos, nunca
+    > muta `receiver.state` (quem muta é `apply<Evento>`, ver `emitHandle`/
+    > `emitApply` em `codegen/decl_aggregate.go`) — ler o state logo após o
+    > `Handle` veria o estado do `given`. `emitAggregateThenState` reusa
+    > `emitApplyDispatch` (de §22.5, `gentest_property.go`), a MESMA
+    > correspondência `Event -> apply<Event>` de `Load<Nome>` EventSourced, e
+    > só então compara campo a campo por `reflect.DeepEqual` com `t.Errorf`
+    > nomeando o campo. `then state` em Test de UseCase/Saga/Policy virou erro
+    > de geração claro, junto dos guards que já existiam.
 
 - [ ] **L2.2** `emitted`/`released` a partir de passo de Saga (§22.3). (REQ-53.2,
   §design 3.2)

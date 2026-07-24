@@ -89,16 +89,17 @@ func NewWhenClause(isEvent bool, action Expr, span Span) *WhenClause {
 }
 
 // ThenClause é a asserção esperada nas formas: "then [eventos]", "then error
-// Name" e "then { asserts }".
+// Name", "then { asserts }" e "then state { ... }".
 type ThenClause struct {
 	baseNode
 	Error   string        // "then error Name"
 	Events  []Expr        // "then [ ... ]"
 	Asserts []*ThenAssert // "then { ... }"
+	State   *ObjectExpr   // "then state { ... }" (StateStored, §22.1)
 }
 
-func NewThenClause(errName string, events []Expr, asserts []*ThenAssert, span Span) *ThenClause {
-	return &ThenClause{baseNode{span}, errName, events, asserts}
+func NewThenClause(errName string, events []Expr, asserts []*ThenAssert, state *ObjectExpr, span Span) *ThenClause {
+	return &ThenClause{baseNode{span}, errName, events, asserts, state}
 }
 
 // ThenAssert é uma linha de asserção de um bloco then. Cobre as formas do §22:

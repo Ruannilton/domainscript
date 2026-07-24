@@ -244,3 +244,72 @@ func TestTestRecovers(t *testing.T) {
 		t.Errorf("não consumiu tudo; parou em %v", p.cur().Kind)
 	}
 }
+
+// TestTestThenState cobre a forma "then state { ... }" (§22.1, REQ-53.1):
+// simétrica ao "given state { ... }" já suportado, ela popula ThenClause.State
+// e deixa Error/Events/Asserts zerados.
+func TestTestThenState(t *testing.T) {
+	src := `Test Counter {
+		scenario "incrementa" {
+			given state { id: CounterId("C1"), value: Count(1) }
+			when Increment(by: Count(2))
+			then state { id: CounterId("C1"), value: Count(3) }
+		}
+	}`
+	td := parseTestDeclOK(t, src)
+	s := td.Scenarios[0]
+	if len(s.Givens) != 1 || s.Givens[0].State == nil {
+		t.Fatalf("given state => %v", s.Givens)
+	}
+	if s.Then == nil || s.Then.State == nil {
+		t.Fatalf("then.State = nil; then=%v", s.Then)
+	}
+	if got, want := sexpr(s.Then.State), `{id:(call CounterId "C1") value:(call Count 3)}`; got != want {
+		t.Errorf("then state => %s, quero %s", got, want)
+	}
+	if s.Then.Error != "" || len(s.Then.Events) != 0 || len(s.Then.Asserts) != 0 {
+		t.Errorf("then deveria ter só State; got error=%q events=%d asserts=%d",
+			s.Then.Error, len(s.Then.Events), len(s.Then.Asserts))
+	}
+}
+
+// TestTestThenFormsUnaffectedByState é o par de não-regressão de
+// TestTestThenState: as três formas de "then" que já existiam continuam
+// parseando com State == nil.
+func TestTestThenFormsUnaffectedByState(t *testing.T) {
+	src := `Test Wallet {
+		scenario "eventos" {
+			when Withdraw(amount: Money(30, "BRL"))
+			then [ WithdrawalPerformed(id: "W1") ]
+		}
+		scenario "erro" {
+			when Withdraw(amount: Money(30, "BRL"))
+			then error InsufficientBalance
+		}
+		scenario "bloco" {
+			when Withdraw(amount: Money(30, "BRL"))
+			then { committed }
+		}
+	}`
+	td := parseTestDeclOK(t, src)
+	if len(td.Scenarios) != 3 {
+		t.Fatalf("=> %d cenários, quero 3", len(td.Scenarios))
+	}
+	for i, sc := range td.Scenarios {
+		if sc.Then == nil {
+			t.Fatalf("cenário[%d] sem then", i)
+		}
+		if sc.Then.State != nil {
+			t.Errorf("cenário[%d]: State deveria ser nil, got %v", i, sc.Then.State)
+		}
+	}
+	if len(td.Scenarios[0].Then.Events) != 1 {
+		t.Errorf("then [eventos] => %d eventos", len(td.Scenarios[0].Then.Events))
+	}
+	if td.Scenarios[1].Then.Error != "InsufficientBalance" {
+		t.Errorf("then error = %q", td.Scenarios[1].Then.Error)
+	}
+	if len(td.Scenarios[2].Then.Asserts) != 1 || td.Scenarios[2].Then.Asserts[0].Verb != "committed" {
+		t.Errorf("then { ... } => %+v", td.Scenarios[2].Then.Asserts)
+	}
+}
