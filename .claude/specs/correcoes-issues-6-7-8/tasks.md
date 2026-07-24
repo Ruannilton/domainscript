@@ -33,7 +33,7 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
     módulo só-UseCase e módulo só-Policy → Go byte-idêntico ao de hoje.
   - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos.
 
-- [ ] **L1.2** Call site em `main.go` para o módulo misto. (REQ-52.4, §design 2.2)
+- [x] **L1.2** Call site em `main.go` para o módulo misto. (REQ-52.4, §design 2.2)
   - `codegen/codegen.go` (`generateCmdMainFile`, ~1288): para um `wireTarget`
     misto, montar os args de `Wire` com a `UnitOfWork` e o `Dispatcher` (o
     `dispatcher`/`uow` já em escopo quando `needsDispatcher`). Módulos puros

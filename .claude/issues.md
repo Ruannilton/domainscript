@@ -401,3 +401,109 @@ Cada issue é um bloco novo, nesta forma:
   linha do alvo continua intacto (positivo). Suíte inteira do `parser/`
   verde em ambas as tasks — nenhum fixture de binding/alias existente
   regrediu.
+
+## ISSUE-12
+- SPEC: correcoes-issues-6-7-8
+- TASK: L1.2 (achado ao provar `docs/examples/pizzeria` fim-a-fim, REQ-52.4/
+  52.7)
+- DESCRIPTION: L1.2 pedia para confirmar que o `Kitchen` do `pizzeria` não
+  esbarra na guarda F5/G3 pré-existente (`codegen/codegen.go:1143`:
+  `"codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo
+  produtor de canal de saída no mesmo service ainda não têm wiring combinado
+  suportado (F5/G3)"`, disparada quando `producerChannel != nil &&
+  needsDispatcher`). **A leitura confirma que ele ESBARRA, sim** — ao
+  contrário do que a task text presumia ("é UseCase+Policy local, sem canal
+  próprio"):
+  - `docs/examples/pizzeria/kitchen/domain.ds`: `Handle Finish` faz `emit
+    TicketFinished(self.orderRef)`, e `TicketFinished` é um `PublicEvent`.
+  - `docs/examples/pizzeria/topology.ds`: o canal `Kitchen -> Sales` (`via:
+    queue`, `provider: "rabbitmq"`, `orderBy: orderRef`) existe DENTRO do
+    MESMO service `PizzeriaMonolith { modules: [Sales, Kitchen] }` que
+    `Sales -> Kitchen`. Logo `producerChannelFor(prog, "Kitchen")` resolve
+    esse canal: Kitchen **é** produtor de canal de saída.
+  - `docs/examples/pizzeria/kitchen/policy.ds`: `Policy
+    CreateTicketOnOrderPaid on OrderPaid` é uma Policy LOCAL do módulo
+    Kitchen, que força `needsDispatcher = true` para o grupo
+    `PizzeriaMonolith` (`codegen.go:1089`).
+  - `producerChannel != nil && needsDispatcher` é exatamente essa combinação
+    → a guarda F5/G3 dispara para o `pizzeria`.
+  - Confirmado por leitura estática (ver acima) e por reprodução empírica
+    parcial (abaixo) — não foi possível chegar ao PONTO exato do erro F5/G3
+    rodando o `pizzeria` real porque **outros bloqueios independentes, mais
+    cedo no pipeline, impedem a geração de chegar a `generateCmdMainFile`**
+    (onde a guarda mora). Rodando `dsc gen docs/examples/pizzeria` hoje
+    (pós-L1.1) o erro real é:
+    ```
+    dsc: codegen: módulo Kitchen: aggregate_kitchen_ticket.go: codegen:
+    Aggregate KitchenTicket: Handle Create: access: codegen: CallExpr com Fn
+    *ast.MemberExpr não suportado em Lowerer.Expr (só construção de tipo via
+    identificador nu; chamada de método/built-in é E5.3/E6+)
+    ```
+    Investigando numa cópia de trabalho isolada (nunca commitada, só para
+    diagnóstico — o fixture real do `pizzeria` NÃO foi alterado), contornando
+    esse erro e os seguintes um a um, aparecem em sequência MAIS QUATRO
+    bloqueios independentes, cada um ortogonal a REQ-52/F5-G3:
+    1. `access { Create requires caller.hasRole("system_sales") }`
+       (`kitchen/domain.ds:90-93`): `lowerAccessCondition`
+       (`codegen/decl_aggregate.go:341`) só trata condições que são um
+       `BinaryExpr` (`&&`/`||`/`==`/`!=` com "caller.X == VOWrapper") ou caem
+       no fallback genérico `l.Expr(cond)` — uma condição que é SÓ
+       `caller.hasRole(...)` (um `CallExpr` puro, sem `&&`/`||`/`==`) não é
+       nenhuma das formas tratadas por `lowerCallerVOEquality` e cai no
+       `Lowerer.call` genérico, que rejeita qualquer `CallExpr` cujo `Fn` não
+       seja "construção de tipo via identificador nu" — daí o erro acima.
+       `wallet`/`shop` nunca exercitam essa forma (só usam `caller.
+       authenticated`), então nunca foi pega.
+    2. `Apply TicketCreated { state.createdAt = CreatedAt(now()) }`
+       (`kitchen/domain.ds:104`, também `:125`): `emitApply`
+       (`codegen/decl_aggregate.go:274`) constrói o `Lowerer` com
+       `lower.NewLowerer(env, reg, runtimeAlias)` e NUNCA chama
+       `.WithBuiltins(...)` (ao contrário de `emitUseCasesBytes`/
+       `emitPolicyExecute`/Saga/Query, que sempre anexam um
+       `BuiltinLowerer`) — qualquer builtin de função (`now()`/`uuid()`/
+       `random(...)`) usado dentro de um corpo de `Apply` falha com "CallExpr
+       sobre \"now\" não é construção de VO/Event/Command conhecida".
+       `wallet`/`shop` nunca chamam nenhum builtin de função dentro de um
+       `Apply`, então nunca foi pego.
+    3. `Apply TicketItemAdded { state.items.add(event.item) }`
+       (`kitchen/domain.ds:112`): `.add(...)` só está mapeado
+       (`codegen/goname/types.go:111`, `BuiltinMethod{Receiver:
+       "AppendList", Method: "add"}`) para um campo `AppendList<T>`; Kitchen
+       declara `items List<TicketItem>` (List comum), não `AppendList` — ao
+       que tudo indica um TYPO/bug do PRÓPRIO fixture `pizzeria` (deveria
+       ser `AppendList<TicketItem>`, o padrão que
+       `wallet/domain.ds:88` — `entries AppendList<StatementEntry>` — já
+       usa), não necessariamente um gap de codegen. Sinalizado aqui porque
+       bloqueia a geração de qualquer forma, mas provavelmente se resolve
+       ajustando o `.ds`, não o back-end.
+    4. `Query GetBoardTickets() -> List<KitchenTicketVW> { return list
+       KitchenTicket t where t.status in [...] orderBy t.createdAt ascending
+       as KitchenTicketVW }` (`kitchen/read.ds:15-20`): mesmo reduzindo para
+       a forma mínima "`return list KitchenTicket where ... as
+       KitchenTicketVW`" (idêntica em espírito à
+       `sales/read.ds:20` que FUNCIONA sobre o Aggregate `MenuItem`), a
+       geração falha com "list ... em posição de expressão pura não é
+       suportado por Lowerer.Expr". A diferença de fato entre os dois é que
+       `Sales.MainDb` usa `provider: "postgres"` (REAL, Marco J) e
+       `Kitchen.MainDb` usa `provider: "mongodb"` (DECORATIVO,
+       `kitchen/mod.ds:9-13`) — sem um provider real, o Read Side de Kitchen
+       cai no seam in-memory (`runtime.Query[T]`), cujo suporte de "list
+       <VO/Aggregate>" (E8.1, `codegen/decl_query.go` cabeçalho) exige
+       correlacionar o VO a um campo `AppendList<VO>` de um ÚNICO Aggregate
+       conhecido — listar o PRÓPRIO Aggregate (`KitchenTicket`) diretamente,
+       sem provider real por trás, não é uma forma coberta.
+  - **Conclusão:** o `pizzeria` está bloqueado por PELO MENOS CINCO defeitos
+    independentes (F5/G3 + os quatro acima), nenhum deles dentro do escopo de
+    REQ-52 (Wire unificado) — REQ-52.7 pede exatamente isto: registrar como
+    issue nova em vez de ampliar o escopo da task. **L1.2 fecha normalmente**
+    (seu próprio escopo — o call site de `main.go` + esta confirmação — está
+    completo); **L1.3 fica BLOQUEADA** até esta issue (ou uma investigação
+    dedicada) resolver os cinco pontos, e provavelmente precisa de um recorte
+    NOVO (talvez até uma fixture-alvo diferente de `pizzeria`, ou correções
+    em `pizzeria` + em pelo menos dois pacotes de codegen distintos:
+    `decl_aggregate.go`/`lower/` para os itens 1/2, `decl_query.go`/E8.1 para
+    o item 4, e a guarda F5/G3 em si). Este registro é INDEPENDENTE de
+    ISSUE-7/REQ-52 (que L1.1 já fechou — a colisão de `Wire`); não fechar
+    ISSUE-7 como totalmente resolvida enquanto ISSUE-12 (o bloqueio real e
+    maior de `pizzeria`) permanecer aberta — ver `.claude/specs/
+    correcoes-issues-6-7-8/`.

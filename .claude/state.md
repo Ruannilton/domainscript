@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1 done) | L1.2 |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2 done; L1.3 blocked by ISSUE-12) | L1.3 (blocked) |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2072,9 +2072,62 @@ combinada, `uow = u`, `kitchen.Wire(uow, dispatcher)` em main.go,
 `TestGeneratePurePolicyModuleKeepsSingleArgWire` (guardas de byte-identidade dos
 casos puros — Wire single-arg preservada). Verificação: `go build ./...`,
 `go vet ./codegen/...`, `gofmt -l` limpos; `go test ./codegen/... ./driver/...`
-verde (232s, zero regressões — wallet/shop golden/e2e intactos). **Próxima task:
-L1.2** (call site em `main.go` para o módulo misto — provavelmente só o teste,
-pois o call site já funciona por construção).
+verde (232s, zero regressões — wallet/shop golden/e2e intactos).
+
+Concluído: **L1.2** (call site em `main.go` para o módulo misto, REQ-52.4,
+§design 2.2). Confirmado por leitura: `generateCmdMainFile`
+(`codegen/codegen.go`, ~1364-1373) **já** monta `args` corretamente para
+QUALQUER `wireTarget` — `"uow"` quando `wt.hasUseCases`, `"dispatcher"` quando
+`wt.hasPolicies` — produzindo `<pkg>.Wire(uow, dispatcher)` para o caso misto
+(ordem batendo com a assinatura combinada `func Wire(u UnitOfWork, d
+Dispatcher)` que `emitCombinedWireFunc`/L1.1 emite) e `<pkg>.Wire(uow)`/
+`<pkg>.Wire(dispatcher)` para os casos puros, sem NENHUMA mudança de código
+necessária nesta task — L1.1 já tinha deixado o call site certo. Teste
+DEDICADO adicionado (`codegen/mixed_wire_maincall_test.go`, novo, distinto do
+teste de L1.1 que prova isso só incidentalmente via SmokeCompile):
+`TestGenerateMixedModuleMainCallSiteWiresBothArgs` (módulo misto →
+`kitchen.Wire(uow, dispatcher)`, guarda negativa contra formas de 1 argumento
+ou ordem trocada) + `TestGeneratePureModulesMainCallSiteUnchanged`
+(sub-testes só-UseCase/só-Policy → `orders.Wire(uow)`/`shipping.Wire(dispatcher)`
+inalterados, sem o combinado).
+
+**Achado central da task (Parte 2, REQ-52.7):** a instrução da própria task
+("o `Kitchen` do pizzeria não esbarra na guarda F5/G3... é UseCase+Policy
+local, sem canal próprio") estava **ERRADA** — confirmado por leitura de
+`docs/examples/pizzeria/{topology.ds,kitchen/domain.ds,kitchen/policy.ds}` e
+por reprodução empírica parcial (`dsc gen docs/examples/pizzeria`, e uma cópia
+de trabalho isolada usada só para diagnóstico, nunca commitada). O `Kitchen`
+do pizzeria EMITE `TicketFinished` (`PublicEvent`) sobre o canal `Kitchen ->
+Sales` (queue/rabbitmq) que existe no MESMO service `PizzeriaMonolith` que
+também roda a Policy local `CreateTicketOnOrderPaid` de Kitchen — exatamente
+`producerChannel != nil && needsDispatcher`, a guarda F5/G3
+(`codegen/codegen.go:1143`). **Mas** não foi possível provar isso rodando o
+`pizzeria` real ponta a ponta, porque QUATRO outros bloqueios independentes e
+mais cedo no pipeline impedem a geração de sequer chegar a
+`generateCmdMainFile`: (1) `access { ... requires caller.hasRole(...) }`
+sozinho (sem `&&`/`||`/`==`) não é suportado por `lowerAccessCondition`
+(`codegen/decl_aggregate.go`); (2) `emitApply` (mesmo arquivo, ~274) nunca
+anexa um `BuiltinLowerer` (`.WithBuiltins`), então `now()`/builtins dentro de
+`Apply` falham; (3) `kitchen/domain.ds` declara `items List<TicketItem>` mas
+chama `.add(...)` nele — só suportado para `AppendList<T>` (provável typo do
+próprio fixture, não gap de codegen); (4) o Read Side de Kitchen
+(`Database MainDb { provider: "mongodb" }`, decorativo) não tem provider real
+por trás, e o seam in-memory de Query não cobre "list <Aggregate>" direto
+sem correlação a um campo `AppendList` conhecido. Registrado como **ISSUE-12**
+(`.claude/issues.md`), com os cinco pontos (F5/G3 + os quatro acima)
+detalhados, os arquivos/linhas exatos e o texto exato dos erros reproduzidos.
+Por REQ-52.7, o escopo de L1.2 **não foi ampliado** para tentar corrigir
+nenhum deles — a task fecha no seu próprio escopo (call site + esta
+confirmação). **L1.3 fica BLOQUEADA**: a task original ("prova com o
+pizzeria + limpeza do CI") não pode prosseguir como planejada até ISSUE-12
+fechar (ou uma decisão explícita de trocar a fixture-âncora de L1.3) —
+provavelmente precisa de um recorte novo, maior que REQ-52 sozinho.
+Verificação: `go build ./...`, `go vet ./...`, `gofmt -l` limpos sobre os
+arquivos tocados; `go test ./codegen/... ./driver/...` verde. **Próxima
+task: L1.3 — BLOQUEADA por ISSUE-12** (ver acima; precisa de re-escopo antes
+de prosseguir — não tentar "provar o pizzeria" sem antes resolver os cinco
+pontos registrados, e não remover `pizzeria` de `KNOWN_UNGENERATABLE` no CI
+enquanto isso).
 
 ## Issues em aberto
 
