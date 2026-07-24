@@ -281,6 +281,33 @@ func emitApply(e *emit.Emitter, decl *ast.AggregateDecl, a *ast.ApplyDecl, model
 	// e TestStmt_Apply_DepositPerformed_RealWallet, cuja convenção validada
 	// esta função reproduz).
 
+	// BuiltinLowerer: habilita as built-ins de FUNÇÃO (now()/uuid()/
+	// random(...)/random_str(...)) dentro de um corpo de Apply (ISSUE-12 item
+	// 2, L1.3c). emitApply era o ÚNICO emissor de corpo executável que não
+	// anexava um BuiltinLowerer — emitUseCasesBytes/emitPolicyExecute/Saga/
+	// Query sempre anexam. Sem isto, "state.createdAt = CreatedAt(now())"
+	// (docs/examples/pizzeria/kitchen/domain.ds:104) falha com "CallExpr sobre
+	// \"now\" não é construção de VO/Event/Command conhecida".
+	//
+	// A sutileza do ctx: entre as quatro built-ins, só now() usa ctxGoName —
+	// BuiltinLowerer.CallFunc emite "runtime.Now(<ctxGoName>)". Os demais
+	// emissores passam "ctx" porque UseCase/Policy/Saga/Query sempre têm um
+	// parâmetro "ctx context.Context" em escopo; um Apply NÃO tem (sua
+	// assinatura é "func (r *T) applyEvent(ev E)", sem ctx). runtime.Now
+	// (rtsrc/util.go.txt) ignora o ctx hoje, então "context.Background()" é
+	// funcionalmente idêntico a um ctx real. Só importamos "context" e
+	// passamos "context.Background()" QUANDO o corpo de fato chama now() —
+	// senão ctxGoName fica "" e "context" NÃO é importado, evitando o erro de
+	// import-não-usado (emit.TestEmitterBytesFailsOnUnusedImport) e
+	// preservando byte-identidade para todo Apply sem built-in (o caso comum,
+	// wallet/shop). storeGoName é "" (mesmo padrão de decl_saga.go): um Apply
+	// é infalível por construção — nunca faz load/list/count/store/delete.
+	ctxGoName := ""
+	if blockCallsFunc(a.Body, "now") {
+		ctxGoName = e.Import("context") + ".Background()"
+	}
+	l.WithBuiltins(lower.NewBuiltinLowerer(runtimeAlias, ctxGoName, ""))
+
 	methodName := "apply" + a.Event
 	sig := fmt.Sprintf("func (%s *%s) %s(ev %s)", receiver, decl.Name, methodName, a.Event)
 
@@ -318,6 +345,24 @@ func blockReferencesIdent(b *ast.Block, name string) bool {
 	found := false
 	astutil.ForEachExprInBlock(b, func(e ast.Expr) {
 		if astutil.IsIdent(e, name) {
+			found = true
+		}
+	})
+	return found
+}
+
+// blockCallsFunc reporta se b contém, em qualquer profundidade, uma chamada
+// de FUNÇÃO por nome nu — um *ast.CallExpr cujo Fn é um *ast.Ident de nome
+// exatamente name (a MESMA forma que Lowerer.call/BuiltinLowerer.CallFunc
+// reconhecem como built-in de função, expr.go:388/builtins.go:279). Usado por
+// emitApply (L1.3c) para detectar now() especificamente: é o único built-in
+// de função que lê ctxGoName, e um Apply não tem parâmetro ctx próprio, então
+// só quando now() aparece de fato é que "context" precisa ser importado (ver
+// a doc em emitApply). Mesmo padrão de varredura de blockReferencesIdent.
+func blockCallsFunc(b *ast.Block, name string) bool {
+	found := false
+	astutil.ForEachExprInBlock(b, func(e ast.Expr) {
+		if call, ok := e.(*ast.CallExpr); ok && astutil.IsIdent(call.Fn, name) {
 			found = true
 		}
 	})

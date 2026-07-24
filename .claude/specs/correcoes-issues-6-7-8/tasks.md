@@ -79,7 +79,7 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
     (`caller.authenticated && caller.hasRole(...)`) continua byte-idêntica.
   - DoD: escopo verde; `go build`/`go vet`/`gofmt` limpos.
 
-- [ ] **L1.3c** `emitApply`: anexar `BuiltinLowerer` (builtins de função
+- [x] **L1.3c** `emitApply`: anexar `BuiltinLowerer` (builtins de função
   utilizáveis dentro de `Apply`). (ISSUE-12 item 2)
   - `codegen/decl_aggregate.go:274` (`emitApply`): constrói o `Lowerer` sem
     `.WithBuiltins(...)`, ao contrário de `emitUseCasesBytes`/
