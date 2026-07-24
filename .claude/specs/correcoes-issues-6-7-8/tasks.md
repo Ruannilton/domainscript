@@ -66,7 +66,7 @@ Convenção de commit (CLAUDE.md): `feat(codegen): …`, `fix(codegen): …`,
   - DoD: escopo verde (front-end continua validando pizzeria limpo); não é
     um fix de codegen, só do fixture — sem par de teste de codegen novo.
 
-- [ ] **L1.3b** `lowerAccessCondition`: suportar uma condição de acesso que é
+- [x] **L1.3b** `lowerAccessCondition`: suportar uma condição de acesso que é
   SÓ `caller.hasRole(...)` (sem `&&`/`||`/`==` compondo). (ISSUE-12 item 1)
   - `codegen/decl_aggregate.go:341` (`lowerAccessCondition`): hoje só trata
     `BinaryExpr` (composto) ou cai no fallback genérico `l.Expr(cond)`, que
