@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a done; tasks.md gained L1.3a-L1.3f to resolve ISSUE-12 before the final pizzeria proof) | L1.3b |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c done; tasks.md gained L1.3a-L1.3f to resolve ISSUE-12 before the final pizzeria proof) | L1.3d |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2215,6 +2215,49 @@ ISSUE-12 se mantém íntegra e que o próximo escopo é mesmo L1.3c
 `caller.authenticated` sozinho e a igualdade `caller.id == self.id`/VO
 seguem cobertos pelos testes pré-existentes, inalterados).
 **Próxima task: L1.3c.**
+
+Concluído: **L1.3c** — `emitApply` (`codegen/decl_aggregate.go`) passou a
+anexar um `BuiltinLowerer` via `l.WithBuiltins(...)`, fechando o item 2 de
+ISSUE-12: era o ÚNICO emissor de corpo executável que não anexava um (ao
+contrário de `emitUseCasesBytes`/`emitPolicyExecute`/Saga/Query), então
+qualquer built-in de função (`now()`/`uuid()`/`random(...)`/`random_str(...)`)
+dentro de um `Apply` falhava com "CallExpr sobre \"now\" não é construção de
+VO/Event/Command conhecida". A sutileza de projeto: dos quatro built-ins, só
+`now()` lê `ctxGoName` (`BuiltinLowerer.CallFunc` emite `runtime.Now(<ctx>)`),
+e um `Apply` — diferente de UseCase/Policy/Saga/Query — NÃO tem parâmetro
+`ctx` na assinatura (`func (r *T) applyEvent(ev E)`, sem context). Resolução:
+um pré-scan do corpo (`blockCallsFunc(a.Body, "now")`, helper novo ao lado de
+`blockReferencesIdent`, mesmo molde de varredura via `astutil.
+ForEachExprInBlock`, detectando um `*ast.CallExpr` cujo `Fn` é um `*ast.Ident`
+"now") decide, e SÓ quando `now()` de fato aparece é que `emitApply` importa
+`"context"` (`e.Import("context")`) e passa `"context.Background()"` como
+`ctxGoName` — `runtime.Now` (rtsrc/util.go.txt) ignora o ctx hoje, então é
+funcionalmente idêntico a um ctx real. Sem `now()`, `ctxGoName` fica `""` e
+`"context"` NÃO é importado, evitando o erro de import-não-usado
+(`emit.TestEmitterBytesFailsOnUnusedImport`) e preservando byte-identidade
+para todo `Apply` sem built-in (o caso comum, wallet/shop — anexar um
+`BuiltinLowerer` cujo `CallFunc` nunca é alcançado não muda a saída).
+`storeGoName` é `""` (mesmo padrão de `decl_saga.go`): um `Apply` é infalível
+por construção, nunca faz load/list/count/store/delete. Três testes novos em
+`codegen/apply_builtins_test.go` (fixtures sintéticas `Aggregate Item`,
+análogas a `kitchen/domain.ds:104`, sem tocar o pizzeria):
+`TestGenerateApplyWithNowCompiles` (`state.createdAt = CreatedAt(now())` →
+`runtime.Now(context.Background())`, `gentest.SmokeCompile`),
+`TestGenerateApplyWithUuidCompiles` (`Token(uuid())` → `runtime.UUID()` e
+confirma que `"context"` NÃO é importado — só `now()` dispara o import) e
+`TestGenerateApplyWithoutBuiltinDoesNotImportContext` (não-regressão: `Apply`
+sem built-in não importa `"context"` nem emite `runtime.Now(`). Verificação:
+`go build ./...`, `go vet ./...`, `gofmt -l` limpos; `go test ./codegen/...
+./driver/...` verde — wallet/shop byte-idênticos, provado por
+`driver.TestGenerateWalletE2ERegenTwoDirsByteIdentical`/os e2e de shop
+(nenhum golden regenerado). Sanity check opcional: `dsc gen
+docs/examples/pizzeria` — o erro do item 2 (`now()` em `Apply`) desapareceu, e
+o próximo bloqueio na sequência é exatamente o item 4 de ISSUE-12 (`Query
+GetBoardTickets`: `list KitchenTicket ... as KitchenTicketVW` → "list ... em
+posição de expressão pura não é suportado por Lowerer.Expr") — o item 3
+(`.add`/`AppendList`) já fora resolvido por L1.3a, confirmando que a sequência
+avança para o escopo de L1.3d, não tocado aqui.
+**Próxima task: L1.3d.**
 
 ## Issues em aberto
 
