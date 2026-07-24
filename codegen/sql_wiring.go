@@ -349,6 +349,69 @@ func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName
 	return nil
 }
 
+// emitSingleDatabaseWiring emite, em cmd/<service>/main.go, a UnitOfWork
+// database/sql de BANCO ÚNICO (sem 2PC) do módulo PRODUTOR durável (ISSUE-9/
+// REQ-51.5, §design correcoes-issues-9-10-11 4.2-P1) — a PRÉ-CONDIÇÃO de
+// REQ-51: hoje generateCmdMainFile sempre constrói o "uow" do produtor sobre
+// runtime.NewMemoryEventStore() (§design 4.1), mesmo quando o módulo declara
+// um Database real; sobre essa store em memória, Tx.EnqueueOutbox é um no-op
+// documentado (rtsrc/uow.go.txt) — não há onde persistir a linha do outbox
+// que K3.3 vai enfileirar. Este helper troca a STORE por uma conexão real
+// (mesma resolução de emitXADatabaseWiring/emitOutboxDatabaseWiring —
+// databaseConnectionGo + provider.openFunc) e constrói diretamente "uow :=
+// sqlruntime.NewUnitOfWork(db, EventRegistry(), dialect, canal)".
+//
+// Ao contrário de emitXADatabaseWiring (que monta um *sqlruntime.EventStore
+// POR Database para alimentar NewUnitOfWork2PC — coordenação entre 2+
+// bancos), sqlruntime.NewUnitOfWork (sqlrt/uow.go.txt:68) já recebe o
+// *sql.DB diretamente e abre sua PRÓPRIA *sql.Tx a cada Run — não há
+// EventStore intermediário neste caminho de banco único, então nenhuma
+// variável "*Store" é criada aqui (ao contrário de emitXADatabaseWiring).
+//
+// O publisher passado (channelVarName) é o MESMO canal de sempre — K3.2 só
+// troca a store; trocar o publisher para o DurableOutbox (deixando de
+// publicar direto pós-commit) e enfileirar via tx.EnqueueOutbox na tx é
+// K3.3, fora do escopo deste helper (ver a nota em generateCmdMainFile,
+// codegen.go).
+//
+// A variável de pacote "store" que generateCmdMainFile sempre emite
+// (runtime.NewMemoryEventStore()) continua existindo e sendo passada a
+// newMux/newGRPCServer mesmo quando este helper roda — ela serve o lado de
+// LEITURA do service inteiro (rotas de Query via "<pkg>.<Query>(ctx, store,
+// ...)"), ortogonal ao "uow" de ESCRITA que este helper constrói: nenhuma
+// rota de Query do módulo produtor muda de comportamento aqui, e nenhum
+// outro módulo do mesmo service group é afetado.
+func emitSingleDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias, dbName, channelVarName string, runMode bool) error {
+	mod := prog.Modules[moduleName]
+	if mod == nil {
+		return fmt.Errorf("módulo %s não encontrado no Program (bug de geração)", moduleName)
+	}
+	db := mod.Databases[dbName]
+	if db == nil {
+		return fmt.Errorf("Database %s não encontrado no módulo %s (bug de geração)", dbName, moduleName)
+	}
+	provider, ok := recognizedSQLProvider(db.Provider)
+	if !ok {
+		return fmt.Errorf("Database %s: provider %q não reconhecido (bug de geração — front-end já deveria ter barrado)", dbName, db.Provider)
+	}
+
+	logAlias := e.Import("log")
+	sqlRuntimeAlias := e.Import(path.Join(domainModuleRoot, "sqlruntime"))
+
+	varPrefix := strings.ToLower(moduleName[:1]) + moduleName[1:]
+	dbVar := varPrefix + "DB"
+
+	connGo, err := databaseConnectionGo(e, db)
+	if err != nil {
+		return fmt.Errorf("Database %s: %w", dbName, err)
+	}
+	e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, connGo)
+	emitFailFast(e, "err", logAlias, runMode)
+	emitDeferClose(e, dbVar, runMode)
+	e.Line("uow := %s.NewUnitOfWork(%s, %s.EventRegistry(), %s.%s(), %s)", sqlRuntimeAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor, channelVarName)
+	return nil
+}
+
 // databaseConnectionGo traduz a connection string de db para uma expressão
 // Go (J1.3, R1, §design infra-providers 3.1): NUNCA usa
 // strconv.Quote(db.DSN) diretamente — esse campo só é populado a partir do

@@ -1122,6 +1122,31 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		return nil, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5/G3)", group.dirName)
 	}
 
+	// producerDurable/producerPkgAlias (K3.2, ISSUE-9/REQ-51.5, §design
+	// correcoes-issues-9-10-11 4.1/4.2-P1): quando o módulo produtor
+	// (producerModule) também qualifica como "produtor durável" —
+	// durableProducer (K3.1, sql_wiring.go), predicado puro sobre Database
+	// real + canal provider:"rabbitmq" — a UnitOfWork do produtor troca de
+	// runtime.NewMemoryEventStore() para uma conexão sql real
+	// (emitSingleDatabaseWiring, abaixo). producerPkgAlias é resolvido aqui
+	// (a partir de wireTargets, já montado acima) para não repetir a busca
+	// dentro do corpo de func main()/run() mais abaixo.
+	var producerDurable bool
+	var producerPkgAlias string
+	if producerChannel != nil {
+		var err error
+		producerDurable, err = durableProducer(prog, producerModule)
+		if err != nil {
+			return nil, fmt.Errorf("cmd/%s/main.go: produtor durável do módulo %s: %w", group.dirName, producerModule, err)
+		}
+		for _, wt := range wireTargets {
+			if wt.module == producerModule {
+				producerPkgAlias = wt.alias
+				break
+			}
+		}
+	}
+
 	anyXADatabases := false
 	for _, wt := range wireTargets {
 		if len(wt.xaDatabases) > 0 {
@@ -1157,6 +1182,12 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				return nil, fmt.Errorf("cmd/%s/main.go: canal de saída do módulo %s: %w", group.dirName, producerModule, err)
 			}
 			if kind == "rabbitmq" {
+				resourceCount++
+			}
+			// K3.2: o produtor durável abre, ADEMAIS do canal, uma conexão
+			// real para seu Database — mais um recurso fallível em
+			// sequência neste corpo (ver emitSingleDatabaseWiring).
+			if producerDurable {
 				resourceCount++
 			}
 		}
@@ -1255,6 +1286,20 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		case needsDispatcher:
 			e.Line("dispatcher := %s.NewDispatcher()", runtimeAlias)
 			e.Line("uow := %s.NewUnitOfWork(store, dispatcher)", runtimeAlias)
+		case producerChannel != nil && producerDurable:
+			// K3.2 (ISSUE-9/REQ-51.5, §design 4.2-P1): pré-condição do
+			// produtor durável — a UnitOfWork sai da store em memória
+			// (irrelevante para este produtor: "store" acima segue existindo
+			// só para newMux/newGRPCServer, o lado de leitura, ver a doc de
+			// emitSingleDatabaseWiring) e passa a rodar sobre uma conexão
+			// sql real do único Database do módulo. O publisher continua
+			// sendo o canal — inalterado (a troca de publisher/enqueue no
+			// outbox é K3.3, não esta task).
+			dbName := moduleOutboxDatabaseName(prog, producerModule) // durableProducer garante exatamente 1 Database real neste módulo
+			if err := emitSingleDatabaseWiring(e, prog, producerModule, producerPkgAlias, dbName, channelVarName, runMode); err != nil {
+				mainErr = fmt.Errorf("wiring do produtor durável do módulo %s: %w", producerModule, err)
+				return
+			}
 		case producerChannel != nil:
 			e.Line("uow := %s.NewUnitOfWork(store, %s)", runtimeAlias, channelVarName)
 		default:

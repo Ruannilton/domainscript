@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1 done) | K3.2 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1+K3.2 done) | K3.3 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1654,8 +1654,104 @@ codegen/durable_producer_test.go` sem saída. Próxima task: **K3.2**
 banco único, publisher ainda inalterado; REQ-51.5, pré-condição do resto de
 K3).
 
+Concluído: **K3.2** — `emitSingleDatabaseWiring`: store `database/sql` real
+para o produtor de banco único, publisher (canal) inalterado (REQ-51.5,
+ISSUE-9, §design correcoes-issues-9-10-11 4.2-P1). Nova função
+`emitSingleDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName,
+pkgAlias, dbName, channelVarName string, runMode bool) error` em
+`codegen/sql_wiring.go`, ao lado de `emitOutboxDatabaseWiring` (mesmo estilo
+de emissão — `databaseConnectionGo`/`provider.openFunc`, `emitFailFast`,
+`emitDeferClose`) mas SEM 2PC e SEM `*sqlruntime.EventStore` intermediário:
+ao contrário de `emitXADatabaseWiring`, `sqlruntime.NewUnitOfWork(db *sql.DB,
+registry, dialect, publisher ...runtime.Publisher)` (confirmado em
+`sqlrt/uow.go.txt:68`) já recebe o `*sql.DB` direto e abre sua própria
+`*sql.Tx` a cada `Run` — a linha final emitida é
+`uow := sqlruntime.NewUnitOfWork(<db>, <pkg>.EventRegistry(),
+sqlruntime.<Dialect>(), <canal>)`, com o CANAL como publisher, exatamente
+como o caminho in-memory que substitui (a troca de publisher/enqueue no
+outbox durável continua K3.3, fora deste escopo). `durableProducer` (K3.1)
+**manteve sua assinatura** `(prog, module) (bool, error)` — não foi alterada;
+o nome do único Database real do produtor é obtido reusando
+`moduleOutboxDatabaseName(prog, producerModule)` (que já devolve "o primeiro
+Database real em ordem alfabética" — como `durableProducer` garante
+exatamente 1, esse primeiro É o único), evitando duplicar a iteração sobre
+`mod.Databases` e evitando qualquer mudança de assinatura em K3.1.
+
+`codegen/codegen.go`, `generateCmdMainFile`: `producerDurable`/
+`producerPkgAlias` resolvidos logo após a guarda F5/G3 pré-existente
+(produtor+Dispatcher no mesmo service continua barrado, então nunca
+precisam coexistir); o switch que decide como construir `uow` ganhou um novo
+`case producerChannel != nil && producerDurable` ANTES do `case
+producerChannel != nil` genérico, chamando `emitSingleDatabaseWiring` em vez
+de `runtime.NewUnitOfWork(store, <canal>)`. Decisão registrada em comentário
+de código: a linha `store := runtime.NewMemoryEventStore()` continua sendo
+emitida INCONDICIONALMENTE (não é removida no caso do produtor durável) —
+achado desta task, `store` é uma variável de escopo de SERVIÇO passada
+sempre a `newMux(store)`/`newGRPCServer(store)` (rotas de Query via
+`<pkg>.<Query>(ctx, store, ...)`), ortogonal ao `uow` de escrita; removê-la
+quebraria a compilação de qualquer rota de Query do service (mesmo de outro
+módulo do mesmo grupo) sem nenhum ganho — a troca do produtor é só de QUAL
+`uow` se constrói. `resourceCount` (runMode, J6.2) ganhou mais um incremento
+quando `producerDurable` é true (abrir o Database do produtor é mais um
+recurso fallível em sequência, ao lado do canal) — decisão consistente com a
+convenção já existente (cada abertura conta 1).
+
+**Efeito colateral achado e corrigido nos testes:** `durableProducer`
+qualifica qualquer módulo com 1 Database real + canal `provider:"rabbitmq"`
+— não só a fixture-âncora de J6. A fixture sintética de
+`channel_rabbitmq_test.go` (`Alpha`, `Database MainDb { provider: "postgres"
+}` + canal rabbitmq) também qualifica, então
+`TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile` precisou da
+MESMA atualização deliberada de asserção (documentada em comentário no
+próprio teste). Atualizado: `TestAnchorFixtureOrdersMainWiresRabbitMQProducer`
+(`anchor_fixture_test.go`) agora também exige
+`sqlruntime.OpenPostgres(os.Getenv("PG_URL"))` e
+`uow := sqlruntime.NewUnitOfWork(anchorOrdersDB, anchororders.EventRegistry(),
+sqlruntime.PostgresDialect(), anchorOrdersChannel)`, com uma asserção
+negativa provando que `runtime.NewUnitOfWork(store, anchorOrdersChannel)` NÃO
+aparece mais; `TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile`
+(`channel_rabbitmq_test.go`) espelha a mesma troca para `alphaDB`/`alpha`.
+`TestAnchorFixtureSmokeCompile`/`TestAnchorFixtureDeterministic` seguem
+verdes sem mudança (smoke/determinismo são indiferentes à FORMA do wiring,
+só exigem Go válido/estável). `wallet` e `shop` confirmados byte-idênticos
+(nenhum dos dois ativa `durableProducer`: `wallet` não tem canal de saída;
+`shop/Orders` tem canal `via: queue` SEM `provider:` — a `QueueChannel`
+in-memory, não um transporte real) — `driver.TestGenerateWalletE2E*`/
+`TestGenerateShopE2E*` verdes sem regeneração de golden.
+
+Testes novos: `codegen/single_database_wiring_test.go`
+(`TestEmitSingleDatabaseWiringShape`, `runMode=false` — abre a conexão,
+`uow := sqlruntime.NewUnitOfWork(...)` com o canal, sem defer/EventStore
+intermediário; `TestEmitSingleDatabaseWiringRunModeEmitsFailFastAndDeferClose`,
+`runMode=true` — `return err`/`defer Close()` em vez de `log.Fatal` inline;
+`TestEmitSingleDatabaseWiringUnknownDatabaseIsGenerationBug` — guarda de bug
+de geração, mesma convenção de `emitXADatabaseWiring`/
+`emitOutboxDatabaseWiring`) e `codegen/sql_producer_parity_test.go`
+(`TestLedgerSingleDatabaseProducerParity`/
+`TestSQLUnitOfWorkPublishesAfterCommitLikeMemoryUnitOfWork` — paridade
+comportamental NFR-22: reusa a fixture Ledger/sqlite já provada por
+`TestLedgerSingleDatabaseBehavior`, injeta um `fakeChannelPublisher` no 4º
+argumento de `sqlruntime.NewUnitOfWork` e roda `PerformDebit` de verdade via
+`gentest.RunTests` — confirma que o evento apensado é publicado LOGO APÓS o
+commit, na mesma ordem, exatamente como `runtime.NewUnitOfWork(store,
+publisher)` em memória já fazia, e que o Append continua acontecendo
+independente do publisher).
+
+`go test ./codegen/ -run "TestEmitSingleDatabaseWiring|TestLedgerSingleDatabaseProducerParity|TestAnchorFixture|TestGenerateRabbitMQChannelFixture"`
+verde; `go test ./codegen/... ./driver/...` completo verde (~151s, sem
+regressão em nenhum golden/smoke/e2e existente, incluindo wallet/shop). `go
+build ./...` limpo; `go vet ./...` limpo; `gofmt -l` sem apontar nenhum dos
+arquivos tocados (`codegen/sql_wiring.go`, `codegen/codegen.go`,
+`codegen/anchor_fixture_test.go`, `codegen/channel_rabbitmq_test.go`,
+`codegen/single_database_wiring_test.go`,
+`codegen/sql_producer_parity_test.go`). Próxima task: **K3.3** (troca
+atômica — irredutível: enqueue in-tx via `tx.EnqueueOutbox` antes do commit,
+trocar o publisher da UoW do produtor do canal para o `DurableOutbox`, e
+subir `StartOutboxRelay`/`StartOutboxCleanup` do produtor; REQ-51.1/.2/.3/.4).
+
 Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
-produtor).
+produtor; K3.2 é a pré-condição de armazenamento que K3.3 precisa para ter
+onde persistir a linha do outbox).
 
 ## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
 
