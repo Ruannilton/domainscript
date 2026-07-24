@@ -160,7 +160,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
     não só o seam manual de `sql_outbox_channel_test.go`.
   - DoD: escopo verde; smoke compile limpo.
 
-- [ ] **K3.5** Docs + consolidação (fechamento de REQ-51). (§design 4.4, NFR-25)
+- [x] **K3.5** Docs + consolidação (fechamento de REQ-51). (§design 4.4, NFR-25)
   - `.claude/specs/codegen/gaps.md` §G-4 "Residual aberto": remover o item
     produtor→outbox→canal (agora fechado); manter os demais residuais (vendoring
     R10, categorias fora de escopo).

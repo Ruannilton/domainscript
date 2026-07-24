@@ -110,7 +110,7 @@ ATUAL, pós-Marco J:
 | Categoria | Spec pede | Implementado | Onde está documentado |
 |---|---|---|---|
 | Database | `"Postgres"` (§12) | `"sqlite"` **e** `"postgres"` são adapters reais (REQ-41) — outros bancos (MySQL, SQL Server, Mongo, Cassandra) seguem rótulo decorativo | `codegen/sql_wiring.go`/`codegen/sqlrt/`; J1 em `infra-providers/tasks.md` |
-| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **residual (ver nota abaixo):** o relay ainda não publica no canal cross-service de verdade (REQ-42.6 só implementado no seam `runtime.Publisher`, nunca conectado pelo codegen) | `codegen/sql_wiring.go`/`codegen/rtsrc/outbox.go.txt`; J2 em `infra-providers/tasks.md`; ISSUE-9 (`.claude/issues.md`) |
+| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **produtor→canal cross-service fechado** (REQ-42.6/REQ-51, ciclo `correcoes-issues-9-10-11`/Marco K, K3.1-K3.4): um módulo com Database real + canal `provider:"rabbitmq"` enfileira o `PublicEvent` cross-service no outbox atomicamente com a tx de negócio, e o relay do `DurableOutbox` (com o canal como `publisher`) publica de verdade — nunca mais publish direto no commit | `codegen/sql_wiring.go`/`codegen/rtsrc/outbox.go.txt`/`codegen/sqlrt/uow.go.txt`; J2 em `infra-providers/tasks.md`; K3 em `correcoes-issues-9-10-11/tasks.md`; ISSUE-9 (`.claude/issues.md`, RESOLVED) |
 | Canais | `direct`/`queue`/`grpc`/`http`/`stream` (§11) | `queue` ganhou o provider `"rabbitmq"` real (cross-process, ordenação por chave, reconexão, DLQ — REQ-43); `direct` continua in-memory (não precisa de provider); `grpc`/`http`/`stream` continuam erro de geração | `codegen/channel_rabbitmq.go`; J3 em `infra-providers/tasks.md` |
 | Cache backend | `memory`/`redis`/`layered` (§15) | `redis` real (REQ-44) — `layered` segue fora de escopo | `codegen/redisrt/`; J4 em `infra-providers/tasks.md` |
 | RateLimit backend | `redis` (§16) | real, com fallback local em falha do Redis (REQ-44.5) | `codegen/redisrt/`; J4 em `infra-providers/tasks.md` |
@@ -119,21 +119,23 @@ ATUAL, pós-Marco J:
 
 **Residual aberto (não fechado por Marco J, registrado para um ciclo
 futuro):**
-- **Outbox → canal cross-service (REQ-42.6, ISSUE-9):** o runtime já
-  suporta um `DurableOutbox` construído com um `publisher` (o relay chama
-  `publisher.Publish` em vez de rodar handlers locais — provado por
-  `codegen/sql_outbox_channel_test.go`), mas **nenhum código do codegen
-  constrói esse publisher** — `emitDurableOutboxConstruction`
-  (`codegen/decl_policy.go`) sempre chama `NewDurableOutbox(store,
-  registry)` sem o 3º argumento, e `generateCmdMainFile` continua publicando
-  DIRETO no commit (`NewUnitOfWork(store, <canal>)`) para um módulo produtor
-  de canal, em vez de enfileirar no outbox e deixar o relay publicar. A
-  fixture-âncora de J6.1 prova as duas metades SEPARADAMENTE (o canal
-  rabbitmq funcionando; a Policy AtLeastOnce local com Outbox durável) —
-  nunca a integração completa "outbox alimenta o canal", que a spec original
-  do ciclo esperava fechar aqui. Não bloqueia nenhum critério de aceite das
-  tasks J2/J3/J6 individualmente (nenhuma pede essa mudança de wiring
-  explicitamente), mas é uma lacuna real contra REQ-42.6/DoD do ciclo.
+- ~~**Outbox → canal cross-service (REQ-42.6, ISSUE-9)**~~ — **fechado** pelo
+  ciclo `.claude/specs/correcoes-issues-9-10-11/` (Marco K, K3.1-K3.4,
+  REQ-51): `durableProducer` (K3.1) detecta a condição de ativação (Database
+  real + canal `provider:"rabbitmq"`); o produtor abre uma UnitOfWork real
+  sobre `database/sql` (K3.2, `emitSingleDatabaseWiring`); ela enfileira o
+  `PublicEvent` cross-service no outbox ANTES do commit, na MESMA `*sql.Tx`
+  do `Append`, via o construtor distinto `sqlruntime.NewOutboxUnitOfWork`
+  (K3.3, REQ-51.1/51.4); `generateCmdMainFile` monta um
+  `runtime.NewDurableOutbox(outboxStore, registry, <canal>)` com o canal
+  como `publisher` e sobe o relay/cleanup (K3.3, REQ-51.2/51.3) — a UoW não
+  publica mais nada pós-commit. Provado com fixtures dedicadas + smoke
+  compile (K3.2/K3.3) e um teste comportamental fim-a-fim de crash simulado
+  sobre o **caminho gerado** do produtor (K3.4, REQ-51.7): `Publish` falha
+  na 1ª tentativa, a linha fica undelivered (`attempts++`), o `Tick`
+  seguinte re-publica — nenhum evento perdido. `wallet`/`shop` permanecem
+  byte-idênticos (nenhum dos dois satisfaz a condição de ativação). Ver
+  ISSUE-9 (`.claude/issues.md`, RESOLVED).
 - **Vendorização real / build offline (`R10`, §design infra-providers
   §2.2):** o critério "`go build -mod=vendor` contra um `vendor/` real,
   materializado a partir da árvore vendorizada do próprio repositório
@@ -146,15 +148,11 @@ futuro):**
   explicitamente fora do recorte de 5 categorias do Marco J (ver
   `.claude/specs/infra-providers/requirements.md`, "Fora de escopo").
 
-**Fechar o residual exige:** (a) fazer o codegen de UseCase/Handle chamar
-`tx.EnqueueOutbox` para um `PublicEvent` cross-service em vez de depender só
-do commit implícito, e construir o `publisher` (o `ChannelTransport` real)
-ao montar `NewDurableOutbox` quando o módulo também produz para aquele
-canal; (b) para os bancos/canais/backends fora do recorte, o modelo
-"implementar `Dialect`/adapter + 1 entrada de registro" que Marco J já
-generalizou (REQ-46, `codegen/provider_registry.go`) reduz o custo
-significativamente — cada categoria nova é, estruturalmente, o mesmo
-trabalho que Postgres/RabbitMQ/Redis/S3 já fizeram.
+**Fechar o restante exige:** para os bancos/canais/backends fora do recorte
+de Marco J, o modelo "implementar `Dialect`/adapter + 1 entrada de
+registro" que Marco J já generalizou (REQ-46, `codegen/provider_registry.go`)
+reduz o custo significativamente — cada categoria nova é, estruturalmente, o
+mesmo trabalho que Postgres/RabbitMQ/Redis/S3 já fizeram.
 
 ### G-5. Field-Level Security de View: bloco `visibility` (spec §6.2)
 

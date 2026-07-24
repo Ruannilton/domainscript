@@ -282,6 +282,29 @@ Cada issue é um bloco novo, nesta forma:
   = postgres + rabbitmq) + uma fixture dedicada. Rota do enqueue resolvida:
   na construção da UoW (o corpo gerado do UseCase/Handle não muda). Fecha
   quando o Marco K fechar.
+- RESOLVED (commits `1137ba9`/`e2f3ec9`/`9fd30f0`/`c580e1f`, K3.1-K3.4): a
+  raiz analisada acima está implementada de ponta a ponta. `durableProducer`
+  (K3.1, `codegen/sql_wiring.go`) detecta a condição de ativação (Database
+  real + canal `provider:"rabbitmq"`, sem 2PC/Dispatcher combinado — guarda
+  F5/G3 pré-existente); `emitSingleDatabaseWiring` (K3.2) abre a conexão real
+  em vez de degenerar para a store in-memory; a UoW do produtor passa a ser
+  `sqlruntime.NewOutboxUnitOfWork` (K3.3, construtor DISTINTO de
+  `NewUnitOfWork` — mantém todo caller existente byte-idêntico), que
+  enfileira o `PublicEvent` cross-service no outbox ANTES do `Commit`, na
+  MESMA `*sql.Tx` do `Append` (REQ-51.1/51.4), e NÃO publica mais nada
+  pós-commit; `generateCmdMainFile` monta `runtime.NewDurableOutbox(store,
+  registry, <canal>)` com o canal como `publisher` (inline em `main.go`/
+  `run()` — o produtor é UseCase-only, o canal só existe nesse escopo) e sobe
+  o relay/cleanup (K3.3, REQ-51.2/51.3). Provado por fixtures dedicadas +
+  smoke compile (K3.2/K3.3, incl. a âncora de J6 `AnchorOrders` e a fixture
+  sintética `Alpha`/`Beta`) e por um teste comportamental fim-a-fim de crash
+  simulado sobre o CAMINHO GERADO do produtor — não só o seam manual de
+  `sql_outbox_channel_test.go` (K3.4, `codegen/producer_outbox_test.go`,
+  REQ-51.7): `Publish` falha na 1ª tentativa, a linha fica undelivered
+  (`attempts++`), o `Tick` seguinte re-publica — nenhum evento cross-service
+  perdido. `wallet`/`shop` confirmados byte-idênticos em toda task (nenhum
+  dos dois satisfaz a condição de ativação). Ver
+  `.claude/specs/codegen/gaps.md` §G-4 (item removido da lista de residuais).
 
 ## ISSUE-10
 - SPEC: infra-providers
