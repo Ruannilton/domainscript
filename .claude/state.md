@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done) | K3.1 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1 done) | K3.2 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1598,10 +1598,61 @@ TestRedisQueryCacheAdapter` verde (~37s, roda `go mod tidy` + `go test ./...`
 do projeto sintético, incluindo os 3 novos testes); sanity re-rodando `go
 test ./codegen/ -run TestRedisQueryCache` sem regressão. `go build ./...`
 limpo; `go vet ./...` limpo; `gofmt -l codegen/redis_cache_test.go
-codegen/redisrt/cache.go.txt` sem saída. Próxima task: **K3.1** (fase K3,
-"Produtor Outbox → canal cross-service" — detecção do produtor durável,
-predicado puro sem emissão, REQ-51 condição de ativação, ISSUE-9; a maior/
-mais arriscada peça restante do plano).
+codegen/redisrt/cache.go.txt` sem saída.
+
+Concluído: **K3.1** — detecção do produtor durável (predicado puro, sem
+emissão; REQ-51 condição de ativação, ISSUE-9, §design
+correcoes-issues-9-10-11 4.1). Nova função `durableProducer(prog *program.Program,
+module string) (bool, error)` em `codegen/sql_wiring.go` (ao lado de
+`recognizedSQLProvider`/`moduleOutboxDatabaseName`, que ela reusa junto com
+`producerChannelFor`/`channelProviderKind` de `channel.go`/
+`channel_rabbitmq.go` — cross-cutting entre banco e canal, cabe melhor aqui
+que em `codegen.go`, que não tem hoje um lugar natural de "predicados de
+módulo" fora de `moduleMarks`, propositalmente não tocado nesta task).
+Condição de ativação, as DUAS precisam valer: (1) o módulo tem **exatamente
+1** Database real (`recognizedSQLProvider`, contagem sobre
+`mod.Databases`); (2) o módulo tem um canal de saída
+(`producerChannelFor`) cujo `channelProviderKind == "rabbitmq"` — um
+`via: queue` sem `provider:` real (a `QueueChannel` in-memory, a forma do
+`shop`) ou um provider declarado mas não reconhecido (ex. `"kafka"`) ambos
+resolvem `channelProviderKind` para `""`, portanto `false`. Erro de
+`producerChannelFor` (mais de um canal de saída via queue — guarda F5
+pré-existente) é propagado ao chamador, não mascarado como `false` — segue a
+mesma convenção dos chamadores existentes de `producerChannelFor`
+(`generateCmdMainFile`). Decisão registrada em comentário no código: **2+
+Database reais no mesmo módulo devolve `false`**, não `true` — a leitura do
+design (§4.1 "Sem 2PC", §4.2-P1 "banco único, não-2PC") e de
+`usecase2PCPlan`/`emitXADatabaseWiring` (`decl_usecase.go`/`sql_wiring.go`)
+mostra que 2+ Database reais já disparam o caminho XA/2PC pré-existente,
+ortogonal ao produtor de banco único que REQ-51 endereça; `durableProducer`
+não deve colidir com/duplicar esse reconhecimento. Testes unitários leves
+(construção direta de `*program.Program`/`*program.Module`/
+`*program.Channel`, mesmo padrão de `sql_wiring_test.go` — sem passar pelo
+driver/parser), em `codegen/durable_producer_test.go`:
+`TestDurableProducerPostgresPlusRabbitMQ` (positivo: postgres + canal
+`provider:"rabbitmq"` → true), `TestDurableProducerInMemoryChannelIsNotDurable`
+(o gotcha central: postgres + canal `via: queue` SEM `provider:`, a forma do
+`shop` → false), `TestDurableProducerUnrecognizedChannelProviderIsNotDurable`
+(provider declarado mas não reconhecido, ex. `"kafka"` → false),
+`TestDurableProducerNoRealDatabase` (sub-testes sem-database/
+provider-não-reconhecido, ex. `"mongodb"`, mesmo com canal rabbitmq → false),
+`TestDurableProducerNoOutboundChannel` (postgres sem nenhum canal de saída,
+a forma do `wallet` → false), `TestDurableProducerTwoRealDatabasesIsNotSingleDatabaseProducer`
+(2 Databases reais + canal rabbitmq → false, documentando a decisão acima).
+Task **puramente aditiva**: nenhuma chamada nova a `durableProducer` em
+`generateCmdMainFile` nem em nenhum outro ponto de emissão — função ainda
+não consumida (dead code do ponto de vista do gerador), então nenhuma saída
+gerada muda (wallet/shop/fixture-âncora seguem byte-idênticos, confirmado
+rodando a suíte mais ampla abaixo, sem nenhuma golden/smoke precisar
+atualizar). `go test ./codegen/ -run TestDurableProducer` verde (7 testes/
+sub-testes, <10ms); `go test ./codegen/... ./driver/...` completo (mais
+amplo que o exigido, para provar "zero mudança de saída gerada") verde,
+~169s, sem regressão em nenhum golden/smoke/e2e existente. `go build ./...`
+limpo; `go vet ./...` limpo; `gofmt -l codegen/sql_wiring.go
+codegen/durable_producer_test.go` sem saída. Próxima task: **K3.2**
+(`emitSingleDatabaseWiring` — store `database/sql` real para o produtor de
+banco único, publisher ainda inalterado; REQ-51.5, pré-condição do resto de
+K3).
 
 Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
 produtor).
