@@ -101,16 +101,17 @@ func TestEmitPoliciesRabbitMQChannelGolden(t *testing.T) {
 // o lado produtor só publica, nunca deve competir por mensagens reais com o
 // consumidor do outro service) como publisher da unit of work.
 //
-// Desde K3.2 (ISSUE-9/REQ-51.5, §design correcoes-issues-9-10-11 4.2-P1):
-// Alpha (Database postgres real + canal de saída provider:"rabbitmq")
-// também satisfaz a condição de ativação de durableProducer (K3.1) — assim
-// como a fixture-âncora de J6 (AnchorOrders, anchor_fixture_test.go), então
-// sua UnitOfWork TAMBÉM troca de "runtime.NewUnitOfWork(store, alphaChannel)"
-// para "sqlruntime.NewUnitOfWork(alphaDB, alpha.EventRegistry(),
-// sqlruntime.PostgresDialect(), alphaChannel)" — mudança DELIBERADA desta
-// asserção, não uma regressão: "alphaChannel" continua o publisher,
-// inalterado (a troca de publisher/enqueue no outbox durável é K3.3, fora
-// deste escopo). Prova smoke compile de verdade (importa amqp091-go real).
+// Desde K3.3 (ISSUE-9/REQ-51.1/51.2/51.3/51.4, §design
+// correcoes-issues-9-10-11 4.2-P2/P3/P4): Alpha (Database postgres real +
+// canal de saída provider:"rabbitmq") satisfaz a condição de ativação de
+// durableProducer (K3.1) — assim como a fixture-âncora de J6 (AnchorOrders,
+// anchor_fixture_test.go), então sua UoW troca para
+// "sqlruntime.NewOutboxUnitOfWork(alphaDB, ..., map[string]bool{"WidgetMade":
+// true})" (o canal NÃO é mais o publisher — a UoW enfileira o PublicEvent no
+// outbox dentro da tx) e o main.go sobe um runtime.DurableOutbox com o canal
+// como publisher + o relay. Mudança DELIBERADA desta asserção, não uma
+// regressão. Prova smoke compile de verdade (o novo wiring do DurableOutbox/
+// relay tem de compilar, importando amqp091-go real).
 func TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile(t *testing.T) {
 	dir := writeProjectDir(t, map[string]string{
 		"topology.ds":     channelFixtureRabbitMQTopologyDs,
@@ -141,7 +142,14 @@ func TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile(t *testing.T) 
 		`Exchange: "Alpha-Beta"`,
 		"ConsumeDisabled: true",
 		"sqlruntime.OpenPostgres(",
-		"uow := sqlruntime.NewUnitOfWork(alphaDB, alpha.EventRegistry(), sqlruntime.PostgresDialect(), alphaChannel)",
+		// K3.3-P2/P3: enqueue-in-tx pela UoW, canal fora da UoW.
+		`uow := sqlruntime.NewOutboxUnitOfWork(alphaDB, alpha.EventRegistry(), sqlruntime.PostgresDialect(), map[string]bool{"WidgetMade": true})`,
+		// K3.3-P4: OutboxStore + DurableOutbox com o canal como publisher + relay.
+		"alphaOutboxStore := sqlruntime.NewOutboxStore(alphaDB, sqlruntime.PostgresDialect())",
+		"alphaOutbox := runtime.NewDurableOutbox(alphaOutboxStore, map[string]runtime.EventFactory{",
+		`"WidgetMade": func() runtime.Event { return &contracts.WidgetMade{} },`,
+		"}, alphaChannel)",
+		"go alphaOutbox.Start(workerCtx)",
 	} {
 		if !strings.Contains(alphaMainStr, want) {
 			t.Errorf("esperava %q em cmd/alphasvc/main.go, não achei:\n%s", want, alphaMainStr)
@@ -150,10 +158,14 @@ func TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile(t *testing.T) 
 	if strings.Contains(alphaMainStr, "runtime.NewQueueChannel") {
 		t.Errorf("cmd/alphasvc/main.go com provider \"rabbitmq\" não deveria usar runtime.NewQueueChannel:\n%s", alphaMainStr)
 	}
-	// K3.2: a UnitOfWork do produtor NÃO deve mais rodar sobre a store em
-	// memória (a pré-condição do outbox durável de fato trocou a store).
+	// K3.2: a UoW do produtor NÃO roda sobre a store em memória.
 	if strings.Contains(alphaMainStr, "runtime.NewUnitOfWork(store, alphaChannel)") {
 		t.Errorf("cmd/alphasvc/main.go ainda constrói a UnitOfWork do produtor sobre a store em memória (pré-condição K3.2 não aplicada):\n%s", alphaMainStr)
+	}
+	// K3.3-P3 (prova negativa): o canal não é mais publisher da UoW (a forma
+	// K3.2 "NewUnitOfWork(alphaDB, ..., alphaChannel)" sumiu).
+	if strings.Contains(alphaMainStr, "sqlruntime.NewUnitOfWork(alphaDB") {
+		t.Errorf("cmd/alphasvc/main.go ainda passa o canal como publisher da UoW (troca de publisher K3.3 não aplicada):\n%s", alphaMainStr)
 	}
 
 	gentest.SmokeCompile(t, m)

@@ -34,16 +34,18 @@ func singleDatabaseWiringFixture(provider string) *program.Program {
 // TestEmitSingleDatabaseWiringShape prova a forma de emissão (runMode=false,
 // o caso comum): abre a conexão real (provider.openFunc), sem defer/fail-
 // fast em bloco (emitFailFast/emitDeferClose são no-ops fora de runMode,
-// ver run_error.go), e constrói "uow := sqlruntime.NewUnitOfWork(db,
-// EventRegistry(), dialect, <canal>)" com o CANAL como publisher —
-// inalterado (K3.2 não troca o publisher, isso é K3.3).
+// ver run_error.go), e constrói "uow := sqlruntime.NewOutboxUnitOfWork(db,
+// EventRegistry(), dialect, map[string]bool{...})" — K3.3 trocou o publisher:
+// a UoW NÃO recebe mais o canal (agora recebe o conjunto de event_type que o
+// canal carrega e os enfileira no outbox dentro da tx; quem publica é o relay
+// do DurableOutbox, montado por emitProducerOutboxRelay).
 func TestEmitSingleDatabaseWiringShape(t *testing.T) {
 	prog := singleDatabaseWiringFixture("postgres")
 	e := emit.New("main")
 
 	var wiringErr error
 	e.Block("func run() error", func() {
-		wiringErr = emitSingleDatabaseWiring(e, prog, "Orders", "orders", "OrdersDb", "ordersChannel", false)
+		wiringErr = emitSingleDatabaseWiring(e, prog, "Orders", "orders", "OrdersDb", []string{"OrderPlaced"}, false)
 	})
 	if wiringErr != nil {
 		t.Fatalf("emitSingleDatabaseWiring: erro inesperado: %v", wiringErr)
@@ -56,20 +58,26 @@ func TestEmitSingleDatabaseWiringShape(t *testing.T) {
 
 	for _, want := range []string{
 		`ordersDB, err := sqlruntime.OpenPostgres("orders.db")`,
-		"uow := sqlruntime.NewUnitOfWork(ordersDB, orders.EventRegistry(), sqlruntime.PostgresDialect(), ordersChannel)",
+		`uow := sqlruntime.NewOutboxUnitOfWork(ordersDB, orders.EventRegistry(), sqlruntime.PostgresDialect(), map[string]bool{"OrderPlaced": true})`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("esperava %q na emissão de emitSingleDatabaseWiring, não achei:\n%s", want, got)
 		}
+	}
+	// K3.3: o canal NÃO é mais passado como publisher da UoW (é o publisher do
+	// relay do DurableOutbox, montado à parte por emitProducerOutboxRelay).
+	if strings.Contains(got, "ordersChannel") {
+		t.Fatalf("emitSingleDatabaseWiring não deveria mais referenciar o canal (a troca de publisher K3.3):\n%s", got)
 	}
 	// runMode=false: nenhum defer Close() (emitDeferClose é no-op fora de
 	// runMode, mesma convenção de emitXADatabaseWiring/emitOutboxDatabaseWiring).
 	if strings.Contains(got, "defer ordersDB.Close()") {
 		t.Fatalf("runMode=false não deveria emitir defer Close():\n%s", got)
 	}
-	// K3.2 não constrói NENHUM EventStore/OutboxStore intermediário — só a
-	// UnitOfWork direto sobre o *sql.DB (uow.go.txt:68, diferente de
-	// emitXADatabaseWiring).
+	// emitSingleDatabaseWiring não constrói NENHUM EventStore/OutboxStore — só a
+	// UnitOfWork direto sobre o *sql.DB (uow.go.txt, diferente de
+	// emitXADatabaseWiring). O OutboxStore do produtor é emitido à parte, por
+	// emitProducerOutboxRelay (após workerCtx, em generateCmdMainFile).
 	if strings.Contains(got, "NewEventStore") || strings.Contains(got, "NewOutboxStore") {
 		t.Fatalf("emitSingleDatabaseWiring não deveria montar EventStore/OutboxStore intermediário:\n%s", got)
 	}
@@ -86,7 +94,7 @@ func TestEmitSingleDatabaseWiringRunModeEmitsFailFastAndDeferClose(t *testing.T)
 
 	var wiringErr error
 	e.Block("func run() error", func() {
-		wiringErr = emitSingleDatabaseWiring(e, prog, "Orders", "orders", "OrdersDb", "ordersChannel", true)
+		wiringErr = emitSingleDatabaseWiring(e, prog, "Orders", "orders", "OrdersDb", []string{"OrderPlaced"}, true)
 		// generateCmdMainFile já importa "log" incondicionalmente (usado por
 		// func main() { if err := run(); err != nil { log.Fatal(err) } },
 		// codegen.go) — reproduzido aqui só para satisfazer a validação de
@@ -106,7 +114,7 @@ func TestEmitSingleDatabaseWiringRunModeEmitsFailFastAndDeferClose(t *testing.T)
 	for _, want := range []string{
 		"if err != nil {\n\t\treturn err\n\t}",
 		"defer ordersDB.Close()",
-		"uow := sqlruntime.NewUnitOfWork(ordersDB, orders.EventRegistry(), sqlruntime.PostgresDialect(), ordersChannel)",
+		`uow := sqlruntime.NewOutboxUnitOfWork(ordersDB, orders.EventRegistry(), sqlruntime.PostgresDialect(), map[string]bool{"OrderPlaced": true})`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("esperava %q (runMode=true), não achei:\n%s", want, got)
@@ -125,7 +133,7 @@ func TestEmitSingleDatabaseWiringUnknownDatabaseIsGenerationBug(t *testing.T) {
 	prog := singleDatabaseWiringFixture("postgres")
 	e := emit.New("main")
 
-	err := emitSingleDatabaseWiring(e, prog, "Orders", "orders", "NoSuchDb", "ordersChannel", false)
+	err := emitSingleDatabaseWiring(e, prog, "Orders", "orders", "NoSuchDb", []string{"OrderPlaced"}, false)
 	if err == nil {
 		t.Fatal("emitSingleDatabaseWiring(dbName inexistente) = nil, want erro")
 	}

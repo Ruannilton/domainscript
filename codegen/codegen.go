@@ -1133,6 +1133,13 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	// dentro do corpo de func main()/run() mais abaixo.
 	var producerDurable bool
 	var producerPkgAlias string
+	// producerOutboxEventTypes (K3.3, REQ-51.4): o conjunto de event_type que
+	// o canal de saída carrega — os PublicEvent do módulo produtor
+	// (buckets[producerModule].pubEvents), ordenado (NFR-13). Alimenta tanto a
+	// UoW do produtor (que enfileira só esses no outbox, emitSingleDatabaseWiring)
+	// quanto o registry do DurableOutbox (emitProducerOutboxRelay). Não-vazio
+	// sempre que producerDurable (o canal carrega ao menos um PublicEvent).
+	var producerOutboxEventTypes []string
 	if producerChannel != nil {
 		var err error
 		producerDurable, err = durableProducer(prog, producerModule)
@@ -1145,6 +1152,12 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				break
 			}
 		}
+		if producerDurable {
+			for _, ev := range buckets[producerModule].pubEvents {
+				producerOutboxEventTypes = append(producerOutboxEventTypes, ev.Name)
+			}
+			sort.Strings(producerOutboxEventTypes)
+		}
 	}
 
 	anyXADatabases := false
@@ -1156,7 +1169,10 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	}
 
 	var ctxAlias string
-	if anyWorkers || anyXADatabases || anyIdempotency || anyOutboxDatabases {
+	if anyWorkers || anyXADatabases || anyIdempotency || anyOutboxDatabases || producerDurable {
+		// producerDurable (K3.3): o relay/cleanup do outbox do produtor rodam em
+		// goroutines que precisam de um context (workerCtx, abaixo) — mais uma
+		// razão para importar "context" e declarar workerCtx.
 		ctxAlias = e.Import("context")
 	}
 
@@ -1287,16 +1303,18 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 			e.Line("dispatcher := %s.NewDispatcher()", runtimeAlias)
 			e.Line("uow := %s.NewUnitOfWork(store, dispatcher)", runtimeAlias)
 		case producerChannel != nil && producerDurable:
-			// K3.2 (ISSUE-9/REQ-51.5, §design 4.2-P1): pré-condição do
-			// produtor durável — a UnitOfWork sai da store em memória
-			// (irrelevante para este produtor: "store" acima segue existindo
-			// só para newMux/newGRPCServer, o lado de leitura, ver a doc de
-			// emitSingleDatabaseWiring) e passa a rodar sobre uma conexão
-			// sql real do único Database do módulo. O publisher continua
-			// sendo o canal — inalterado (a troca de publisher/enqueue no
-			// outbox é K3.3, não esta task).
+			// K3.2/K3.3 (ISSUE-9/REQ-51.1/51.3/51.5, §design 4.2-P1/P2/P3): a
+			// UnitOfWork do produtor sai da store em memória (irrelevante para
+			// este produtor: "store" acima segue existindo só para newMux/
+			// newGRPCServer, o lado de leitura, ver a doc de
+			// emitSingleDatabaseWiring) e passa a rodar sobre uma conexão sql
+			// real do único Database do módulo. O canal NÃO é mais o publisher
+			// da UoW (K3.3): a UoW recebe o conjunto de event_type do canal e os
+			// enfileira no outbox dentro da tx; quem publica no canal é o relay
+			// do DurableOutbox montado por emitProducerOutboxRelay (depois de
+			// workerCtx, abaixo).
 			dbName := moduleOutboxDatabaseName(prog, producerModule) // durableProducer garante exatamente 1 Database real neste módulo
-			if err := emitSingleDatabaseWiring(e, prog, producerModule, producerPkgAlias, dbName, channelVarName, runMode); err != nil {
+			if err := emitSingleDatabaseWiring(e, prog, producerModule, producerPkgAlias, dbName, producerOutboxEventTypes, runMode); err != nil {
 				mainErr = fmt.Errorf("wiring do produtor durável do módulo %s: %w", producerModule, err)
 				return
 			}
@@ -1305,7 +1323,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		default:
 			e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
 		}
-		if anyWorkers || anyIdempotency || anyOutboxDatabases {
+		if anyWorkers || anyIdempotency || anyOutboxDatabases || producerDurable {
 			e.Line("workerCtx := %s.Background()", ctxAlias)
 		}
 		e.Line("")
@@ -1406,6 +1424,20 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 			}
 			if !anyUseCases {
 				e.Line("_ = uow // nenhum módulo deste service declara UseCase")
+			}
+		}
+
+		// Produtor durável (K3.3, ISSUE-9/REQ-51.2/51.4, §design 4.2-P4): monta
+		// o OutboxStore + DurableOutbox sobre a MESMA conexão que a UoW já abriu
+		// (emitSingleDatabaseWiring, no switch acima) e sobe o relay/cleanup —
+		// DEPOIS de "workerCtx :=" (o relay/cleanup precisam de um context) e
+		// DEPOIS de Wire (a UoW do produtor já enfileira na tx). O canal é o
+		// publisher do relay, não da UoW (a troca de publisher, P3).
+		if producerChannel != nil && producerDurable {
+			dbName := moduleOutboxDatabaseName(prog, producerModule)
+			if err := emitProducerOutboxRelay(e, prog, producerModule, dbName, channelVarName, producerOutboxEventTypes, runtimeAlias, "workerCtx"); err != nil {
+				mainErr = fmt.Errorf("relay do outbox do produtor durável do módulo %s: %w", producerModule, err)
+				return
 			}
 		}
 

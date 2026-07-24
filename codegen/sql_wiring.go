@@ -9,6 +9,7 @@ import (
 
 	"domainscript/ast"
 	"domainscript/codegen/emit"
+	"domainscript/codegen/goname"
 	"domainscript/codegen/sqlrt"
 	"domainscript/program"
 	"domainscript/token"
@@ -351,28 +352,31 @@ func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName
 
 // emitSingleDatabaseWiring emite, em cmd/<service>/main.go, a UnitOfWork
 // database/sql de BANCO ÚNICO (sem 2PC) do módulo PRODUTOR durável (ISSUE-9/
-// REQ-51.5, §design correcoes-issues-9-10-11 4.2-P1) — a PRÉ-CONDIÇÃO de
-// REQ-51: hoje generateCmdMainFile sempre constrói o "uow" do produtor sobre
-// runtime.NewMemoryEventStore() (§design 4.1), mesmo quando o módulo declara
-// um Database real; sobre essa store em memória, Tx.EnqueueOutbox é um no-op
-// documentado (rtsrc/uow.go.txt) — não há onde persistir a linha do outbox
-// que K3.3 vai enfileirar. Este helper troca a STORE por uma conexão real
-// (mesma resolução de emitXADatabaseWiring/emitOutboxDatabaseWiring —
-// databaseConnectionGo + provider.openFunc) e constrói diretamente "uow :=
-// sqlruntime.NewUnitOfWork(db, EventRegistry(), dialect, canal)".
+// REQ-51.1/51.5, §design correcoes-issues-9-10-11 4.2-P1/P2/P3) — a
+// PRÉ-CONDIÇÃO e o enqueue-in-tx de REQ-51: hoje generateCmdMainFile
+// construía o "uow" do produtor sobre runtime.NewMemoryEventStore() (§design
+// 4.1), onde Tx.EnqueueOutbox é um no-op documentado (rtsrc/uow.go.txt) — não
+// havia onde persistir a linha do outbox. Este helper troca a STORE por uma
+// conexão real (mesma resolução de emitXADatabaseWiring/
+// emitOutboxDatabaseWiring — databaseConnectionGo + provider.openFunc) e
+// constrói "uow := sqlruntime.NewOutboxUnitOfWork(db, EventRegistry(),
+// dialect, <conjunto de event_type do canal>)".
 //
 // Ao contrário de emitXADatabaseWiring (que monta um *sqlruntime.EventStore
 // POR Database para alimentar NewUnitOfWork2PC — coordenação entre 2+
-// bancos), sqlruntime.NewUnitOfWork (sqlrt/uow.go.txt:68) já recebe o
+// bancos), sqlruntime.NewOutboxUnitOfWork (sqlrt/uow.go.txt) já recebe o
 // *sql.DB diretamente e abre sua PRÓPRIA *sql.Tx a cada Run — não há
 // EventStore intermediário neste caminho de banco único, então nenhuma
 // variável "*Store" é criada aqui (ao contrário de emitXADatabaseWiring).
 //
-// O publisher passado (channelVarName) é o MESMO canal de sempre — K3.2 só
-// troca a store; trocar o publisher para o DurableOutbox (deixando de
-// publicar direto pós-commit) e enfileirar via tx.EnqueueOutbox na tx é
-// K3.3, fora do escopo deste helper (ver a nota em generateCmdMainFile,
-// codegen.go).
+// TROCA DE PUBLISHER (K3.3, REQ-51.3): o canal NÃO é mais passado como
+// publisher da UoW (K3.2 passava). Em vez disso a UoW recebe o CONJUNTO de
+// event_type que o canal carrega (outboxEventTypes, os PublicEvent do módulo,
+// REQ-51.4) e enfileira esses apensados no outbox ANTES do commit (dentro de
+// NewOutboxUnitOfWork.Run) — nunca publica pós-commit. Quem publica no canal
+// é o relay do DurableOutbox montado por emitProducerOutboxRelay (abaixo), com
+// o canal como seu publisher. Elimina a publicação dupla (uma inline no
+// commit, outra pelo relay).
 //
 // A variável de pacote "store" que generateCmdMainFile sempre emite
 // (runtime.NewMemoryEventStore()) continua existindo e sendo passada a
@@ -381,7 +385,7 @@ func emitOutboxDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName
 // ...)"), ortogonal ao "uow" de ESCRITA que este helper constrói: nenhuma
 // rota de Query do módulo produtor muda de comportamento aqui, e nenhum
 // outro módulo do mesmo service group é afetado.
-func emitSingleDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias, dbName, channelVarName string, runMode bool) error {
+func emitSingleDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName, pkgAlias, dbName string, outboxEventTypes []string, runMode bool) error {
 	mod := prog.Modules[moduleName]
 	if mod == nil {
 		return fmt.Errorf("módulo %s não encontrado no Program (bug de geração)", moduleName)
@@ -408,7 +412,110 @@ func emitSingleDatabaseWiring(e *emit.Emitter, prog *program.Program, moduleName
 	e.Line("%s, err := %s.%s(%s)", dbVar, sqlRuntimeAlias, provider.openFunc, connGo)
 	emitFailFast(e, "err", logAlias, runMode)
 	emitDeferClose(e, dbVar, runMode)
-	e.Line("uow := %s.NewUnitOfWork(%s, %s.EventRegistry(), %s.%s(), %s)", sqlRuntimeAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor, channelVarName)
+	e.Line("uow := %s.NewOutboxUnitOfWork(%s, %s.EventRegistry(), %s.%s(), %s)", sqlRuntimeAlias, dbVar, pkgAlias, sqlRuntimeAlias, provider.dialectCtor, outboxEventTypesSetLiteral(outboxEventTypes))
+	return nil
+}
+
+// outboxEventTypesSetLiteral monta o literal Go do conjunto de event_type que
+// o canal de saída carrega — map[string]bool{"WidgetMade": true, ...}, na
+// ordem dada (o chamador ordena para determinismo, NFR-13). Vazio vira
+// "map[string]bool{}" (a UoW não enfileira nada — só acontece numa fixture de
+// teste isolada; no caminho real o conjunto é sempre não-vazio, garantido por
+// durableProducer exigir um canal que carrega ao menos um PublicEvent).
+func outboxEventTypesSetLiteral(eventTypes []string) string {
+	if len(eventTypes) == 0 {
+		return "map[string]bool{}"
+	}
+	parts := make([]string, len(eventTypes))
+	for i, et := range eventTypes {
+		parts[i] = fmt.Sprintf("%s: true", strconv.Quote(et))
+	}
+	return "map[string]bool{" + strings.Join(parts, ", ") + "}"
+}
+
+// emitProducerOutboxRelay emite, em cmd/<service>/main.go, o lado de ENTREGA
+// do produtor durável (ISSUE-9/REQ-51.2/51.4, §design
+// correcoes-issues-9-10-11 4.2-P4): monta o sqlruntime.OutboxStore sobre a
+// MESMA conexão que emitSingleDatabaseWiring já abriu (dbVar = "<mod>DB", uma
+// só conexão para o banco único do produtor), constrói o runtime.DurableOutbox
+// com o canal (channelVarName) como publisher e um registry INLINE das
+// factories dos PublicEvent que o canal carrega, e sobe o relay
+// (DurableOutbox.Start) + a limpeza periódica (DurableOutbox.Cleanup) como
+// goroutines.
+//
+// DECISÃO ARQUITETURAL (rota A, §design 4.2-P4 "em main.go, montar o
+// OutboxStore, construir runtime.NewDurableOutbox(...)"): ao contrário do lado
+// CONSUMIDOR (Policy AtLeastOnce), que emite StartOutboxRelay/
+// StartOutboxCleanup/WireOutboxStore no PACOTE do módulo (decl_policy.go) e
+// os chama de main.go, o produtor monta TUDO inline em main.go. Razão
+// forçada: o canal (channelVarName) é uma var LOCAL de main()/run() (construída
+// por emitChannelTransportVar), e o DurableOutbox precisa dele como publisher
+// — só main.go tem o canal em escopo. Emitir funções de pacote como o
+// consumidor exigiria passar o canal para dentro do pacote do módulo (um
+// módulo produtor é UseCase-only, wirado por emitUOWWireFunc, que não conhece
+// canal nenhum) — mudança maior e desnecessária. Manter inline deixa o pacote
+// do módulo produtor byte-idêntico e concentra a mudança em main.go, como o
+// design pede. O registry é inline (map[string]runtime.EventFactory sobre
+// contracts.<Evt>), NÃO contracts.EventRegistry() (que não existe — contracts/
+// só tem aliases de tipo, ver decl_event.go): mesmo raciocínio de
+// emitDurableOutboxConstruction (consumidor) e do registry inline de
+// channel_rabbitmq.go — o tipo é conhecido estaticamente aqui.
+//
+// Chamado DEPOIS de "workerCtx := context.Background()" (o relay/cleanup
+// precisam de um context) e reusa dbVar aberto por emitSingleDatabaseWiring —
+// o chamador (generateCmdMainFile) garante essa ordem.
+func emitProducerOutboxRelay(e *emit.Emitter, prog *program.Program, moduleName, dbName, channelVarName string, outboxEventTypes []string, runtimeAlias, ctxVar string) error {
+	mod := prog.Modules[moduleName]
+	if mod == nil {
+		return fmt.Errorf("módulo %s não encontrado no Program (bug de geração)", moduleName)
+	}
+	db := mod.Databases[dbName]
+	if db == nil {
+		return fmt.Errorf("Database %s não encontrado no módulo %s (bug de geração)", dbName, moduleName)
+	}
+	provider, ok := recognizedSQLProvider(db.Provider)
+	if !ok {
+		return fmt.Errorf("Database %s: provider %q não reconhecido (bug de geração — front-end já deveria ter barrado)", dbName, db.Provider)
+	}
+
+	sqlRuntimeAlias := e.Import(path.Join(domainModuleRoot, "sqlruntime"))
+	contractsAlias := e.Import(path.Join(domainModuleRoot, "contracts"))
+	timeAlias := e.Import("time")
+	slogAlias := e.Import("log/slog")
+
+	varPrefix := strings.ToLower(moduleName[:1]) + moduleName[1:]
+	dbVar := varPrefix + "DB"
+	storeVar := varPrefix + "OutboxStore"
+	outboxVar := varPrefix + "Outbox"
+
+	e.Line("// OutboxStore + DurableOutbox do produtor (ISSUE-9/REQ-51.2/51.4): o")
+	e.Line("// relay abaixo publica no canal, a partir da tabela outbox, cada")
+	e.Line("// PublicEvent que a UoW enfileirou dentro da tx (nunca inline no commit).")
+	e.Line("%s := %s.NewOutboxStore(%s, %s.%s())", storeVar, sqlRuntimeAlias, dbVar, sqlRuntimeAlias, provider.dialectCtor)
+	e.Line("%s := %s.NewDurableOutbox(%s, map[string]%s.EventFactory{", outboxVar, runtimeAlias, storeVar, runtimeAlias)
+	for _, et := range outboxEventTypes {
+		e.Line("%s: func() %s.Event { return &%s{} },", strconv.Quote(et), runtimeAlias, goname.QualifiedRef(contractsAlias, et))
+	}
+	e.Line("}, %s)", channelVarName)
+	e.Line("go %s.Start(%s)", outboxVar, ctxVar)
+	// Limpeza periódica das linhas já entregues (REQ-42.7) — mesma cadência/
+	// retenção de StartOutboxCleanup do lado consumidor (outboxCleanupTickInterval/
+	// outboxCleanupRetention, decl_policy.go), aqui inline como goroutine porque
+	// o DurableOutbox é uma var local de main.go (ver a doc acima).
+	e.BlockSuffix("go func()", "()", func() {
+		e.Line("ticker := %s.NewTicker(%s)", timeAlias, outboxCleanupTickInterval)
+		e.Line("defer ticker.Stop()")
+		e.Block("for", func() {
+			e.Block("select", func() {
+				e.Line("case <-%s.Done():", ctxVar)
+				e.Line("return")
+				e.Line("case <-ticker.C:")
+			})
+			e.Block(fmt.Sprintf("if _, err := %s.Cleanup(%s, %s); err != nil", outboxVar, ctxVar, outboxCleanupRetention), func() {
+				e.Line("%s.Error(%q, %q, err)", slogAlias, "outbox: falha na limpeza de linhas entregues", "error")
+			})
+		})
+	})
 	return nil
 }
 
