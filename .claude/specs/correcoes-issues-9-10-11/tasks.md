@@ -106,7 +106,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
   - DoD: escopo verde; nenhuma mudança em projeto gerado (só um predicado ainda
     não consumido) — `wallet`/`shop`/âncora byte-idênticos.
 
-- [ ] **K3.2** `emitSingleDatabaseWiring`: store `database/sql` para o produtor de
+- [x] **K3.2** `emitSingleDatabaseWiring`: store `database/sql` para o produtor de
   banco único (só a troca de store; publisher inalterado). (REQ-51.5,
   §design 4.2-P1)
   - `codegen/sql_wiring.go`: `emitSingleDatabaseWiring` (análogo a

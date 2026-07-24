@@ -99,10 +99,18 @@ func TestEmitPoliciesRabbitMQChannelGolden(t *testing.T) {
 // amqpruntime.NewRabbitMQChannel com ConsumeDisabled: true (achado desta
 // task — ver a doc de RabbitMQConfig.ConsumeDisabled, amqprt/rabbitmq.go.txt:
 // o lado produtor só publica, nunca deve competir por mensagens reais com o
-// consumidor do outro service) como publisher da unit of work — MESMA forma
-// de wiring que o caminho in-memory já usava (uow := NewUnitOfWork(store,
-// alphaChannel)), só trocando QUAL construtor "alphaChannel" usa. Prova
-// smoke compile de verdade (importa amqp091-go real).
+// consumidor do outro service) como publisher da unit of work.
+//
+// Desde K3.2 (ISSUE-9/REQ-51.5, §design correcoes-issues-9-10-11 4.2-P1):
+// Alpha (Database postgres real + canal de saída provider:"rabbitmq")
+// também satisfaz a condição de ativação de durableProducer (K3.1) — assim
+// como a fixture-âncora de J6 (AnchorOrders, anchor_fixture_test.go), então
+// sua UnitOfWork TAMBÉM troca de "runtime.NewUnitOfWork(store, alphaChannel)"
+// para "sqlruntime.NewUnitOfWork(alphaDB, alpha.EventRegistry(),
+// sqlruntime.PostgresDialect(), alphaChannel)" — mudança DELIBERADA desta
+// asserção, não uma regressão: "alphaChannel" continua o publisher,
+// inalterado (a troca de publisher/enqueue no outbox durável é K3.3, fora
+// deste escopo). Prova smoke compile de verdade (importa amqp091-go real).
 func TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile(t *testing.T) {
 	dir := writeProjectDir(t, map[string]string{
 		"topology.ds":     channelFixtureRabbitMQTopologyDs,
@@ -132,7 +140,8 @@ func TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile(t *testing.T) 
 		"amqpruntime.NewRabbitMQChannel(os.Getenv(\"AMQP_URL\"), amqpruntime.RabbitMQConfig{",
 		`Exchange: "Alpha-Beta"`,
 		"ConsumeDisabled: true",
-		"uow := runtime.NewUnitOfWork(store, alphaChannel)",
+		"sqlruntime.OpenPostgres(",
+		"uow := sqlruntime.NewUnitOfWork(alphaDB, alpha.EventRegistry(), sqlruntime.PostgresDialect(), alphaChannel)",
 	} {
 		if !strings.Contains(alphaMainStr, want) {
 			t.Errorf("esperava %q em cmd/alphasvc/main.go, não achei:\n%s", want, alphaMainStr)
@@ -140,6 +149,11 @@ func TestGenerateRabbitMQChannelFixtureProducerAndConsumerCompile(t *testing.T) 
 	}
 	if strings.Contains(alphaMainStr, "runtime.NewQueueChannel") {
 		t.Errorf("cmd/alphasvc/main.go com provider \"rabbitmq\" não deveria usar runtime.NewQueueChannel:\n%s", alphaMainStr)
+	}
+	// K3.2: a UnitOfWork do produtor NÃO deve mais rodar sobre a store em
+	// memória (a pré-condição do outbox durável de fato trocou a store).
+	if strings.Contains(alphaMainStr, "runtime.NewUnitOfWork(store, alphaChannel)") {
+		t.Errorf("cmd/alphasvc/main.go ainda constrói a UnitOfWork do produtor sobre a store em memória (pré-condição K3.2 não aplicada):\n%s", alphaMainStr)
 	}
 
 	gentest.SmokeCompile(t, m)

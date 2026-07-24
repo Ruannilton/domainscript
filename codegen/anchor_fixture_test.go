@@ -426,17 +426,31 @@ func TestAnchorFixtureGoModRequiresAllFiveProviders(t *testing.T) {
 
 // TestAnchorFixtureOrdersMainWiresRabbitMQProducer prova, sobre
 // cmd/anchororderssvc/main.go de fato gerado, que o lado PRODUTOR
-// (AnchorOrders) seleciona o canal rabbitmq (produtor, ConsumeDisabled).
+// (AnchorOrders) seleciona o canal rabbitmq (produtor, ConsumeDisabled) — E,
+// desde K3.2 (ISSUE-9/REQ-51.5, §design correcoes-issues-9-10-11 4.2-P1),
+// que sua UnitOfWork abre o Database real (postgres) em vez da store em
+// memória: AnchorOrders é o exerciser pretendido de durableProducer (1
+// Database postgres real + canal provider:"rabbitmq") — mudança DELIBERADA
+// de fixture de teste, não uma regressão (o publisher continua sendo o
+// canal, sem mudança — a troca de publisher/enqueue no outbox é K3.3).
 func TestAnchorFixtureOrdersMainWiresRabbitMQProducer(t *testing.T) {
 	files := generateAnchorProject(t)
 	main := fileContent(t, files, "cmd/anchororderssvc/main.go")
 	for _, want := range []string{
 		"amqpruntime.NewRabbitMQChannel(",
 		"ConsumeDisabled: true",
+		`sqlruntime.OpenPostgres(os.Getenv("PG_URL"))`,
+		"uow := sqlruntime.NewUnitOfWork(anchorOrdersDB, anchororders.EventRegistry(), sqlruntime.PostgresDialect(), anchorOrdersChannel)",
 	} {
 		if !strings.Contains(main, want) {
 			t.Fatalf("cmd/anchororderssvc/main.go não contém %q:\n%s", want, main)
 		}
+	}
+	// K3.2: a store em memória segue existindo (lado de LEITURA, newMux) mas
+	// o produtor NÃO constrói mais seu "uow" sobre ela — prova negativa de
+	// que a pré-condição de fato trocou a store de escrita.
+	if strings.Contains(main, "runtime.NewUnitOfWork(store, anchorOrdersChannel)") {
+		t.Fatalf("cmd/anchororderssvc/main.go ainda constrói a UnitOfWork do produtor sobre a store em memória (pré-condição K3.2 não aplicada):\n%s", main)
 	}
 }
 
