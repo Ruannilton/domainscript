@@ -52,11 +52,32 @@ func (t *Tx) EnqueueOutbox(events []runtime.Event) error {
 // §design 3.8): abre uma *sql.Tx de verdade, roda fn e comita no sucesso ou
 // rollbacka no erro — o mesmo contrato commit/rollback que memoryUnitOfWork
 // já documenta como "landing com o adapter database/sql (Marco G)".
+//
+// Dois modos de construção, mutuamente exclusivos:
+//   - NewUnitOfWork(..., publisher): publisher opcional pós-commit (Marco F/G,
+//     o caminho de sempre) — todo evento apensado é publicado LOGO APÓS o
+//     commit.
+//   - NewOutboxUnitOfWork(..., outboxEventTypes): o PRODUTOR durável do Outbox
+//     → canal cross-service (ISSUE-9/REQ-51.1/51.4). Em vez de publicar
+//     pós-commit, enfileira no outbox (tx.EnqueueOutbox), na MESMA *sql.Tx que
+//     Append, os eventos apensados cujo tipo o canal de saída carrega
+//     (outboxEventTypes) — ANTES do Commit, então a linha do outbox é atômica
+//     com o stream. Não recebe publisher: a publicação no canal é feita
+//     DEPOIS, pelo relay do runtime.DurableOutbox (rtsrc/outbox.go.txt),
+//     nunca inline no commit — é exatamente a janela de perda que REQ-42.6
+//     existe para fechar.
 type UnitOfWork struct {
 	db        *sql.DB
 	registry  map[string]EventFactory
 	dialect   Dialect
 	publisher runtime.Publisher
+	// outboxEventTypes é o conjunto de event_type que o canal de saída do
+	// módulo produtor carrega (os PublicEvent do módulo, REQ-51.4) — não-nil
+	// só no caminho do produtor durável (NewOutboxUnitOfWork). Um evento
+	// apensado cujo EventType() está aqui é enfileirado no outbox; os demais
+	// (eventos de domínio internos) seguem só no stream, nunca no outbox nem
+	// no canal.
+	outboxEventTypes map[string]bool
 }
 
 // NewUnitOfWork cria uma UnitOfWork sobre db (já aberta via Open), decodifica
@@ -73,6 +94,20 @@ func NewUnitOfWork(db *sql.DB, registry map[string]EventFactory, dialect Dialect
 	return u
 }
 
+// NewOutboxUnitOfWork cria a UnitOfWork do PRODUTOR durável (ISSUE-9/
+// REQ-51.1/51.4): idêntica a NewUnitOfWork, mas SEM publisher pós-commit —
+// em vez disso, no Run, ANTES do Commit, enfileira via tx.EnqueueOutbox os
+// eventos apensados cujo EventType() está em outboxEventTypes (os PublicEvent
+// que o canal de saída carrega). Um construtor DISTINTO (não um parâmetro a
+// mais em NewUnitOfWork) de propósito: mantém a assinatura/comportamento de
+// NewUnitOfWork byte-idênticos para todo caller existente (o seam de
+// sql_outbox_channel_test.go, o wiring 2PC, etc.), e deixa explícito no nome
+// que este caminho NÃO publica pós-commit — a entrega no canal é do relay do
+// DurableOutbox, montado em cmd/<service>/main.go.
+func NewOutboxUnitOfWork(db *sql.DB, registry map[string]EventFactory, dialect Dialect, outboxEventTypes map[string]bool) *UnitOfWork {
+	return &UnitOfWork{db: db, registry: registry, dialect: dialect, outboxEventTypes: outboxEventTypes}
+}
+
 // Run implementa runtime.UnitOfWork.
 func (u *UnitOfWork) Run(ctx context.Context, fn func(tx runtime.Tx) error) error {
 	sqlTx, err := u.db.BeginTx(ctx, nil)
@@ -84,9 +119,32 @@ func (u *UnitOfWork) Run(ctx context.Context, fn func(tx runtime.Tx) error) erro
 	if err := fn(tx); err != nil {
 		return err
 	}
+	// Produtor durável (ISSUE-9/REQ-51.1/51.4): enfileira no outbox, na MESMA
+	// *sql.Tx que Append já usou, os apensados que o canal de saída carrega —
+	// ANTES do Commit, para que a linha do outbox e o stream sejam gravados
+	// atomicamente (um rollback desfaz os dois). Só o produtor durável tem
+	// outboxEventTypes não-vazio; todo outro caminho (NewUnitOfWork) pula este
+	// bloco e fica byte-idêntico.
+	if len(u.outboxEventTypes) > 0 {
+		var toOutbox []runtime.Event
+		for _, ev := range tx.appended {
+			if u.outboxEventTypes[ev.EventType()] {
+				toOutbox = append(toOutbox, ev)
+			}
+		}
+		if len(toOutbox) > 0 {
+			if err := tx.EnqueueOutbox(toOutbox); err != nil {
+				return err
+			}
+		}
+	}
 	if err := sqlTx.Commit(); err != nil {
 		return err
 	}
+	// publisher só existe no caminho NewUnitOfWork (Marco F/G). O produtor
+	// durável (NewOutboxUnitOfWork) tem publisher nil de propósito: NÃO publica
+	// pós-commit — o relay do DurableOutbox publica no canal a partir da linha
+	// do outbox enfileirada acima.
 	if u.publisher != nil {
 		for _, ev := range tx.appended {
 			if pubErr := u.publisher.Publish(ctx, ev); pubErr != nil {

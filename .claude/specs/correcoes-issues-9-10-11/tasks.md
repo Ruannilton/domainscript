@@ -123,7 +123,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
   - DoD: escopo verde; `wallet`/`shop` byte-idênticos; `go build`/`go vet`/`gofmt`
     limpos.
 
-- [ ] **K3.3** **(troca atômica — irredutível)** Enqueue in-tx + relay + trocar o
+- [x] **K3.3** **(troca atômica — irredutível)** Enqueue in-tx + relay + trocar o
     publisher da UoW. (REQ-51.1/51.2/51.3/51.4, §design 4.2-P2/P3/P4)
   > **Por que não quebrar:** "enfileirar no outbox", "parar de publicar direto no
   > commit" e "subir o relay que publica" precisam valer juntos. Qualquer metade

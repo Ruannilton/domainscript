@@ -15,7 +15,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1+K3.2 done) | K3.3 |
+| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | in-progress (K1+K2 done, K3.1+K3.2+K3.3 done) | K3.4 |
 | correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | pending (spec criada, não iniciada) | L1.1 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
@@ -1752,6 +1752,113 @@ subir `StartOutboxRelay`/`StartOutboxCleanup` do produtor; REQ-51.1/.2/.3/.4).
 Ver `tasks.md` para o mapa de dependências (K3.1 é pré-condição do fluxo do
 produtor; K3.2 é a pré-condição de armazenamento que K3.3 precisa para ter
 onde persistir a linha do outbox).
+
+Concluído: **K3.3** — troca atômica (irredutível) do produtor Outbox → canal:
+enqueue-in-tx + relay + troca do publisher da UoW, as três metades juntas
+(REQ-51.1/51.2/51.3/51.4, ISSUE-9, §design correcoes-issues-9-10-11
+4.2-P2/P3/P4). Fecha, no nível de codegen, o resíduo aberto do Marco J
+(REQ-42.6): um módulo produtor com Database real + canal `provider:"rabbitmq"`
+agora enfileira o `PublicEvent` cross-service no outbox durável DENTRO da tx e
+o relay publica no canal — nunca mais o publish-direto-no-commit. A
+consolidação final (docs/gaps.md/issues.md) é K3.5.
+
+As quatro peças:
+- **P2 (runtime, `codegen/sqlrt/uow.go.txt`):** novo construtor DISTINTO
+  `NewOutboxUnitOfWork(db, registry, dialect, outboxEventTypes map[string]bool)`
+  ao lado de `NewUnitOfWork` (campo novo `outboxEventTypes` na struct
+  `UnitOfWork`, reusa o mesmo `Run`). No `Run`, ANTES do `Commit`, filtra os
+  apensados cujo `EventType()` está em `outboxEventTypes` e chama
+  `tx.EnqueueOutbox(<filtrados>)` na MESMA `*sql.Tx` do `Append` (atômico,
+  REQ-51.1/51.4); publisher fica nil de propósito — NÃO publica pós-commit.
+  **Decisão de assinatura:** construtor distinto, não um parâmetro a mais em
+  `NewUnitOfWork` — mantém `NewUnitOfWork(...,publisher)` byte-idêntico para
+  todo caller existente (o seam de `sql_outbox_channel_test.go`, o 2PC), e o
+  nome deixa explícito que este caminho não publica. `rtsrc/uow.go.txt` (a
+  INTERFACE `runtime.Tx`/`UnitOfWork`) **NÃO foi tocado** — `EnqueueOutbox` já
+  está na interface `Tx`; o produtor só usa a UoW sql.
+- **P3 (`codegen/sql_wiring.go`/`codegen.go`):** `emitSingleDatabaseWiring`
+  troca `channelVarName` por `outboxEventTypes []string` na assinatura e emite
+  `uow := sqlruntime.NewOutboxUnitOfWork(<db>, EventRegistry(), dialect,
+  map[string]bool{...})` — o canal deixa de ser o 4º argumento (publisher) da
+  UoW.
+- **P4 (`codegen/sql_wiring.go`/`codegen.go`):** novo helper
+  `emitProducerOutboxRelay` monta, em `main.go`, `<mod>OutboxStore :=
+  sqlruntime.NewOutboxStore(<mod>DB, dialect)` sobre a MESMA conexão que a UoW
+  já abriu (uma só conexão), `<mod>Outbox := runtime.NewDurableOutbox(<store>,
+  map[string]runtime.EventFactory{...contracts...}, <canal>)` e sobe
+  `go <mod>Outbox.Start(workerCtx)` + uma goroutine de cleanup periódico
+  (ticker + `<mod>Outbox.Cleanup`, mesma cadência/retenção de
+  `outboxCleanupTickInterval`/`outboxCleanupRetention` do lado consumidor).
+- **Wiring (`generateCmdMainFile`):** `producerOutboxEventTypes` (nomes dos
+  `PublicEvent` do produtor, `buckets[producerModule].pubEvents`, ordenado
+  NFR-13) computado junto de `producerDurable`; alimenta P3 e P4. Os gates de
+  `context`/`workerCtx` ganharam `|| producerDurable` (o produtor durável passa
+  a precisar de `workerCtx` para o relay/cleanup — sem isso, referência a var
+  não declarada). O relay é emitido DEPOIS de `workerCtx :=` e de `Wire`.
+
+**Decisão arquitetural A-vs-B (a chamada de fundo de K3.3):** o
+DurableOutbox + relay + cleanup do produtor moram INLINE em `main.go` (rota
+A), **não** como funções `StartOutboxRelay`/`WireOutboxStore` no pacote do
+módulo (a forma do CONSUMIDOR, `decl_policy.go`). Razão forçada: o canal
+(`<mod>Channel`) é uma var LOCAL de `main()`/`run()` (construída por
+`emitChannelTransportVar`), e o `DurableOutbox` precisa dele como publisher —
+só `main.go` tem o canal em escopo. Um módulo produtor é UseCase-only (wirado
+por `emitUOWWireFunc`, que não conhece canal), então emitir funções de pacote
+como o consumidor exigiria empurrar o canal para dentro do pacote do módulo —
+mudança maior e desnecessária. A rota A é também o que o design pede
+literalmente (§4.2-P4 "em `main.go`, montar o `OutboxStore`, construir
+`runtime.NewDurableOutbox(...)`"), deixa o pacote do módulo produtor
+byte-idêntico, e concentra tudo em `main.go`. Documentada em comentário
+proeminente em `emitProducerOutboxRelay`.
+
+**Discrepância registrada (fonte vs. prompt/design):** o design diz "registry
+… via `contracts.EventRegistry()`" — mas `contracts.EventRegistry()` **NÃO
+existe**: o pacote `contracts/` só tem ALIASES de tipo por PublicEvent
+(`type X = <módulo>.X`), sem registry próprio (decl_event.go documenta isso; e
+`channel_rabbitmq.go`/`emitDurableOutboxConstruction` já montam registry
+INLINE pela mesma razão). Segui o padrão correto/existente: registry INLINE
+`map[string]runtime.EventFactory{ "Evt": func() runtime.Event { return
+&contracts.Evt{} } }` sobre `buckets[producerModule].pubEvents`, chaveado
+exatamente pelo `event_type` que o outbox grava (REQ-51.4 routing-by-type).
+
+**runMode (J6.2):** o produtor durável já contava 2 recursos fallíveis (canal
+rabbitmq + Database, K3.2) ⇒ `runMode=true`; o `OutboxStore` reusa a conexão
+`<mod>DB` (`NewOutboxStore` é infalível, não abre conexão) ⇒ nenhum novo
+recurso, nenhuma mudança na contagem. fail-fast/defer-close seguem corretos.
+
+**Testes:** `TestAnchorFixtureOrdersMainWiresRabbitMQProducer`
+(`anchor_fixture_test.go`) e `TestGenerateRabbitMQChannelFixtureProducerAnd
+ConsumerCompile` (`channel_rabbitmq_test.go`) atualizados para exigir
+`NewOutboxUnitOfWork(... map[string]bool{"<Evt>": true})`, `NewOutboxStore`,
+`NewDurableOutbox(..., <canal>)` e `go <mod>Outbox.Start(workerCtx)`, com
+prova negativa de que a forma K3.2 (`sqlruntime.NewUnitOfWork(<db>, ...,
+<canal>)`) sumiu (o canal só entra no DurableOutbox agora); o segundo continua
+com smoke compile real (o novo wiring do DurableOutbox/relay compila+vet com
+amqp091-go). `single_database_wiring_test.go` atualizado para a nova
+assinatura (`[]string` de event_type em vez de `channelVarName`) e a linha
+`NewOutboxUnitOfWork`. `sql_producer_parity_test.go` **reescrito** (a premissa
+K3.2 "canal = publisher da UoW que publica pós-commit" é exatamente o que K3.3
+remove): agora `TestLedgerSingleDatabaseProducerOutbox` prova, sobre o Ledger
+gerado + sqlite real, que `NewOutboxUnitOfWork` enfileira o evento no outbox na
+MESMA tx do Append (linha em `outbox` E `events`, `delivered_at` NULL — não
+publicado) e FILTRA (REQ-51.4) um evento cujo tipo não está no conjunto do
+canal (apensado ao stream, nunca ao outbox). `sql_outbox_channel_test.go`
+inalterado (usa a forma 3-arg de `NewUnitOfWork`, preservada).
+
+`wallet` e `shop` confirmados byte-idênticos (nenhum ativa `producerDurable`:
+`wallet` sem canal; `shop/Orders` com canal `via: queue` SEM `provider:` real
+⇒ cai no `case producerChannel != nil` inalterado) — `driver.TestGenerate
+WalletE2E*`/`TestGenerateShopE2E*` verdes (layout, smoke compile,
+`RegenTwoDirsByteIdentical`), nenhum golden regenerado. `go test ./codegen/...
+./driver/...` COMPLETO verde (~226s codegen, ~10s driver). `go build ./...`
+limpo; `go vet ./codegen/...` limpo; `gofmt -l` sem apontar nenhum dos 7
+arquivos tocados (`codegen/sqlrt/uow.go.txt`, `codegen/sql_wiring.go`,
+`codegen/codegen.go`, `codegen/single_database_wiring_test.go`,
+`codegen/anchor_fixture_test.go`, `codegen/channel_rabbitmq_test.go`,
+`codegen/sql_producer_parity_test.go`). `lower/stmt.go` (emit) e o corpo do
+UseCase **não** tocados (rota (b), §design 4.2-P2). Próxima task: **K3.4**
+(fixture dedicada `producer_outbox_test.go` + comportamental de crash simulado
+fim-a-fim: relay re-publica após falha, nenhum evento perdido — REQ-51.7).
 
 ## correcoes-issues-6-7-8 — `.claude/specs/correcoes-issues-6-7-8/tasks.md`
 
