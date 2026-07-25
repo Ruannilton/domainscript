@@ -87,6 +87,21 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
    `## 8. Riscos e Mitigações` — they're where design-level rationale that
    would otherwise clutter individual task files belongs.
 
+6b. **Check every requirement against the language spec.** Before a REQ
+   reaches `requirements.md`, point at the section of
+   `.claude/steerings/domainscript-spec-v7/` that describes it, and cite that
+   section in the REQ. The language spec is the source of truth (root
+   `CLAUDE.md`): a requirement it does not describe — or describes in a
+   different shape — must not be written. Where the spec is ambiguous,
+   contradictory or silent on exactly the point the requirement needs, file a
+   **spec-revision issue** with the `issue-generator` skill (say what cannot
+   be implemented as written and what the spec must decide; see the
+   `spec-v7-*.md` issues for the format) and leave that requirement out of
+   the spec entirely — not in as a conditional or a TODO. Record the omission
+   in `requirements.md`'s out-of-scope section, pointing at the issue.
+   `.claude/steerings/review-v7.md` is the standing audit of implementation
+   vs. spec; consult it so a cycle doesn't re-derive what's already catalogued.
+
 7. **Break the work into tasks.** Follow `CLAUDE.md`'s working conventions:
    slice vertically, small, independently verifiable, in dependency order —
    refine as far as practical now so execution doesn't need to re-plan

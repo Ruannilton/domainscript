@@ -22,6 +22,23 @@ fechar ou até não haver mais task elegível.
 Quem escreve código, commita e atualiza status é o `task-implementer`. Se você
 sentir vontade de "só ajustar uma coisinha", pare: isso é trabalho dele.
 
+## Task bloqueada por divergência do spec da linguagem: fim de linha
+
+`.claude/steerings/domainscript-spec-v7/` é a fonte de verdade da linguagem, e
+o `task-implementer` é instruído a **bloquear** a task quando ela pede algo que
+o spec não descreve, descreve de outro jeito, ou não decide.
+
+Quando isso acontecer, o desfecho é sempre o mesmo: **pule a task e tudo que
+depende dela**, e siga com a próxima elegível. Nunca redespache uma task
+bloqueada assim, nem com o prompt reformulado, nem "para ver se dessa vez sai":
+a task não está bloqueada por acidente de execução, está bloqueada porque
+falta uma decisão no spec, e nenhuma repetição a produz. Reformular o pedido
+para o subagente contornar o bloqueio é fazê-lo violar a própria regra.
+
+Registre no relatório final, separadamente das demais, toda task bloqueada por
+esse motivo e a issue de revisão do spec que ela gerou — é o que faz a decisão
+chegar a quem pode tomá-la.
+
 ## 1. Descubra a spec
 
 1. Leia `.claude/state.md` (raiz). O ponteiro **Próxima spec-task** aponta para
@@ -83,7 +100,8 @@ Resultados possíveis:
 - **Os três sinais ok** → volte ao passo 2 e dispare a próxima task.
 - **Task `blocked`** (o subagente registrou issue e bloqueou) → não retente,
   não contorne. Pule ela e seus dependentes e siga com a próxima elegível.
-  Registre no relatório final.
+  Registre no relatório final — e, se o bloqueio for divergência do spec da
+  linguagem, numa lista à parte (ver a seção sobre isso no início).
 - **`completed` sem commit**, ou status inconsistente → **pare imediatamente** e
   reporte. Não commite por ele, não conserte o estado, não dispare a próxima.
 - **Subagente falhou / reportou impedimento sem bloquear a task** → pare e

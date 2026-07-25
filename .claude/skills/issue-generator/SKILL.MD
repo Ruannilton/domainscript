@@ -13,6 +13,20 @@ cadastrar an issue found during work in this repo, including errors found
 mid-task that are out of scope for the spec/task being worked on (see root
 `CLAUDE.md`).
 
+**Spec-revision issues.** The language spec
+(`.claude/steerings/domainscript-spec-v7/`) is this repo's source of truth,
+so a second kind of issue is first-class here: the spec itself cannot be
+implemented as written — it is silent, ambiguous or self-contradictory on the
+point at hand — or something is implemented that the spec never describes.
+File these the same way, with two differences: state plainly that it is a
+**request to revise the specification**, and describe what the spec must
+decide *without* proposing an interim behaviour to ship meanwhile (encoding
+the guess in code is exactly what the rule forbids). Prove the finding by
+running the spec's own example verbatim through `dsc` and quoting the output.
+Name the file `spec-v7-<slug>.md` and index it under the "Revisão da
+especificação" heading of `open-issues.md`; the existing `spec-v7-*.md` files
+are the reference format.
+
 ## Resources
 
 - `assets/issue-template.md` — the template every issue file must follow,

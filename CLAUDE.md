@@ -132,6 +132,10 @@ change is needed, update the spec.
   scope (another spec/task, pre-existing code) → register it with the
   `issue-generator` skill and keep going. If it *blocks* the current task, stop
   and report — do not work around it.
+- **Anything the language spec doesn't cover → issue, never code.** A task that
+  asks for what the spec doesn't describe, asks for it in a different shape, or
+  needs a decision the spec never made, is blocked: file the spec-revision
+  issue, mark the task `blocked`, stop. See "The spec is the source of truth".
 - **Finishing a task.** Update the spec's own task tracking → overwrite the
   spec-task pointer with whatever comes next (this spec's next pending task, or
   another spec's if this one has none left) → commit.
@@ -147,20 +151,30 @@ change is needed, update the spec.
 - **Refine tasks at spec-creation time** — small, independently verifiable,
   vertically sliced — so execution never re-plans mid-spec.
 
-**Who does what.** `.claude/agents/` holds the operative definitions; the
-`.claude/hooks/` guards enforce these limits structurally, not just by prompt.
+**Who does what.** `.claude/agents/` holds the operative definitions. The
+`.claude/hooks/` guards enforce the *mechanical* limits structurally (who may
+run tests, who may write where); spec conformance is semantic, so it binds by
+prompt only — every agent below carries it, and it is the one limit no guard
+can catch for you.
 
 - `spec-writer` — authors a spec. Never touches code, never runs tests.
+  Specifies only what the language spec describes; anything beyond it becomes a
+  spec-revision issue and the requirement is left out.
 - `task-implementer` — executes exactly one task and commits it. **Never runs
   tests**: the spec's PR is its only test feedback. A blocker becomes a
-  registered issue plus a `blocked` task, never a workaround.
+  registered issue plus a `blocked` task, never a workaround — and a task that
+  diverges from the language spec *is* a blocker.
 - `spec-implementer` — drives a whole spec by dispatching `task-implementer`
   one task at a time, advancing only after the previous task's commit exists on
-  the spec branch. Pure orchestrator: never edits code, never runs tests.
+  the spec branch. Pure orchestrator: never edits code, never runs tests. Never
+  re-dispatches a task blocked on a spec decision — no rewording produces the
+  decision.
 - `issue-registrar` — proves a suspected defect is real, then files it. **The
   only agent that runs tests**, and it files nothing when the problem does not
   reproduce. It never fixes what it finds: repro work happens in a copy outside
-  the repository, and the versioned tree stays untouched.
+  the repository, and the versioned tree stays untouched. Also files the two
+  spec-conformance kinds: behaviour implemented outside the spec, and gaps or
+  contradictions in the spec itself.
 
 ## Architecture invariants
 
