@@ -1,262 +1,206 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## Current state
-
-**The front-end and the back-end are implemented and green**
-(`go build ./...` / `go test ./...`), committed in a Go module named
-`domainscript`. The original plan in `.claude/specs/transpilador/` (Fases
-0–11, REQ-1..8) is done, the follow-up plan in `.claude/specs/type-checking/`
-— full name & type resolution (REQ-9..13) — is done, and the code-generation
-plan in `.claude/specs/codegen/` — the back-end, Marcos E/F/G/H (REQ-14..32)
-— is **also complete**: a validated program now generates an idiomatic,
-compilable Go project (`driver.GenerateProject` / `dsc gen`). A fourth plan,
-`.claude/specs/read-side/` — query clauses & Smart Partial Loading
-(REQ-33..40) — is **also complete** (Marco I): Query/Policy/Worker/UseCase
-bodies generate `where`/`orderBy`/`skip`/`take`/`as`/`join`/`in` and
-`distinct`/`sum`/`focus` over an in-memory seam (`runtime.Query[T]`) that
-descends to parametrized SQL on the sqlite adapter through a pluggable
-`Dialect`. A fifth plan, `.claude/specs/infra-providers/` — real
-infrastructure providers (REQ-41..48, Marco J) — is **also complete**: it
-closes gap G-4 / ISSUE-3 for a deliberate 5-provider slice — Postgres
-(Database), a durable Outbox, RabbitMQ (cross-service channel), Redis (Cache
-+ RateLimit) and S3 (FileStorage) — each opt-in behind the seam that already
-exists. A maintenance cycle, `.claude/specs/correcoes-issues-9-10-11/` (Marco
-K, REQ-49..51), closed the residual gap Marco J left open: a module with a
-real Database and a `provider:"rabbitmq"` outbound channel now enqueues its
-cross-service `PublicEvent` into the durable outbox atomically with the
-business transaction, and the relay (with the channel as its publisher)
-delivers it — no more publish-straight-on-commit for that path (REQ-42.6,
-ISSUE-9, resolved). Six spec sets are the source of truth and
-are written in Portuguese:
-
-- `.claude/specs/transpilador/{requirements,design,tasks}.md` — the front-end
-  (REQ-1..8, NFR-1..7).
-- `.claude/specs/type-checking/{requirements,design,tasks}.md` — name & type
-  resolution (REQ-9..13, NFR-8..10).
-- `.claude/specs/codegen/{requirements,design,tasks}.md` — the back-end / Go
-  code generation (REQ-14..32, NFR-11..17).
-- `.claude/specs/read-side/{requirements,design,tasks}.md` — query clauses &
-  Smart Partial Loading (REQ-33..40).
-- `.claude/specs/infra-providers/{requirements,design,tasks}.md` — real infra
-  providers, 5-provider slice of G-4 (REQ-41..48, NFR-21..24, Marco J).
-- `.claude/specs/correcoes-issues-9-10-11/{requirements,design,tasks}.md` —
-  maintenance cycle closing ISSUE-9/10/11 (REQ-49..51, Marco K).
-
-Work now is maintenance and extension, not greenfield. Still follow the spec
-flow: a task references the REQ it satisfies (`(REQ-n)`) and the design section
-(`(§design x)`). Do not invent architecture that contradicts `design.md`; if a
-change is needed, update the spec.
-
-## Spec-driven development structure
-
-```
-.claude/                       root of the spec-driven flow
-.claude/specs/<nome-da-spec>/  requirements.md, design.md per spec, plus task
-                                tracking — a single tasks.md for every spec
-                                listed under "Current state" above (legacy
-                                model, untouched); specs created from now on
-                                use the model the skill below scaffolds
-                                instead: tasks/<task-code>.md (one file per
-                                task) + state.md (pending/blocked index)
-.claude/skills/spec-creator/   skill that scaffolds a new spec (requirements.md
-                                + design.md + tasks/ + state.md) from templates
-.claude/steerings/             reference docs useful as ambient context
-                                (e.g. domainscript-spec-v7/, the language spec —
-                                split one file per section, see its README.md)
-.claude/issues/                 open issues found during execution that are out
-                                of scope for the spec/task being worked on —
-                                one file per issue (open-issues.md indexes them)
-.claude/skills/issue-generator/ skill that registers a new issue under
-                                .claude/issues/ from a template
-.claude/agents/                 subagent definitions — spec-writer (authors a
-                                new spec end-to-end, opens its PR and follows
-                                it), task-implementer (implements exactly ONE
-                                task of a spec, one branch/PR per spec) and
-                                issue-registrar (proves a suspected defect is
-                                real, then registers it). None of them edits
-                                repo code except task-implementer; only
-                                issue-registrar may run tests
-.claude/hooks/                  hook scripts referenced by agent frontmatter
-                                (spec-writer-guard.sh: no code changes / no
-                                test runs; task-implementer-guard.sh: no
-                                test runs, build & fmt still allowed;
-                                issue-registrar-guard.sh: no repo code edits,
-                                tests unrestricted)
-.claude/state.md               lean resume pointer — ONLY the next spec-task
-                                and the next issue to resolve, two lines,
-                                overwritten in place; never a per-spec table
-                                or a history (see "Keep it lean" below)
-```
-
-### Execution rules
-
-- **One task at a time.** Never start a second task before the current one is
-  committed. Pick the task up from `.claude/state.md`.
-- **Keep `.claude/state.md` lean.** It holds exactly two pointers — the next
-  spec-task and the next issue to resolve — and nothing else: no per-spec
-  status table, no history, no running log. That detail already lives where
-  it belongs: each spec's own task tracking (`tasks.md`, or `tasks/<code>.md`
-  + that spec's `state.md`) and `.claude/issues/open-issues.md`. Updating it
-  means overwriting one of the two lines in place, never appending. The
-  spec-task pointer advances mechanically as work completes (see below and
-  the `spec-writer`/`task-implementer` agent definitions); the issue pointer
-  is a manual priority call — repoint it when priorities change, e.g. after
-  filing a new issue or starting a spec that addresses one.
-- **Errors found mid-task:**
-  - If the error belongs to the spec/task currently being developed, fix it
-    as part of the current task.
-  - If the error comes from a different scope (another spec/task, pre-existing
-    code), register it with the `issue-generator` skill (one file per issue
-    under `.claude/issues/`, indexed in `.claude/issues/open-issues.md`) and
-    keep going — unless the error blocks the current task from being
-    completed, in which case stop and report it instead of working around it.
-- **Test scope per task.** At the end of a task, run only the tests needed to
-  validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
-  suite. Once green, update the current spec's task tracking — mark the task
-  done in `tasks.md` for a spec on the legacy model, or set `status:
-  completed` in the task's own `tasks/<code>.md` frontmatter and drop it
-  from the spec's `state.md` for a spec scaffolded by `spec-creator` — then
-  overwrite `.claude/state.md`'s spec-task pointer with whatever comes next
-  (the next pending task in this spec, or another spec's if this one has
-  none left), and commit.
-- **One branch and one pull request per spec.** A spec gets a single branch,
-  `claude/impl-<spec-slug>`, cut from `main`, carrying one atomic commit per
-  completed task. The first completed task creates the branch and opens the
-  PR against `main`; every later task adds a commit to that same branch and
-  PR. CI runs the full suite on each push, so every task's diff is still
-  validated on its own commit. When every task is `completed`, `SPEC
-  FINALIZADA` is commented on the PR and it closes with the spec. (This
-  replaces the earlier rule of one PR per completed task.)
-- **No full-suite run at spec closure.** `go test ./...` and `go vet ./...`
-  are not run locally at the end of a spec — CI runs them on the pull
-  request. Closing a spec still means every task is checked off (in
-  `tasks.md`, or via every `tasks/<code>.md`'s `status` plus an empty
-  `state.md` on the newer model); `.claude/state.md`'s spec-task pointer
-  moves on to whatever comes next, or is cleared if nothing does.
-- **Refine tasks at spec-creation time.** Break tasks down as far as
-  practical up front — small, independently verifiable, vertically sliced —
-  so execution never needs to re-plan mid-spec. Use the `spec-creator` skill
-  to scaffold a new spec; it writes `requirements.md`, `design.md`, one
-  `tasks/<code>.md` per task, and the spec's `state.md`.
-- **Who does what.** Three subagents in `.claude/agents/` implement this flow
-  and their definitions are the operative detail: `spec-writer` authors a new
-  spec (never touches code, never runs tests), `task-implementer` executes
-  exactly one task (never runs tests either — the spec's PR is its only test
-  feedback, and a blocker becomes a registered issue plus a `blocked` task
-  rather than a workaround), and `issue-registrar` investigates a suspected
-  defect and files it. A task run through `task-implementer` therefore
-  overrides the "Test scope per task" rule above: nothing is run locally,
-  `go build`/`go vet`/`gofmt` aside.
-- **Only `issue-registrar` runs tests.** It is the one agent allowed to
-  execute the suite, because its job is proving a defect is real before it
-  reaches `.claude/issues/` — and it files nothing when the problem doesn't
-  reproduce. It never fixes what it finds: repro work happens in a copy
-  outside the repository, and the versioned tree stays untouched.
+**Status and history do not live here.** `.claude/state.md` is the resume
+pointer — the next spec-task and the next issue, nothing more. Per-spec status
+lives in each spec's own task tracking; open defects in
+`.claude/issues/open-issues.md`. Read the pointer before starting work.
 
 ## What is being built
 
-A **two-stage transpiler for DomainScript** (spec v6.0). The **front-end**
-goes from source text to a validation verdict: it takes DomainScript files and
-produces (a) a validated AST and (b) a diagnostics report. The **back-end**
-consumes that validated program and produces (c) a complete, idiomatic,
-compilable Go project — the front-end answers "is this correct?"; the back-end
-answers "here is the Go code that does this."
+A **two-stage transpiler for DomainScript**. The **front-end** turns source
+text into a validation verdict — a validated AST plus a diagnostics report;
+it answers *"is this correct?"*. The **back-end** consumes that validated
+program and emits a complete, idiomatic, compilable Go project; it answers
+*"here is the Go code that does this."*
 
-Pipeline (a shared, accumulating `DiagnosticBag` runs across the front-end
-stages; the back-end only runs when the bag has no errors):
+A shared, accumulating `DiagnosticBag` runs across the front-end stages; the
+back-end runs only when the bag has no errors.
 
 ```
                     ┌──────────────── FRONT-END ────────────────┐
 source ─▶ LEXER ─▶ tokens ─▶ PARSER ─▶ AST ─▶ RESOLVER ─▶ CHECKER ─▶ validated program
           REQ-1              REQ-2/3           REQ-4/9/10   REQ-5/12/13      │
-                                                                              ▼ HasErrors()? no
-                                                                     ┌── BACK-END ──┐
-                                                                     │  codegen.Generate│──▶ Go project
-                                                                     └──────────────┘   (go build ✓)
-                                                                     REQ-14..32
+                                                                HasErrors()? no ▼
+                                                          codegen.Generate ─▶ Go project
+                                                                    REQ-14..32
 ```
 
-The RESOLVER does three passes: type/ref resolution (REQ-4), then name
-resolution in executable bodies (REQ-9), then config-ref resolution (REQ-10). The
-CHECKER runs the §23 rules (REQ-5) plus, over a shared `types.Model`, member-access
-(REQ-12) and type-compatibility (REQ-13) checks. The ordering is deliberate: an
-unresolved name becomes `types.ErrorType` downstream, so it never spawns a second
-type diagnostic (anti-cascade, NFR-9).
+- **RESOLVER**, three passes: type/ref resolution (REQ-4) → name resolution in
+  executable bodies (REQ-9) → config-ref resolution (REQ-10).
+- **CHECKER**: the §23 rules (REQ-5) plus, over a shared `types.Model`,
+  member-access (REQ-12) and type-compatibility (REQ-13) checks. The ordering
+  is deliberate — an unresolved name becomes `types.ErrorType` downstream, so
+  it never spawns a second type diagnostic (anti-cascade, NFR-9).
+- **Program aggregation** (REQ-7) runs between PARSER and RESOLVER on
+  multi-file projects: parse every file, merge the ASTs into one program
+  model, then resolve globally and run the cross-file rules.
+- **Back-end** output is a real Go project: `go.mod`, a vendored `runtime/`
+  package, one Go package per domain module, `contracts/` for shared
+  `PublicEvent`s, and one `cmd/<service>/` per service in the topology (a
+  single default group when there is no topology).
 
-For multi-file projects, a **program aggregation** stage (REQ-7) runs between
-PARSER and RESOLVER: every file is parsed, then ASTs are merged into one program
-model before global resolution and cross-file rules.
+## The language spec
 
-The **back-end** (`codegen` package, orchestrated by `driver.GenerateProject`)
-never re-lexes/re-parses/re-validates: its only inputs are `program.Program`,
-`symbols.SymbolTable` and a `types.Model` built over the table. Because the AST
-doesn't carry resolved symbols per node, the generator re-queries the symbol
-table and rebuilds a local type environment (`lower.TypeEnv`, §design codegen
-3.6a) to lower expressions/statements to Go. Output is organized as a real Go
-project: `go.mod`, a vendored `runtime/` package, one Go package per domain
-module, `contracts/` for shared `PublicEvent`s, and one `cmd/<service>/` per
-service in the topology (or a single default group when there's no topology,
-as in the single-module Wallet example).
+`.claude/steerings/domainscript-spec-v7/` — one file per section, indexed by
+its `README.md`. **Load only the sections your task needs**, not the whole
+spec.
+
+⚠️ **`§N` in this repo's code and specs follows v6 numbering and does not
+reliably match the v7 filenames.** v7 inserted sections, so from roughly §20
+onward the numbers shift (+2 in every case checked). Resolve a citation by
+*section title*, never by number alone. Verified pairs:
+
+| Cited in code/specs | File in `domainscript-spec-v7/` |
+|---|---|
+| §23 — regras de compilação | `25-compilation-rules.md` |
+| §22 — testing `*.test.ds` (e.g. §22.3, §22.7) | `24-testing.md` |
+| §20 — Smart Partial Loading | `22-smart-partial-loading.md` |
+
+## Repository layout for the spec-driven flow
+
+```
+.claude/state.md          resume pointer — next spec-task + next issue, only
+.claude/specs/<spec>/     requirements.md, design.md + task tracking (see below)
+.claude/issues/           one file per open issue; open-issues.md indexes them
+.claude/steerings/        ambient reference docs (the language spec)
+.claude/agents/           subagent definitions — the operative detail on who does what
+.claude/hooks/            guard scripts referenced by agent frontmatter
+.claude/skills/spec-creator/    scaffolds a new spec from templates
+.claude/skills/issue-generator/ registers a new issue from a template
+```
+
+**Two task-tracking models.** Every spec on disk today uses the legacy model:
+a single `tasks.md` per spec. Specs scaffolded from now on by `spec-creator`
+use one `tasks/<task-code>.md` per task plus that spec's own `state.md`
+(pending/blocked index). Mark a task done in whichever model its spec uses —
+check the box in `tasks.md`, or set `status: completed` in the task file and
+drop it from the spec's `state.md`.
+
+**To see which specs exist and where each stands**, list `.claude/specs/*/`
+and read their task tracking — that is the authoritative status, not the root
+pointer.
+
+**Specs and their REQ ranges** (scope only):
+
+| Spec | REQs | Scope |
+|---|---|---|
+| `transpilador/` | REQ-1..8, NFR-1..7 | Front-end: lexer → parser → resolver → checker |
+| `type-checking/` | REQ-9..13, NFR-8..10 | Name & type resolution |
+| `codegen/` | REQ-14..32, NFR-11..17 | Back-end / Go code generation |
+| `read-side/` | REQ-33..40 | Query clauses & Smart Partial Loading |
+| `infra-providers/` | REQ-41..48, NFR-21..24 | Postgres, Outbox, RabbitMQ, Redis, S3 |
+| `correcoes-issues-9-10-11/` | REQ-49..51 | Maintenance cycle |
+| `correcoes-issues-6-7-8/` | REQ-52..54 | Maintenance cycle |
+
+Specs are written in **Portuguese**. `.claude/specs/codegen/gaps.md` records
+what the language spec promises and the transpiler does not yet deliver.
+
+Work is maintenance and extension, not greenfield. A task references the REQ
+it satisfies (`(REQ-n)`) and the design section (`(§design x)`). Do not invent
+architecture that contradicts `design.md` — if a change is needed, update the
+spec.
+
+## Execution rules
+
+- **One task at a time.** Never start a second task before the current one is
+  committed. Pick it up from `.claude/state.md`.
+- **Keep `.claude/state.md` lean.** Exactly two pointers — next spec-task,
+  next issue — and nothing else: no per-spec table, no history, no running
+  log. That detail already lives in each spec's task tracking and in
+  `.claude/issues/open-issues.md`. Update by overwriting a line in place,
+  never appending. The spec-task pointer advances mechanically as work
+  completes; the issue pointer is a manual priority call — repoint it when
+  priorities change, e.g. after filing a new issue or starting a spec that
+  addresses one.
+- **Errors found mid-task.** In scope of the current task → fix it here. Out
+  of scope (another spec/task, pre-existing code) → register it with the
+  `issue-generator` skill and keep going. If it *blocks* the current task,
+  stop and report — do not work around it.
+- **Finishing a task.** Update the spec's own task tracking, then overwrite
+  the spec-task pointer in `.claude/state.md` with whatever comes next (the
+  next pending task in this spec, or another spec's if this one has none
+  left), then commit. At spec closure the pointer moves on, or is cleared if
+  nothing does.
+- **One branch and one PR per spec.** `claude/impl-<spec-slug>`, cut from
+  `main`, carrying one atomic commit per completed task. The first completed
+  task creates the branch and opens the PR; every later task adds a commit to
+  it. CI runs the full suite on each push, so each task's diff is still
+  validated on its own commit. When every task is done, comment `SPEC
+  FINALIZADA` on the PR and it closes with the spec.
+- **Never run the full suite locally.** `go test ./...` and `go vet ./...` are
+  CI's job, on the PR — including at spec closure. When running tests at all,
+  run only those that validate the current task (e.g.
+  `go test ./parser/ -run TestX`).
+- **Refine tasks at spec-creation time.** Break them down as far as practical
+  up front — small, independently verifiable, vertically sliced — so execution
+  never re-plans mid-spec.
+- **Who does what** (definitions in `.claude/agents/` are the operative
+  detail): `spec-writer` authors a spec (never touches code, never runs
+  tests); `task-implementer` executes exactly one task and **never runs
+  tests** — the spec's PR is its only test feedback, and a blocker becomes a
+  registered issue plus a `blocked` task, never a workaround;
+  `issue-registrar` investigates a suspected defect and files it.
+- **Only `issue-registrar` runs tests**, because its job is proving a defect
+  is real before it reaches `.claude/issues/` — and it files nothing when the
+  problem does not reproduce. It never fixes what it finds: repro work happens
+  in a copy outside the repository, and the versioned tree stays untouched.
 
 ## Architecture invariants
 
-These are the load-bearing decisions — violating them breaks the design's core promises.
+Load-bearing decisions — violating them breaks the design's core promises.
 
-- **Hard syntax/semantics split (NFR-6).** The parser knows *zero* §23 semantic
-  rules; it accepts everything grammatically well-formed, including semantically
-  impossible programs (primitive in Write Side, non-exhaustive `match`, `Nop` in
-  Handle). The semantic phases never re-tokenize or re-parse. The *only* contract
-  between phases is `(AST, DiagnosticBag)`.
-- **The parser never returns `nil`.** On syntax error it emits typed error nodes
-  (`ErrorDecl`/`ErrorStmt`/`ErrorExpr`) that implement the normal interfaces.
-  Later phases skip subtrees containing an error node so a syntax error never
-  becomes a false semantic error (REQ-2.7, REQ-4.5).
-- **Hand-written recursive-descent parser** (no generator) — the whole point is
+- **Hard syntax/semantics split (NFR-6).** The parser knows *zero* §23
+  semantic rules; it accepts everything grammatically well-formed, including
+  semantically impossible programs (primitive in Write Side, non-exhaustive
+  `match`, `Nop` in Handle). The semantic phases never re-tokenize or
+  re-parse. The *only* contract between phases is `(AST, DiagnosticBag)`.
+- **The parser never returns `nil`.** On syntax error it emits typed error
+  nodes (`ErrorDecl`/`ErrorStmt`/`ErrorExpr`) implementing the normal
+  interfaces. Later phases skip subtrees containing an error node, so a syntax
+  error never becomes a false semantic error (REQ-2.7, REQ-4.5).
+- **Hand-written recursive-descent parser** (no generator) — the point is
   total control over error messages and recovery (REQ-3, NFR-1).
-- **Recovery mechanics** (see `design.md` §3.5): `expect` does single-token
-  deletion + virtual insertion; `synchronize` *never* consumes the stop token or
-  a closing `}`/EOF (the enclosing level closes its own block); hierarchical sync
-  sets per level include ancestor sets; top-level keywords are high-confidence
-  re-anchor points; a silence window suppresses cascade diagnostics; every parse
-  loop guarantees cursor progress (no infinite loops, NFR-2).
-- **Dependencies point "downward"**: `driver → sema → resolver → parser → lexer
-  → ast/token/diag`. One package per responsibility.
-- **Determinism (NFR-3):** same input → identical diagnostics in identical order.
-  Ordering by `(line, col)` happens only at render time; insertion order is
-  irrelevant, which lets syntax and semantic diagnostics merge naturally.
-- **Cross-file rules need the whole program.** Rules REQ-5.9–12, 16–17, 23 cannot
+- **Recovery mechanics** (`design.md` §3.5): `expect` does single-token
+  deletion + virtual insertion; `synchronize` *never* consumes the stop token
+  or a closing `}`/EOF (the enclosing level closes its own block);
+  hierarchical sync sets per level include ancestor sets; top-level keywords
+  are high-confidence re-anchor points; a silence window suppresses cascade
+  diagnostics; every parse loop guarantees cursor progress (NFR-2).
+- **Dependencies point "downward"**: `driver → sema → resolver → parser →
+  lexer → ast/token/diag`. One package per responsibility.
+- **Determinism (NFR-3).** Same input → identical diagnostics in identical
+  order. Ordering by `(line, col)` happens only at render time; insertion
+  order is irrelevant, which lets syntax and semantic diagnostics merge.
+- **Cross-file rules need the whole program.** REQ-5.9–12, 16–17, 23 cannot
   run file-by-file; they run after program aggregation (REQ-7).
 
-### Back-end architecture invariants
+### Back-end
 
-- **Core vs. opt-in dependencies (NFR-12).** The transactional core (in-memory
-  event store, dispatcher, unit of work, `net/http` HTTP edge) depends on the
-  Go stdlib and the vendored `runtime/` only — `go build`/`go run` with no
-  external module. A real DB driver, gRPC, or OpenTelemetry are added to
-  `go.mod` **only** when the program actually declares them (a `Database` with
-  a provider `codegen/sql_wiring.go` recognizes as real — `"sqlite"` and, since
-  J1.2, `"postgres"` too, each pulling in exactly its own driver
-  (`modernc.org/sqlite` / `github.com/jackc/pgx/v5`); an `Interface GRPC`; a
-  `Telemetry` block) — always isolated behind an interface. Any other provider
-  label (e.g. `"pg"`, still used as an inert placeholder by several unrelated
-  fixtures) stays decorative and pulls nothing.
+- **Core vs. opt-in dependencies (NFR-12).** The transactional core
+  (in-memory event store, dispatcher, unit of work, `net/http` edge) depends
+  on the Go stdlib and the vendored `runtime/` only. A real DB driver, gRPC or
+  OpenTelemetry enter `go.mod` **only** when the program declares them — a
+  `Database` whose provider `codegen/sql_wiring.go` recognizes as real
+  (`"sqlite"` → `modernc.org/sqlite`, `"postgres"` → `github.com/jackc/pgx/v5`),
+  an `Interface GRPC`, a `Telemetry` block — always behind an interface. Any
+  other provider label (e.g. `"pg"`, an inert placeholder in several fixtures)
+  stays decorative and pulls nothing.
 - **Golden test + smoke compile, paired (NFR-17).** Every emitter has a golden
-  test (generated output vs. a versioned reference); on top of that, the two
-  bundled examples (`docs/examples/wallet`, `docs/examples/shop`) are generated
-  for real via `GenerateProject` and `go build`/`go vet`/`go test` run over the
-  actual bytes written to disk — a golden test alone doesn't prove the output
-  compiles.
-- **Determinism (NFR-13).** Regenerating the same program produces byte-identical
-  output: stable ordering of declarations, imports, map members, and files.
-  Regenerating into an already-populated output directory is idempotent (unchanged
-  files aren't rewritten; files orphaned by a removed declaration are deleted).
+  test (output vs. a versioned reference); on top of that the bundled examples
+  (`docs/examples/wallet`, `docs/examples/shop`) are generated for real via
+  `GenerateProject` and built/vetted/tested over the bytes actually written to
+  disk — a golden test alone does not prove the output compiles.
+- **Determinism (NFR-13).** Regenerating the same program is byte-identical:
+  stable ordering of declarations, imports, map members and files.
+  Regenerating into a populated output directory is idempotent — unchanged
+  files are not rewritten, files orphaned by a removed declaration are deleted.
 - **The generator never re-lexes/re-parses/re-validates.** Its only inputs are
-  `program.Program`, `symbols.SymbolTable`, and a `types.Model`; it refuses to
-  run at all when the program's `DiagnosticBag` has errors (REQ-14.1).
+  `program.Program`, `symbols.SymbolTable` and a `types.Model`; it refuses to
+  run when the program's `DiagnosticBag` has errors (REQ-14.1).
 
-## Package layout (per design.md §2 — all implemented)
+## Package layout
 
 ```
 cmd/dsc/        CLI (REQ-8, REQ-32: "check" and "gen" subcommands)
@@ -277,97 +221,40 @@ codegen/        back-end orchestrator: Generate(prog, model, opts) → []File (R
 codegen/emit/   Go emitter: buffer, managed imports, gofmt via go/format (REQ-15)
 codegen/lower/  lowering of Expr/Stmt/Block → Go, incl. TypeEnv (REQ-22, §design 3.6a)
 codegen/rtsrc/  vendored runtime source (event store, dispatcher, UoW, …), embedded (REQ-16)
-codegen/grpcrt/ gRPC edge helpers, opt-in — only referenced when `Interface GRPC` (REQ-29)
-codegen/otelrt/ OpenTelemetry adapter, opt-in — only referenced when `Telemetry` (REQ-30)
-codegen/sqlrt/  `database/sql` adapter, opt-in — only referenced for a real DB provider (REQ-26.2)
+codegen/grpcrt/ gRPC edge helpers, opt-in — only when `Interface GRPC` (REQ-29)
+codegen/otelrt/ OpenTelemetry adapter, opt-in — only when `Telemetry` (REQ-30)
+codegen/sqlrt/  `database/sql` adapter, opt-in — only for a real DB provider (REQ-26.2)
 ```
 
-Public API surface: `driver.CheckSource(src) (*ast.File, *diag.DiagnosticBag)`,
-`driver.CheckProject(dir) (*program.Program, *diag.DiagnosticBag)`, and
+Public API: `driver.CheckSource(src) (*ast.File, *diag.DiagnosticBag)`,
+`driver.CheckProject(dir) (*program.Program, *diag.DiagnosticBag)`,
 `driver.GenerateProject(dir, out, codegen.Options) (*diag.DiagnosticBag, error)`.
 
 ## Commands
 
-The module is named `domainscript` (Go):
+Go module named `domainscript`. A `Makefile` wraps these as
+`build`/`test`/`lint`/`fmt` — prefer `make test`, `make lint`.
 
 ```sh
-go build ./...                         # build all packages
-go test ./...                          # run the whole suite
-go test ./parser/ -run TestRecovery    # run one package / one test by regex
-go vet ./...                           # static checks
-gofmt -l .                             # list unformatted files
-dsc gen <dir> -o <out>                  # validate <dir> and generate a Go project into <out>
+go build ./...                        # build all packages
+go test ./parser/ -run TestRecovery   # one package / one test by regex
+gofmt -l .                            # list unformatted files
+dsc gen <dir> -o <out>                # validate <dir> and generate a Go project
+
+go test ./... ; go vet ./...          # full suite — CI's job; locally only issue-registrar
 ```
 
-A `Makefile` wraps these with `build`/`test`/`lint`/`fmt` targets — prefer
-`make test`, `make lint`, etc.
-
-## Working conventions (from tasks.md)
+## Conventions
 
 - **Slice vertically.** Implement one construct end-to-end (lexer → parser →
   semantics → test) before widening to the next. Follow the task order; it
   respects dependencies.
-- **Every §23 rule needs a positive *and* a negative test** — one program that
-  violates it (expects the exact diagnostic) and one correct program (expects
+- **Every §23 rule needs a positive *and* a negative test** — a program that
+  violates it (expecting the exact diagnostic) and a correct one (expecting
   silence). This pairing is the central Definition of Done (NFR-4).
-- **Green tree before commit.** Only commit with `go build ./...` passing and
-  the task-scoped tests green (see Execution rules above — not the whole
-  suite). One atomic commit per completed task.
-- **Conventional Commits**, in Portuguese imperative, e.g.
-  `feat(parser): declaração Aggregate`. Types: `feat`/`test`/`refactor`/`chore`/
-  `docs`/`fix`. Scopes: `lexer`/`parser`/`ast`/`diag`/`sema`/`resolver`/
-  `symbols`/`types`/`program`/`cli`/`repo`.
-
-## Delivery milestones
-
-A: validates ValueObject & Enum (Fases 0–3, 4A, 4B.1–2, partial 6, single-file
-API). B: validates a full domain module incl. per-file ❌ rules (Fases 4–6, 8).
-C: validates a multi-module project — the cross-file architectural rules that are
-DomainScript's differentiator (Fases 7, 9, 10). D: production-ready — robustness,
-determinism, full §23 coverage (Fase 11) — front-end closes here.
-
-Back-end (`.claude/specs/codegen/tasks.md`): E "gera e roda o núcleo transacional"
-(VO/Enum/Error/Event/Aggregate/Command/UseCase/Query + lowering + in-memory
-runtime + basic HTTP + CLI `gen`). F "reações e coordenação" (Policy/Worker/Saga/
-dispatcher/outbox/Notifications/Adapters/Foreign). G "infraestrutura real"
-(`database/sql`, FileStorage, idempotency, cache, rate limit, multi-tenancy,
-advanced HTTP). H "exposição e observabilidade avançadas + testes" (gRPC, OTel,
-`Metric`, `*.test.ds` → Go tests, and closure — determinism/idempotency audit,
-docs) — back-end closes here.
-
-Read side (`.claude/specs/read-side/tasks.md`): I "Read Side de verdade"
-(query clauses — `orderBy`/`skip`/`take`/`in`/`join`, Smart Partial Loading
-`distinct`/`sum`/`focus`, and the SQL/sqlite descent) — **also complete**;
-read side closes here. See `.claude/specs/codegen/gaps.md` for the gaps this
-cycle closed (G-1, G-2, G-8) and what remains open.
-
-Infra providers (`.claude/specs/infra-providers/tasks.md`): J "Providers Reais
-de Infraestrutura" — a 5-provider slice of gap G-4 / ISSUE-3: Postgres
-(Database), durable Outbox, RabbitMQ (cross-service channel), Redis (Cache +
-RateLimit), S3 (FileStorage), each opt-in behind the existing seam — **also
-complete**; infra providers closes here. J7.1's DoD review found one residual
-gap that survived the closure: the outbox's producer side (a module emitting
-a cross-service `PublicEvent`) still published straight on commit instead of
-enqueuing through the durable outbox (REQ-42.6) — tracked in ISSUE-9. That
-residual is now closed by the `correcoes-issues-9-10-11` maintenance cycle
-below (Marco K, K3.1-K3.4): a module with a real Database and a
-`provider:"rabbitmq"` outbound channel enqueues its cross-service
-`PublicEvent` into the outbox atomically with the business transaction, and
-the relay (channel as publisher) delivers it. The rest of G-4 (other
-databases, gRPC channel, Dynamo idempotency, layered cache, GCS/Azure) stays
-explicitly out of this slice, for a future cycle.
-
-Correções de dívida técnica
-(`.claude/specs/correcoes-issues-9-10-11/tasks.md`): Marco K — a maintenance
-cycle that closed three standing issues found during earlier cycles —
-**complete**. K1 (parser: two consecutive assignments no longer steal the
-next statement's identifier, ISSUE-11, REQ-49), K2 (`Coalesce` panic-safety
-on both the memory and Redis query-cache backends, ISSUE-10, REQ-50), and K3
-(the outbox producer→channel residual above, ISSUE-9, REQ-51) are all done:
-`durableProducer` detects the activation condition, the producer's
-UnitOfWork runs over real `database/sql` and enqueues into the outbox
-in-tx via the distinct `sqlruntime.NewOutboxUnitOfWork`, the relay (channel
-as publisher) replaces the direct-on-commit publish, and a dedicated fixture
-plus an end-to-end crash-simulation test (over the *generated* producer
-path, not just the runtime seam) prove it. `wallet`/`shop` stayed
-byte-identical throughout (neither satisfies the activation condition).
+- **Green tree before commit**: `go build ./...` passing, one atomic commit
+  per completed task.
+- **Conventional Commits**, Portuguese imperative, e.g. `feat(parser):
+  declaração Aggregate`. Types: `feat`/`test`/`refactor`/`chore`/`docs`/`fix`.
+  Scopes: `lexer`/`parser`/`ast`/`diag`/`sema`/`resolver`/`symbols`/`types`/
+  `program`/`cli`/`repo`.
