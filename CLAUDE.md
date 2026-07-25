@@ -53,7 +53,15 @@ change is needed, update the spec.
 
 ```
 .claude/                       root of the spec-driven flow
-.claude/specs/<nome-da-spec>/  requirements.md, design.md, tasks.md per spec
+.claude/specs/<nome-da-spec>/  requirements.md, design.md per spec, plus task
+                                tracking — a single tasks.md for every spec
+                                listed under "Current state" above (legacy
+                                model, untouched); specs created from now on
+                                use the model the skill below scaffolds
+                                instead: tasks/<task-code>.md (one file per
+                                task) + state.md (pending/blocked index)
+.claude/skills/spec-creator/   skill that scaffolds a new spec (requirements.md
+                                + design.md + tasks/ + state.md) from templates
 .claude/steerings/             reference docs useful as ambient context
                                 (e.g. domainscript-spec-v6.md, the language spec)
 .claude/issues/                 open issues found during execution that are out
@@ -79,20 +87,25 @@ change is needed, update the spec.
     completed, in which case stop and report it instead of working around it.
 - **Test scope per task.** At the end of a task, run only the tests needed to
   validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
-  suite. Once green, update `.claude/state.md` and the current spec's
-  `tasks.md` (mark the task done), then commit.
+  suite. Once green, update `.claude/state.md` and the current spec's task
+  tracking — mark the task done in `tasks.md` for a spec on the legacy
+  model, or set `status: completed` in the task's own `tasks/<code>.md`
+  frontmatter and drop it from the spec's `state.md` for a spec scaffolded
+  by `spec-creator` — then commit.
 - **Open a pull request when a task is done.** After the commit for a
   completed task lands, push the branch and open a PR for it — CI then runs
   the full suite (see the rule above) against that task's diff. One PR per
   completed task, not one PR per spec.
 - **No full-suite run at spec closure.** `go test ./...` and `go vet ./...`
   are not run locally at the end of a spec — CI runs them on the pull
-  request. Closing a spec still means every task in its `tasks.md` is
-  checked off and `.claude/state.md` reflects `done`.
-- **Refine `tasks.md` at spec-creation time.** When writing a new spec's
-  `tasks.md`, break tasks down as far as practical up front — small,
-  independently verifiable, vertically sliced — so execution never needs to
-  re-plan mid-spec.
+  request. Closing a spec still means every task is checked off (in
+  `tasks.md`, or via every `tasks/<code>.md`'s `status` plus an empty
+  `state.md` on the newer model) and `.claude/state.md` reflects `done`.
+- **Refine tasks at spec-creation time.** Break tasks down as far as
+  practical up front — small, independently verifiable, vertically sliced —
+  so execution never needs to re-plan mid-spec. Use the `spec-creator` skill
+  to scaffold a new spec; it writes `requirements.md`, `design.md`, one
+  `tasks/<code>.md` per task, and the spec's `state.md`.
 
 ## What is being built
 
