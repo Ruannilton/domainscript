@@ -83,14 +83,26 @@ change is needed, update the spec.
                                 test runs, build & fmt still allowed;
                                 issue-registrar-guard.sh: no repo code edits,
                                 tests unrestricted)
-.claude/state.md               tracks the status of every spec::task, so
-                                execution can resume after an interruption
+.claude/state.md               lean resume pointer — ONLY the next spec-task
+                                and the next issue to resolve, two lines,
+                                overwritten in place; never a per-spec table
+                                or a history (see "Keep it lean" below)
 ```
 
 ### Execution rules
 
 - **One task at a time.** Never start a second task before the current one is
   committed. Pick the task up from `.claude/state.md`.
+- **Keep `.claude/state.md` lean.** It holds exactly two pointers — the next
+  spec-task and the next issue to resolve — and nothing else: no per-spec
+  status table, no history, no running log. That detail already lives where
+  it belongs: each spec's own task tracking (`tasks.md`, or `tasks/<code>.md`
+  + that spec's `state.md`) and `.claude/issues/open-issues.md`. Updating it
+  means overwriting one of the two lines in place, never appending. The
+  spec-task pointer advances mechanically as work completes (see below and
+  the `spec-writer`/`task-implementer` agent definitions); the issue pointer
+  is a manual priority call — repoint it when priorities change, e.g. after
+  filing a new issue or starting a spec that addresses one.
 - **Errors found mid-task:**
   - If the error belongs to the spec/task currently being developed, fix it
     as part of the current task.
@@ -101,11 +113,13 @@ change is needed, update the spec.
     completed, in which case stop and report it instead of working around it.
 - **Test scope per task.** At the end of a task, run only the tests needed to
   validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
-  suite. Once green, update `.claude/state.md` and the current spec's task
-  tracking — mark the task done in `tasks.md` for a spec on the legacy
-  model, or set `status: completed` in the task's own `tasks/<code>.md`
-  frontmatter and drop it from the spec's `state.md` for a spec scaffolded
-  by `spec-creator` — then commit.
+  suite. Once green, update the current spec's task tracking — mark the task
+  done in `tasks.md` for a spec on the legacy model, or set `status:
+  completed` in the task's own `tasks/<code>.md` frontmatter and drop it
+  from the spec's `state.md` for a spec scaffolded by `spec-creator` — then
+  overwrite `.claude/state.md`'s spec-task pointer with whatever comes next
+  (the next pending task in this spec, or another spec's if this one has
+  none left), and commit.
 - **One branch and one pull request per spec.** A spec gets a single branch,
   `claude/impl-<spec-slug>`, cut from `main`, carrying one atomic commit per
   completed task. The first completed task creates the branch and opens the
@@ -118,7 +132,8 @@ change is needed, update the spec.
   are not run locally at the end of a spec — CI runs them on the pull
   request. Closing a spec still means every task is checked off (in
   `tasks.md`, or via every `tasks/<code>.md`'s `status` plus an empty
-  `state.md` on the newer model) and `.claude/state.md` reflects `done`.
+  `state.md` on the newer model); `.claude/state.md`'s spec-task pointer
+  moves on to whatever comes next, or is cleared if nothing does.
 - **Refine tasks at spec-creation time.** Break tasks down as far as
   practical up front — small, independently verifiable, vertically sliced —
   so execution never needs to re-plan mid-spec. Use the `spec-creator` skill

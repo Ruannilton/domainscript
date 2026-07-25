@@ -1,37 +1,19 @@
 # State
 
-Rastreio do estado de cada `spec::task`, para retomar o desenvolvimento caso
-a execução seja interrompida. Atualizado ao final de **cada task concluída**
-(ver `CLAUDE.md`) — nunca em lote no fim de uma spec inteira.
+Ponteiro mínimo de retomada — só o que vem a seguir. **Mantenha este arquivo
+enxuto**: duas linhas, cada uma sobrescrita ao mudar, nunca anexada. Nada de
+tabela por spec, nada de histórico — isso já mora em cada
+`.claude/specs/<spec>/state.md` (ou `tasks.md` no modelo legado) e em
+`.claude/issues/open-issues.md`. Ver `CLAUDE.md`.
 
-Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
+## Próxima spec-task
 
-## Resumo por spec
+`.claude/specs/correcoes-issues-6-7-8/tasks.md` → **L2.5** — `rolledback`
+com reversão real (staging na `memoryUnitOfWork`, §22.2/REQ-53.5).
 
-| Spec | Diretório | Status | Próxima task |
-|---|---|---|---|
-| transpilador (front-end, REQ-1..8) | `.claude/specs/transpilador/` | done | — |
-| type-checking (REQ-9..13) | `.claude/specs/type-checking/` | done | — |
-| codegen (back-end, REQ-14..32) | `.claude/specs/codegen/` | done | — |
-| read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
-| infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
-| correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d PAUSADA por decisão do usuário; L1.3e/L1.3f bloqueadas em cascata; L2.2/L2.3 re-escritas em cadeias L2.2a-d / L2.3a-c após validação de coerência) | L2.5 |
+## Próxima issue
 
-
-
-**Próxima task: L2.5** — `rolledback` com reversão real (staging na
-`memoryUnitOfWork`, §22.2/REQ-53.5). Escolhida por ser a coerente de maior
-valor e escopo contido (`rtsrc/uow.go.txt`); L2.4/L3.1 vêm depois, e as cadeias
-L2.2*/L2.3* começam por L2.2a (imediata) e L2.3a (design) quando priorizadas.
-
-## Issues em aberto
-
-Ver `.claude/issues/open-issues.md` (um arquivo por issue, cadastrado pela
-skill `issue-generator` — substitui o antigo `.claude/issues.md`/`ISSUE-<n>`).
-As antigas ISSUE-1 e ISSUE-9/10/11 já estavam **RESOLVIDAS** antes da migração
-(ISSUE-1 no commit `3a22df3`; ISSUE-9/10/11 pelo Marco K,
-`.claude/specs/correcoes-issues-9-10-11/`) e não foram migradas. As demais
-seguem abertas: as ex-ISSUE-6/7/8/12 têm spec em andamento
-(`.claude/specs/correcoes-issues-6-7-8/`, Marco L); as ex-ISSUE-2/3/4/5/13
-seguem sem spec dedicada (itens maiores / front-end / spec-da-linguagem).
+`.claude/issues/visibility-de-view-nao-implementado.md` — sem spec dedicada
+ainda; a própria issue a marca como a lacuna silenciosa de maior risco do
+inventário (falha de segurança sem diagnóstico). Escolha manual — reavalie
+ao concluir ou ao mudar de prioridade.

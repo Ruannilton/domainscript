@@ -59,9 +59,10 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
    - **Goal** — one or two sentences: what this cycle delivers and why.
    - **Builds on** — which prior spec(s) this extends, if any (most specs
      do — check `CLAUDE.md`'s "Current state" section for the chain).
-   - **Marco letter** — read `.claude/state.md`'s "Resumo por spec" table
-     and the existing `.claude/specs/*/tasks.md` files to find the last
-     Marco letter used (K, L, ...); the new spec gets the next one. Confirm
+   - **Marco letter** — `.claude/state.md` is a lean two-line pointer now,
+     not a spec index (see `CLAUDE.md`); find the last Marco letter used by
+     listing `.claude/specs/*/` and reading the existing `tasks.md` /
+     `tasks/*.md` files (K, L, ...). The new spec gets the next one. Confirm
      with the user if it's ambiguous.
 
 2. **Derive `<spec-slug>`** — kebab-case, same convention as existing spec
@@ -114,10 +115,14 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
    register an issue via the `issue-generator` skill if the blocker is
    out of this spec's scope).
 
-9. **Update the root `.claude/state.md`.** Add a row to the "Resumo por
-   spec" table for the new spec (`Diretório` → `.claude/specs/<spec-slug>/`,
-   `Status` → `pending`, `Próxima task` → the first code in the new
-   `state.md`'s `PENDING TASKS`).
+9. **Update the root `.claude/state.md`, only if this spec's work is next.**
+   It's a lean, two-line resume pointer (see `CLAUDE.md`) — never a
+   per-spec table, so don't add a row. Check its current spec-task pointer:
+   if it names a task that's already `completed` or names no real pending
+   work, overwrite it with this spec's first task
+   (`.claude/specs/<spec-slug>/tasks/<first-code>.md`). If it already points
+   at real pending work in another spec, leave it alone — this spec's tasks
+   queue behind, tracked by its own `state.md` until their turn comes.
 
 10. **Confirm** the created paths back to the user.
 
@@ -127,6 +132,9 @@ Not part of creation, but the convention this skill sets up: whenever a
 task's `status` changes in its own `tasks/<CODE>.md` frontmatter, mirror
 that in the spec's `state.md` — drop it from `PENDING TASKS` on
 `completed`, move it to `BLOCKED TASKS` with a reason if execution can't
-continue, move it back to `PENDING TASKS` if unblocked. Keep the root
-`.claude/state.md` summary row in sync the same way `CLAUDE.md`'s
-execution rules already require for the old model.
+continue, move it back to `PENDING TASKS` if unblocked. If that change makes
+this spec's next task the one at the front of the overall queue (or takes it
+off, because this spec ran out of pending tasks), update the root
+`.claude/state.md` spec-task pointer to match — see the "Keep `.claude/state.md`
+lean" rule in `CLAUDE.md`: overwrite the pointer, never turn it back into a
+table.
