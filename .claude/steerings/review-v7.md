@@ -63,7 +63,13 @@
 
 Estas são as mais caras de ignorar: quem lê a spec e escreve o exemplo
 literalmente recebe um erro. Não são "features faltando" — são decisões de
-grafia em que código e spec discordam, e **uma das duas precisa ceder**.
+grafia em que código e spec discordam.
+
+> **A spec é a fonte de verdade.** Toda divergência abaixo se resolve
+> **mudando o código**, nunca a spec. Onde a spec se mostrar ruim ou
+> incompleta demais para ser implementada como está, o caminho é registrar
+> uma issue pedindo a revisão dela — e implementar depois, contra o texto
+> revisado. Ver `CLAUDE.md`, "A spec é a fonte de verdade".
 
 ### A-1. `self` não existe em corpos de ValueObject (§2.2, §2.3)
 
@@ -83,11 +89,13 @@ $ dsc check probes/vo.ds        # §2.2 copiado verbatim
 `constructValid: {"value","ok"}`, `constructOperator: {"value"}`,
 `constructCoerce: {"value"}`. O arquivo se declara "o único ponto a editar
 quando um construto novo ganha um receptor", então a correção é de uma linha
-por construto (aceitar `self` como sinônimo, ou trocar).
+por construto.
 
-Os exemplos empacotados usam a grafia da implementação
-(`docs/examples/wallet/domain.ds:8`: `Valid { value.length() > 0 }`), então a
-divergência é puramente spec↔código.
+**Correção:** trocar `value` por `self` nos três construtos e migrar os
+exemplos empacotados, que hoje usam a grafia da implementação
+(`docs/examples/wallet/domain.ds:8`: `Valid { value.length() > 0 }`). O
+receptor `ok` que acompanha `value` em `Valid` é invenção da implementação —
+ver F-1.
 
 ### A-2. Identidade implícita do Aggregate: `self.id` (§4.5)
 
@@ -103,9 +111,13 @@ $ dsc check p3/          # Aggregate Wallet da §4.5, verbatim
 ```
 
 `docs/examples/wallet/domain.ds:84` contorna declarando `id WalletId` no
-`state` e semeando-o num `Apply`. Fechar exige modelar a identidade do
-Aggregate como membro implícito (e decidir seu tipo: hoje seria o VO do campo
-declarado).
+`state` e semeando-o num `Apply`.
+
+**Correção:** modelar a identidade como membro implícito do Aggregate. A spec
+usa `self.id` de forma consistente (§4.5 e §2.5), mas **nunca diz qual é o
+tipo dele** nem como ele se relaciona com o VO de id do domínio
+(`WalletId`/`PersonId`) — bloqueio real de implementação, registrado em
+`.claude/issues/spec-v7-identidade-implicita-do-aggregate.md`.
 
 ### A-3. Metadata implícito de Event: `timestamp`/`sequence`/`aggregateId`/`eventType` (§4.2)
 
@@ -171,12 +183,17 @@ ref = store cmd.document
 30:9:  error: esperava uma expressão, encontrei ref
 ```
 
-`ref` é `token.REF` (hard keyword, para `personId ref Person`). Renomeando a
-variável, **todo o resto da §2.5 funciona**: `store`, `load File(...)`,
-`signed_url(..., expires:)`, `delete file(...)`, roteamento de campo `FileRef`
-para uma `FileStorage` do bloco `storage` — tudo implementado
-(`codegen/lower/builtins.go`, `codegen/decl_aggregate_storage.go`). A
-divergência é só a colisão do nome.
+`ref` é `token.REF` (hard keyword, para `personId ref Person` da §5.1).
+Renomeando a variável, **todo o resto da §2.5 funciona**: `store`,
+`load File(...)`, `signed_url(..., expires:)`, `delete file(...)`, roteamento
+de campo `FileRef` para uma `FileStorage` do bloco `storage` — tudo
+implementado (`codegen/lower/builtins.go`,
+`codegen/decl_aggregate_storage.go`). A divergência é só a colisão do nome.
+
+**Correção:** esta é uma **contradição interna da spec**, não uma escolha da
+implementação — a §5.1 exige `ref` como keyword e a §2.5 o usa como
+identificador; nenhuma gramática satisfaz as duas. Precisa de decisão na spec
+antes de qualquer código: `.claude/issues/spec-v7-ref-keyword-vs-identificador.md`.
 
 ### A-7. Catálogo de métodos embutidos: 3 entradas (§2.2, §2.4)
 
@@ -388,48 +405,105 @@ demais 24 estão cobertas, cada uma com par de teste positivo/negativo
 
 ---
 
+## 🟣 F. Implementado **fora** da spec
+
+A regra "nada deve ser implementado fora da especificação" corta nos dois
+sentidos: além do que falta, conta o que existe sem autorização do texto. O
+que a auditoria encontrou:
+
+### F-1. Sentinela `ok` em `Valid`
+
+`resolver/receivers.go:36` semeia `ok` junto de `value` em todo bloco `Valid`,
+e `codegen/decl_value.go:59` o reconhece como "validação que sempre passa". A
+string `ok` **não aparece uma única vez em toda a v7**. A spec já tem a forma
+canônica para isso — `Valid { true }` (§2.2, `ValueObject ActiveStatus`).
+
+Os exemplos empacotados dependem dele em 8 lugares
+(`docs/examples/wallet/domain.ds:20,55`, `pizzeria/*`), então removê-lo é uma
+migração, não uma deleção.
+
+### F-2. Receptor `value` (é o outro lado de A-1)
+
+Não é só que falta `self`: `value` é um nome que a spec nunca define. Vale
+registrar separado porque a correção de A-1 tem de **remover** `value`, não
+apenas adicionar `self` como sinônimo — sob esta regra, manter os dois seria
+deixar metade da superfície fora da spec.
+
+### F-3. `asc`/`desc` como direções de `orderBy`
+
+`parser/parse_query.go:20` aceita `ascending`, `descending`, `asc` e `desc`. A
+§6.3 usa só `descending`. As formas abreviadas são extensão da implementação.
+
+### F-4. Convenção de seed de Saga por casamento de nomes
+
+`sagaSeedFromCommandLines` (`codegen/decl_saga.go:165`) copia campos de mesmo
+nome do Command para o `state` antes do 1º passo. É uma semântica inventada
+pelo back-end para compensar a ausência do receptor `cmd` (A-4) — nenhuma
+linha da §19 a descreve. Some junto com a correção de A-4.
+
+### F-5. Notification nua como `notify` (é o outro lado de A-5)
+
+Reconhecer `DepositNotification(to: ...)` solto como envio assíncrono é forma
+não especificada. A §9.2 define `notify`. Como em F-2, a correção de A-5 deve
+**substituir**, não acumular.
+
+---
+
 ## E. O que fazer com isso
 
-Ordenado por custo/benefício, não por severidade nominal.
+Sob a regra "a spec é a fonte de verdade", todo item acima é **trabalho de
+conformidade**: o código se move até o texto. A ordenação abaixo é por
+dependência e custo/benefício, não por severidade nominal.
 
-1. **Decidir a grafia canônica das divergências A-1 a A-6 antes de qualquer
-   implementação.** São baratas de corrigir (A-1 é uma tabela de uma linha por
-   construto; A-6 é uma keyword) e caras de deixar: cada uma faz o exemplo
-   literal da spec falhar, que é o pior sinal possível numa DSL cujo argumento
-   de venda é "se compila, está correto". Para cada uma, a escolha é *emendar a
-   spec* (adotar `value`, exigir `id` no `state`) ou *emendar o código*
-   (aceitar `self`, modelar identidade e metadata implícitos). Recomendo emendar
-   o **código** em A-1/A-3/A-4/A-5 (a spec está mais coerente consigo mesma) e a
-   **spec** em A-2/A-6 (identidade explícita no `state` é defensável; `ref`
-   keyword é irreversível sem custo alto).
+**Primeiro, o que está bloqueado por lacuna da própria spec.** Cinco itens não
+podem ser implementados como estão porque o texto não diz o suficiente ou se
+contradiz. Cada um já tem issue registrada pedindo a revisão — nenhuma linha de
+código antes de a spec ser atualizada:
 
-2. **A-7 antes de A-1.** Adotar `self` sem catálogo de métodos só troca o erro
-   de `nome não declarado` por `método embutido desconhecido`. Vale um ciclo
-   próprio: catálogo de métodos de `string`/`List`/`Set`/`Map` no `types.Model`
-   (para o front-end recusar `frobnicate` no `check`) **e** em
-   `goname.builtinArity`/`GoBuiltinCall` (para o back-end emitir). Fecha §2.4
-   inteira e tira o `check` verde seguido de `gen` vermelho.
+| Bloqueio | Issue |
+|---|---|
+| `ref` é keyword na §5.1 e identificador na §2.5 (A-6) | `spec-v7-ref-keyword-vs-identificador.md` |
+| `self.id` usado sem declaração nem tipo (A-2) | `spec-v7-identidade-implicita-do-aggregate.md` |
+| Metadata implícito de Event sem tipos nem isenção da Regra de Ouro (A-3) | `spec-v7-metadata-implicito-de-event.md` |
+| Sem catálogo normativo de métodos por tipo; `length` property vs. method (A-7) | `spec-v7-catalogo-de-metodos-embutidos.md` |
+| `RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum | `spec-v7-retrywithbackoff-sem-definicao.md` |
 
-3. **§10 (FFI geral) é um ciclo de spec próprio.** Atravessa todas as fases
+**Depois, o que já é implementável contra o texto atual**, em ordem:
+
+1. **A-1 + F-1 + F-2 (`self` em corpos de VO).** A menor mudança de todas —
+   uma tabela em `resolver/receivers.go` — mas ela **substitui** `value`/`ok`,
+   então arrasta a migração dos três exemplos empacotados e dos goldens. Não
+   dá para fazer antes do catálogo de métodos (o bloqueio acima), senão só
+   troca `nome não declarado` por `método embutido desconhecido`.
+
+2. **A-5 + F-5 (`notify`).** Uma keyword no léxico, um caso no parser, e a
+   remoção do reconhecimento da forma nua no lowering. Autocontido.
+
+3. **A-4 + F-4 (`cmd` nos steps de Saga).** Um receptor a mais e a remoção de
+   `sagaSeedFromCommandLines`. Autocontido, e apaga uma semântica inventada.
+
+4. **§10 (FFI geral) é um ciclo de spec próprio.** Atravessa todas as fases
    (token → parser → ast → resolver → sema → types → codegen) e traz junto 5 das
    6 regras faltantes da §25. O menor passo útil e independente: **registrar
    `ForeignDecl.Functions` como símbolos no resolver** — sem isso nem a forma
    que o parser já aceita é usável, e é pré-requisito de tudo o mais.
 
-4. **§21 (deploy) é o outro ciclo próprio**, e o mais autocontido de todos: não
+5. **§21 (deploy) é o outro ciclo próprio**, e o mais autocontido de todos: não
    toca o front-end, consome só `program.Program` (topologia + `mod.ds` +
    `interface.ds`), e o `dsc gen` já produz `cmd/<service>/main.go`. É de longe
    a maior superfície de spec fechável sem mexer em nenhuma fase existente.
-
-5. **`visibility` (B-4) já é issue aberta** e continua sendo a única lacuna que
-   falha em silêncio com consequência de segurança. Enquanto não fechar, o
-   mínimo defensável segue sendo um warning de geração — como já anotado em
-   G-5.
 
 6. **§14 `tenant.*` (B-3)** é pequeno e desbloqueia a §17 por tier lida do
    domínio: um receptor a mais em `resolver/receivers.go` e um shape com
    `id`/`tier`/`exists` no `types.Model`. `provision tenant()` e as estratégias
    `schema`/`database_per_tenant` são bem maiores e podem esperar.
+
+7. **`visibility` (B-4) já é issue aberta** e continua sendo a única lacuna que
+   falha em silêncio com consequência de segurança. O paliativo antes cogitado
+   (warning de geração "visibility declarado e ignorado") **não é conforme** —
+   é diagnóstico fora da §25. O caminho é implementar a §6.2 de fato.
+
+8. **F-3 (`asc`/`desc`)** é limpeza de uma linha, oportunista.
 
 Os itens de C já têm registro próprio (`gaps.md` G-4/G-6/G-7, issues abertas) e
 não precisam de entrada nova — a v7 não mudou nada neles.

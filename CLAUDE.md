@@ -62,6 +62,27 @@ flowchart LR
 `.claude/steerings/domainscript-spec-v7/` — one file per section, indexed by
 its `README.md`. **Load only the sections your task needs**, not the whole spec.
 
+### The spec is the source of truth — always
+
+Nothing gets implemented that the spec does not describe, and nothing the spec
+describes gets implemented in a different shape because the other shape is
+easier. This binds in both directions:
+
+- **Code diverges from the spec → the code is wrong.** Fix the code, never the
+  spec, and never "accept both" (keeping the old spelling as a synonym leaves
+  half the surface unspecified — it is the same violation, just quieter).
+- **Something is implemented that the spec never describes → remove it**, or
+  file an issue arguing it belongs in the spec and wait for the spec to say so.
+- **A spec rule proves bad, ambiguous or incomplete mid-task → stop and file an
+  issue** (`issue-generator` skill) stating what cannot be implemented as
+  written and what the spec must decide. Do not guess a semantics to keep
+  moving, and do not encode the guess in code "for now". Implement after the
+  spec is revised, against the revised text.
+
+`.claude/steerings/review-v7.md` is the standing audit of the implementation
+against v7: what is missing, what diverges, and what exists outside the spec.
+Read it before planning conformance work.
+
 ⚠️ **`§N` in this repo's code and specs follows v6 numbering and does not
 reliably match the v7 filenames.** v7 inserted sections, so from roughly §20
 onward the numbers shift (+2 in every case checked). Resolve a citation by
