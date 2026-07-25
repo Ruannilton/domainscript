@@ -11,6 +11,12 @@
   o spec marca a feature como "em evolução" (§25) e wallet/shop não a usam.
   Fechar exige decidir a semântica de serialização condicional por caller na
   borda HTTP/gRPC (o `runtime.Caller` já circula até lá) e emitir a filtragem
-  no encode das Views. Paliativo imediato defensável: **warning de geração**
-  ("visibility declarado e ignorado") para tirar o silêncio.
+  no encode das Views.
+  **Revisão (spec como fonte de verdade):** o paliativo antes registrado aqui —
+  um *warning de geração* "visibility declarado e ignorado", para tirar o
+  silêncio — **não é conforme** e fica retirado: seria um diagnóstico que a
+  §25 não prevê, ou seja, comportamento implementado fora da especificação. O
+  único caminho é implementar a §6.2 de fato. Se a §6.2 se mostrar incompleta
+  demais para isso (ela é marcada como "em evolução" na §27), o passo é abrir
+  uma issue de revisão da spec, não emitir um diagnóstico próprio.
 - SOLVED: FALSE

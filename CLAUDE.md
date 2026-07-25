@@ -62,6 +62,27 @@ flowchart LR
 `.claude/steerings/domainscript-spec-v7/` — one file per section, indexed by
 its `README.md`. **Load only the sections your task needs**, not the whole spec.
 
+### The spec is the source of truth — always
+
+Nothing gets implemented that the spec does not describe, and nothing the spec
+describes gets implemented in a different shape because the other shape is
+easier. This binds in both directions:
+
+- **Code diverges from the spec → the code is wrong.** Fix the code, never the
+  spec, and never "accept both" (keeping the old spelling as a synonym leaves
+  half the surface unspecified — it is the same violation, just quieter).
+- **Something is implemented that the spec never describes → remove it**, or
+  file an issue arguing it belongs in the spec and wait for the spec to say so.
+- **A spec rule proves bad, ambiguous or incomplete mid-task → stop and file an
+  issue** (`issue-generator` skill) stating what cannot be implemented as
+  written and what the spec must decide. Do not guess a semantics to keep
+  moving, and do not encode the guess in code "for now". Implement after the
+  spec is revised, against the revised text.
+
+`.claude/steerings/review-v7.md` is the standing audit of the implementation
+against v7: what is missing, what diverges, and what exists outside the spec.
+Read it before planning conformance work.
+
 ⚠️ **`§N` in this repo's code and specs follows v6 numbering and does not
 reliably match the v7 filenames.** v7 inserted sections, so from roughly §20
 onward the numbers shift (+2 in every case checked). Resolve a citation by
@@ -111,6 +132,10 @@ change is needed, update the spec.
   scope (another spec/task, pre-existing code) → register it with the
   `issue-generator` skill and keep going. If it *blocks* the current task, stop
   and report — do not work around it.
+- **Anything the language spec doesn't cover → issue, never code.** A task that
+  asks for what the spec doesn't describe, asks for it in a different shape, or
+  needs a decision the spec never made, is blocked: file the spec-revision
+  issue, mark the task `blocked`, stop. See "The spec is the source of truth".
 - **Finishing a task.** Update the spec's own task tracking → overwrite the
   spec-task pointer with whatever comes next (this spec's next pending task, or
   another spec's if this one has none left) → commit.
@@ -126,20 +151,30 @@ change is needed, update the spec.
 - **Refine tasks at spec-creation time** — small, independently verifiable,
   vertically sliced — so execution never re-plans mid-spec.
 
-**Who does what.** `.claude/agents/` holds the operative definitions; the
-`.claude/hooks/` guards enforce these limits structurally, not just by prompt.
+**Who does what.** `.claude/agents/` holds the operative definitions. The
+`.claude/hooks/` guards enforce the *mechanical* limits structurally (who may
+run tests, who may write where); spec conformance is semantic, so it binds by
+prompt only — every agent below carries it, and it is the one limit no guard
+can catch for you.
 
 - `spec-writer` — authors a spec. Never touches code, never runs tests.
+  Specifies only what the language spec describes; anything beyond it becomes a
+  spec-revision issue and the requirement is left out.
 - `task-implementer` — executes exactly one task and commits it. **Never runs
   tests**: the spec's PR is its only test feedback. A blocker becomes a
-  registered issue plus a `blocked` task, never a workaround.
+  registered issue plus a `blocked` task, never a workaround — and a task that
+  diverges from the language spec *is* a blocker.
 - `spec-implementer` — drives a whole spec by dispatching `task-implementer`
   one task at a time, advancing only after the previous task's commit exists on
-  the spec branch. Pure orchestrator: never edits code, never runs tests.
+  the spec branch. Pure orchestrator: never edits code, never runs tests. Never
+  re-dispatches a task blocked on a spec decision — no rewording produces the
+  decision.
 - `issue-registrar` — proves a suspected defect is real, then files it. **The
   only agent that runs tests**, and it files nothing when the problem does not
   reproduce. It never fixes what it finds: repro work happens in a copy outside
-  the repository, and the versioned tree stays untouched.
+  the repository, and the versioned tree stays untouched. Also files the two
+  spec-conformance kinds: behaviour implemented outside the spec, and gaps or
+  contradictions in the spec itself.
 
 ## Architecture invariants
 
