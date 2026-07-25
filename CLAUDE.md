@@ -63,7 +63,8 @@ change is needed, update the spec.
 .claude/skills/spec-creator/   skill that scaffolds a new spec (requirements.md
                                 + design.md + tasks/ + state.md) from templates
 .claude/steerings/             reference docs useful as ambient context
-                                (e.g. domainscript-spec-v6.md, the language spec)
+                                (e.g. domainscript-spec-v7/, the language spec —
+                                split one file per section, see its README.md)
 .claude/issues/                 open issues found during execution that are out
                                 of scope for the spec/task being worked on —
                                 one file per issue (open-issues.md indexes them)

@@ -52,8 +52,8 @@ issue do `pizzeria`). O repositório versionado fica intocado.
    vizinho que *deveria* funcionar funciona. Essa diferença é o achado.
 4. **Classifique** antes de escrever:
    - **Defeito de código** — o comportamento contradiz o `design.md`, o spec
-     da linguagem (`.claude/steerings/domainscript-spec-v6.md`) ou o próprio
-     teste. Registra.
+     da linguagem (`.claude/steerings/domainscript-spec-v7/README.md` e os
+     arquivos por seção linkados ali) ou o próprio teste. Registra.
    - **Defeito de fixture/exemplo** — o `.ds` ou a fixture é que está errada,
      não o transpilador (há precedente: `items List<TicketItem>` que deveria
      ser `AppendList`). Registra, dizendo que é do fixture.

@@ -45,8 +45,10 @@ Leia, nesta ordem:
 2. `.claude/state.md` — quais specs existem, seus status, qual a próxima task.
 3. `.claude/issues/open-issues.md` e as issues que o pedido tocar — muitas
    specs deste repo nascem de uma issue aberta.
-4. `.claude/steerings/domainscript-spec-v6.md` — o spec da linguagem, fonte
-   de verdade sobre o que a linguagem promete.
+4. `.claude/steerings/domainscript-spec-v7/README.md` — índice do spec da
+   linguagem (fonte de verdade sobre o que a linguagem promete), dividido em
+   um arquivo por seção; carregue só as seções relevantes ao pedido em vez
+   do spec inteiro.
 5. As specs vizinhas (`.claude/specs/*/`) — `design.md` das anteriores define
    invariantes que a sua **estende**, não contradiz. Se precisar contrariar
    um, isso é uma decisão de design a registrar explicitamente, não um
