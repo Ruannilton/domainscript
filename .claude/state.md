@@ -8,8 +8,11 @@ tabela por spec, nada de histórico — isso já mora em cada
 
 ## Próxima spec-task
 
-`.claude/specs/correcoes-issues-6-7-8/tasks.md` → **L2.5** — `rolledback`
-com reversão real (staging na `memoryUnitOfWork`, §22.2/REQ-53.5).
+`.claude/specs/correcoes-issues-6-8-12/tasks/M1.1.md` → **M1.1** — seam de
+enumeração de streams no runtime (`StreamLister`), fundação de
+`list <Aggregate>` (REQ-55.1/55.2). O Marco L
+(`correcoes-issues-6-7-8`) está encerrado; o Marco M o sucede com o
+remanescente de ISSUE-6/8/12.
 
 ## Próxima issue
 

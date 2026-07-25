@@ -1,5 +1,19 @@
 # Tasks — Correções de dívida técnica (ISSUE-6, ISSUE-7, ISSUE-8)
 
+> ⛔ **SPEC ENCERRADA — sucedida pelo Marco M
+> (`.claude/specs/correcoes-issues-6-8-12/`).**
+>
+> O que está marcado `[x]` abaixo foi entregue e está commitado (L1.1, L1.2,
+> L1.3a-c, L2.1) — ISSUE-7 fechada. Tudo o que ficou `[ ]` (L1.3d-f, L2.2*,
+> L2.3*, L2.4, L2.5, L2.6, L3.1, L3.2, L.fim) **não deve ser executado a
+> partir deste arquivo**: foi replanejado no Marco M, com as premissas
+> revalidadas empiricamente — quatro delas estavam erradas, e a análise de
+> raiz corrigida está em `correcoes-issues-6-8-12/design.md` §7.1.
+>
+> Equivalências: L1.3d/e/f → M1.1–M1.6 · L2.2* → M2.1–M2.4 · L2.3* →
+> M3.1–M3.3 · L2.4 → M4.1 · L2.5 → M4.2 · L2.6 → M5.2 · L3.1 → M5.1 ·
+> L3.2 → M5.2. Este arquivo fica como registro histórico.
+
 ## Como ler este plano
 
 Marco L, manutenção — mesmo molde do Marco K. Três fases independentes
