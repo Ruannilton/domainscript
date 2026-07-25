@@ -1,9 +1,47 @@
 // interface.ds — a borda HTTP do módulo (§10).
 // Cada rota mapeia para um UseCase (escrita) ou Query (leitura). Toda operação
 // precisa estar exposta em alguma interface, senão o compilador avisa (REQ-5.23).
+//
+// O rate limit desta borda roda sobre o Redis declarado em mod.ds (§16): a
+// cota é do CLUSTER, não do processo — subir uma segunda réplica não dobra o
+// limite de ninguém. O bloco `rateLimit` da Interface é o teto herdado por
+// toda rota; cada rota pode apertá-lo.
 Interface HTTP {
-    POST "/wallets/{id}/deposit"  -> PerformDeposit
-    POST "/wallets/{id}/withdraw" -> PerformWithdrawal
-    GET  "/wallets/{id}"          -> GetWallet
-    GET  "/wallets/{id}/entries"  -> ListEntries
+    port: env("WALLET_HTTP_PORT")
+
+    // Teto de borda, pensado para um app móvel: generoso por IP (uma operadora
+    // NAT-eia milhares de assinantes atrás do mesmo endereço) e mais estrito
+    // por usuário autenticado, que é a dimensão que de fato identifica quem
+    // está martelando a API.
+    rateLimit {
+        perIp: 1200/min
+        perUser: 300/min
+    }
+
+    // Escrita que move dinheiro: cota bem menor por usuário, com `burst` para
+    // absorver o toque duplo no botão sem estourar 429 — a idempotência (§14,
+    // application.ds) é que garante que esse toque duplo não vire dois
+    // depósitos; o rate limit só barra o abuso sustentado.
+    POST "/wallets/{id}/deposit"  -> PerformDeposit {
+        rateLimit { perUser: 60/min, burst: 10 }
+    }
+
+    // Saque é mais sensível que depósito: uma cota apertada limita o estrago
+    // de uma credencial vazada enquanto a fraude não é detectada.
+    POST "/wallets/{id}/withdraw" -> PerformWithdrawal {
+        rateLimit { perUser: 30/min, burst: 5 }
+    }
+
+    // Leitura de saldo: a rota mais chamada de todas (o app consulta a cada
+    // abertura de tela) e a mais barata, porque o cache Redis da Query
+    // (read.ds) absorve a maior parte. A cota alta reflete esse custo baixo.
+    GET  "/wallets/{id}"          -> GetWallet {
+        rateLimit { perUser: 600/min }
+    }
+
+    // Extrato: não é cacheado (alta cardinalidade, ver read.ds), então cada
+    // chamada bate no Postgres — a cota é a mais apertada das leituras.
+    GET  "/wallets/{id}/entries"  -> ListEntries {
+        rateLimit { perUser: 120/min }
+    }
 }

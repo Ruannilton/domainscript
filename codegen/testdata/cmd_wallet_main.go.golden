@@ -1,13 +1,21 @@
 package main
 
 import (
+	context "context"
+	redisruntime "domainscript/generated/redisruntime"
 	runtime "domainscript/generated/runtime"
 	wallet "domainscript/generated/wallet"
 	json "encoding/json"
 	errors "errors"
 	fmt "fmt"
 	log "log"
+	slog "log/slog"
+	net "net"
 	http "net/http"
+	os "os"
+	strconv "strconv"
+	strings "strings"
+	time "time"
 )
 
 // main é o ponto de entrada do service "wallet" — wiring in-memory a partir de
@@ -15,9 +23,13 @@ import (
 // geração, não editar à mão.
 func main() {
 	store := runtime.NewMemoryEventStore()
-	uow := runtime.NewUnitOfWork(store)
+	dispatcher := runtime.NewDispatcher()
+	uow := runtime.NewUnitOfWork(store, dispatcher)
+	workerCtx := context.Background()
 
 	wallet.Wire(uow)
+	wallet.WireQueryCache(dispatcher)
+	go wallet.StartIdempotencyCleanup(workerCtx)
 
 	port := "8080"
 	server := &http.Server{Addr: fmt.Sprintf(":%s", port), Handler: newMux(store)}
@@ -49,6 +61,14 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		cmd.WalletId = idVal
+		if !wallet.PerformDepositIsReplay(ctx, cmd) {
+			rlOK, rlResult := runtime.CheckRateLimits(ctx, performDepositRateLimitChecks(ctx, r))
+			if !rlOK {
+				writeRateLimitExceeded(w, rlResult)
+				return
+			}
+			writeRateLimitHeaders(w, rlResult)
+		}
 		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.PerformDeposit")
 		ucErr := wallet.PerformDeposit(ctx, cmd)
 		ucSpanEnd(ucErr)
@@ -78,6 +98,14 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 			return
 		}
 		cmd.WalletId = idVal
+		if !wallet.PerformWithdrawalIsReplay(ctx, cmd) {
+			rlOK, rlResult := runtime.CheckRateLimits(ctx, performWithdrawalRateLimitChecks(ctx, r))
+			if !rlOK {
+				writeRateLimitExceeded(w, rlResult)
+				return
+			}
+			writeRateLimitHeaders(w, rlResult)
+		}
 		ctx, ucSpanEnd := runtime.RecordSpan(ctx, "UseCase.PerformWithdrawal")
 		ucErr := wallet.PerformWithdrawal(ctx, cmd)
 		ucSpanEnd(ucErr)
@@ -93,6 +121,15 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		ctx = runtime.WithTrace(ctx, runtime.NewTraceID())
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
+		}
+		rlOK, rlResult := runtime.CheckRateLimits(ctx, getWalletRateLimitChecks(ctx, r))
+		if !rlOK {
+			writeRateLimitExceeded(w, rlResult)
+			return
+		}
+		writeRateLimitHeaders(w, rlResult)
+		if strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
+			ctx = runtime.WithNoCache(ctx)
 		}
 		idVal, err := wallet.NewWalletId(r.PathValue("id"))
 		if err != nil {
@@ -118,6 +155,12 @@ func newMux(store runtime.EventStore) *http.ServeMux {
 		if key := r.Header.Get("Idempotency-Key"); key != "" {
 			ctx = runtime.WithIdempotencyKey(ctx, key)
 		}
+		rlOK, rlResult := runtime.CheckRateLimits(ctx, listEntriesRateLimitChecks(ctx, r))
+		if !rlOK {
+			writeRateLimitExceeded(w, rlResult)
+			return
+		}
+		writeRateLimitHeaders(w, rlResult)
 		idVal, err := wallet.NewWalletId(r.PathValue("id"))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("invalid path param %q: %s", "id", err), http.StatusBadRequest)
@@ -199,4 +242,257 @@ func writeBusinessError(w http.ResponseWriter, err error) {
 		return
 	}
 	http.Error(w, "internal error", http.StatusServiceUnavailable)
+}
+
+// rateLimitClientIP extrai o identificador de rede do chamador para a
+// dimensão perIp (spec §16): prioriza "X-Forwarded-For" (1º endereço da
+// lista — convenção padrão de proxy reverso) e cai para r.RemoteAddr (só o
+// host, sem a porta) na ausência do header. Nenhum dos dois é validado
+// contra spoofing — confiar (ou não) num proxy é decisão de deploy, fora do
+// escopo deste gerador.
+func rateLimitClientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if i := strings.IndexByte(fwd, ','); i >= 0 {
+			fwd = fwd[:i]
+		}
+		return strings.TrimSpace(fwd)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// rateLimitAPIKey extrai a chave de API para a dimensão perApiKey (spec
+// §16) do header "X-Api-Key" — placeholder documentado até o projeto ter
+// um sistema de autenticação por API key de verdade (nenhum existe ainda;
+// mesmo espírito do X-Caller-Id de dev, devCallerFromRequest acima).
+func rateLimitAPIKey(r *http.Request) string {
+	return r.Header.Get("X-Api-Key")
+}
+
+// writeRateLimitHeaders escreve os headers "X-RateLimit-*" (spec §16) a
+// partir do resultado MAIS RESTRITIVO entre as dimensões checadas
+// (runtime.CheckRateLimits já resolve qual) — emitido tanto no caminho de
+// sucesso quanto no 429, para o chamador sempre poder ver sua cota.
+func writeRateLimitHeaders(w http.ResponseWriter, res runtime.RateLimitResult) {
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(res.ResetAt.Unix(), 10))
+}
+
+// writeRateLimitExceeded escreve a resposta automática do spec §16: os
+// mesmos headers X-RateLimit-* de sempre, mais "Retry-After" (segundos,
+// arredondado para cima) e 429.
+func writeRateLimitExceeded(w http.ResponseWriter, res runtime.RateLimitResult) {
+	writeRateLimitHeaders(w, res)
+	retryAfterSeconds := int64(res.RetryAfter / time.Second)
+	if res.RetryAfter%time.Second != 0 {
+		retryAfterSeconds++
+	}
+	if retryAfterSeconds < 0 {
+		retryAfterSeconds = 0
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+}
+
+// performDepositPerIpLimiter é o limitador perIp de POST "/wallets/{id}/deposit" -> PerformDeposit (spec §16, G4).
+var performDepositPerIpLimiterRedisClient, performDepositPerIpLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var performDepositPerIpLimiter runtime.Limiter = newPerformDepositPerIpLimiter()
+
+// newPerformDepositPerIpLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newPerformDepositPerIpLimiter() runtime.Limiter {
+	if performDepositPerIpLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "performDepositPerIpLimiter", "error", performDepositPerIpLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 1200, time.Duration(60000000000), 10)
+	}
+	return redisruntime.NewRedisLimiter(performDepositPerIpLimiterRedisClient, "performDepositPerIpLimiter", "token_bucket", 1200, time.Duration(60000000000), 10)
+}
+
+// performDepositPerUserLimiter é o limitador perUser de POST "/wallets/{id}/deposit" -> PerformDeposit (spec §16, G4).
+var performDepositPerUserLimiterRedisClient, performDepositPerUserLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var performDepositPerUserLimiter runtime.Limiter = newPerformDepositPerUserLimiter()
+
+// newPerformDepositPerUserLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newPerformDepositPerUserLimiter() runtime.Limiter {
+	if performDepositPerUserLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "performDepositPerUserLimiter", "error", performDepositPerUserLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 60, time.Duration(60000000000), 10)
+	}
+	return redisruntime.NewRedisLimiter(performDepositPerUserLimiterRedisClient, "performDepositPerUserLimiter", "token_bucket", 60, time.Duration(60000000000), 10)
+}
+
+// performDepositRateLimitChecks monta as dimensões de rate limit de POST "/wallets/{id}/deposit" -> PerformDeposit (spec §16, G4).
+func performDepositRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	checks = append(checks, runtime.RateLimitCheck{Limiter: performDepositPerIpLimiter, Key: rateLimitClientIP(r), FailOpen: true})
+	if caller, ok := runtime.CallerFrom(ctx); ok && caller.Authenticated() {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: performDepositPerUserLimiter, Key: caller.ID(), FailOpen: true})
+	}
+	return checks
+}
+
+// performWithdrawalPerIpLimiter é o limitador perIp de POST "/wallets/{id}/withdraw" -> PerformWithdrawal (spec §16, G4).
+var performWithdrawalPerIpLimiterRedisClient, performWithdrawalPerIpLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var performWithdrawalPerIpLimiter runtime.Limiter = newPerformWithdrawalPerIpLimiter()
+
+// newPerformWithdrawalPerIpLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newPerformWithdrawalPerIpLimiter() runtime.Limiter {
+	if performWithdrawalPerIpLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "performWithdrawalPerIpLimiter", "error", performWithdrawalPerIpLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 1200, time.Duration(60000000000), 5)
+	}
+	return redisruntime.NewRedisLimiter(performWithdrawalPerIpLimiterRedisClient, "performWithdrawalPerIpLimiter", "token_bucket", 1200, time.Duration(60000000000), 5)
+}
+
+// performWithdrawalPerUserLimiter é o limitador perUser de POST "/wallets/{id}/withdraw" -> PerformWithdrawal (spec §16, G4).
+var performWithdrawalPerUserLimiterRedisClient, performWithdrawalPerUserLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var performWithdrawalPerUserLimiter runtime.Limiter = newPerformWithdrawalPerUserLimiter()
+
+// newPerformWithdrawalPerUserLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newPerformWithdrawalPerUserLimiter() runtime.Limiter {
+	if performWithdrawalPerUserLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "performWithdrawalPerUserLimiter", "error", performWithdrawalPerUserLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 30, time.Duration(60000000000), 5)
+	}
+	return redisruntime.NewRedisLimiter(performWithdrawalPerUserLimiterRedisClient, "performWithdrawalPerUserLimiter", "token_bucket", 30, time.Duration(60000000000), 5)
+}
+
+// performWithdrawalRateLimitChecks monta as dimensões de rate limit de POST "/wallets/{id}/withdraw" -> PerformWithdrawal (spec §16, G4).
+func performWithdrawalRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	checks = append(checks, runtime.RateLimitCheck{Limiter: performWithdrawalPerIpLimiter, Key: rateLimitClientIP(r), FailOpen: true})
+	if caller, ok := runtime.CallerFrom(ctx); ok && caller.Authenticated() {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: performWithdrawalPerUserLimiter, Key: caller.ID(), FailOpen: true})
+	}
+	return checks
+}
+
+// getWalletPerIpLimiter é o limitador perIp de GET "/wallets/{id}" -> GetWallet (spec §16, G4).
+var getWalletPerIpLimiterRedisClient, getWalletPerIpLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var getWalletPerIpLimiter runtime.Limiter = newGetWalletPerIpLimiter()
+
+// newGetWalletPerIpLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newGetWalletPerIpLimiter() runtime.Limiter {
+	if getWalletPerIpLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "getWalletPerIpLimiter", "error", getWalletPerIpLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 1200, time.Duration(60000000000), 0)
+	}
+	return redisruntime.NewRedisLimiter(getWalletPerIpLimiterRedisClient, "getWalletPerIpLimiter", "token_bucket", 1200, time.Duration(60000000000), 0)
+}
+
+// getWalletPerUserLimiter é o limitador perUser de GET "/wallets/{id}" -> GetWallet (spec §16, G4).
+var getWalletPerUserLimiterRedisClient, getWalletPerUserLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var getWalletPerUserLimiter runtime.Limiter = newGetWalletPerUserLimiter()
+
+// newGetWalletPerUserLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newGetWalletPerUserLimiter() runtime.Limiter {
+	if getWalletPerUserLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "getWalletPerUserLimiter", "error", getWalletPerUserLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 600, time.Duration(60000000000), 0)
+	}
+	return redisruntime.NewRedisLimiter(getWalletPerUserLimiterRedisClient, "getWalletPerUserLimiter", "token_bucket", 600, time.Duration(60000000000), 0)
+}
+
+// getWalletRateLimitChecks monta as dimensões de rate limit de GET "/wallets/{id}" -> GetWallet (spec §16, G4).
+func getWalletRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	checks = append(checks, runtime.RateLimitCheck{Limiter: getWalletPerIpLimiter, Key: rateLimitClientIP(r), FailOpen: true})
+	if caller, ok := runtime.CallerFrom(ctx); ok && caller.Authenticated() {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: getWalletPerUserLimiter, Key: caller.ID(), FailOpen: true})
+	}
+	return checks
+}
+
+// listEntriesPerIpLimiter é o limitador perIp de GET "/wallets/{id}/entries" -> ListEntries (spec §16, G4).
+var listEntriesPerIpLimiterRedisClient, listEntriesPerIpLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var listEntriesPerIpLimiter runtime.Limiter = newListEntriesPerIpLimiter()
+
+// newListEntriesPerIpLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newListEntriesPerIpLimiter() runtime.Limiter {
+	if listEntriesPerIpLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "listEntriesPerIpLimiter", "error", listEntriesPerIpLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 1200, time.Duration(60000000000), 0)
+	}
+	return redisruntime.NewRedisLimiter(listEntriesPerIpLimiterRedisClient, "listEntriesPerIpLimiter", "token_bucket", 1200, time.Duration(60000000000), 0)
+}
+
+// listEntriesPerUserLimiter é o limitador perUser de GET "/wallets/{id}/entries" -> ListEntries (spec §16, G4).
+var listEntriesPerUserLimiterRedisClient, listEntriesPerUserLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+var listEntriesPerUserLimiter runtime.Limiter = newListEntriesPerUserLimiter()
+
+// newListEntriesPerUserLimiter resolve o backend do limitador com FALLBACK LOCAL na abertura da
+// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o
+// limitador degrada para o in-process (proteção por-réplica em vez de
+// global, exatamente o fallback que redisruntime.Allow já aplica para uma
+// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note
+// que rate limit NÃO é fail-open total, ao contrário do cache: continuar
+// limitando localmente é o ponto — desligar a proteção seria pior que
+// limitar por réplica.
+func newListEntriesPerUserLimiter() runtime.Limiter {
+	if listEntriesPerUserLimiterRedisClientErr != nil {
+		slog.Error("rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)", "limiter", "listEntriesPerUserLimiter", "error", listEntriesPerUserLimiterRedisClientErr)
+		return runtime.NewLimiter("token_bucket", 120, time.Duration(60000000000), 0)
+	}
+	return redisruntime.NewRedisLimiter(listEntriesPerUserLimiterRedisClient, "listEntriesPerUserLimiter", "token_bucket", 120, time.Duration(60000000000), 0)
+}
+
+// listEntriesRateLimitChecks monta as dimensões de rate limit de GET "/wallets/{id}/entries" -> ListEntries (spec §16, G4).
+func listEntriesRateLimitChecks(ctx context.Context, r *http.Request) []runtime.RateLimitCheck {
+	var checks []runtime.RateLimitCheck
+	checks = append(checks, runtime.RateLimitCheck{Limiter: listEntriesPerIpLimiter, Key: rateLimitClientIP(r), FailOpen: true})
+	if caller, ok := runtime.CallerFrom(ctx); ok && caller.Authenticated() {
+		checks = append(checks, runtime.RateLimitCheck{Limiter: listEntriesPerUserLimiter, Key: caller.ID(), FailOpen: true})
+	}
+	return checks
 }

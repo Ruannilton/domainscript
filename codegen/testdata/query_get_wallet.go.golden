@@ -2,15 +2,106 @@ package wallet
 
 import (
 	context "context"
+	redisruntime "domainscript/generated/redisruntime"
 	runtime "domainscript/generated/runtime"
+	gob "encoding/gob"
+	slog "log/slog"
+	os "os"
+	time "time"
 )
 
-// GetWallet é a Query GetWallet (§6.3): leitura pura, sem unit of work.
-func GetWallet(ctx context.Context, store runtime.EventStore, id WalletId) (WalletView, error) {
+// getWalletRun carrega o corpo de sempre da Query GetWallet (§6.3) — a borda com cache
+// (spec §15, G3) é GetWallet, logo abaixo.
+func getWalletRun(ctx context.Context, store runtime.EventStore, id WalletId) (WalletView, error) {
 	wallet, err := LoadWallet(runtime.NewEventLoader(ctx, store), id)
 	if err != nil {
 		var zero WalletView
 		return zero, err
 	}
 	return WalletView{Id: wallet.state.Id, Balance: wallet.state.Balance, Holder: wallet.state.Holder}, nil
+}
+
+// getWalletCache é o cache da Query GetWallet (spec §15, G3): invalidado (in-process,
+// imediatamente após emit, antes de qualquer fila externa) pelos eventos
+// [DepositPerformed, WalletCreated, WithdrawalPerformed] — inferidos dos Applies do Aggregate Wallet tocado por esta Query.
+var getWalletCacheRedisClient, getWalletCacheRedisClientErr = redisruntime.OpenClient(os.Getenv("WALLET_REDIS_URL"))
+
+func init() {
+	var zero WalletView
+	gob.Register(zero)
+}
+
+// getWalletCache: instância Redis (spec §15/REQ-44.4, G3/J4.3) — nunca compartilhada
+// com outra Query cacheada (mesmo princípio de "1 instância por Query" já
+// estabelecido acima para o backend in-memory).
+var getWalletCache = newGetWalletCache()
+
+// newGetWalletCache resolve o backend do cache com FAIL-OPEN na abertura da conexão
+// (spec §15, "Falha do backend: Fail-open"): um Redis fora do ar NUNCA
+// derruba o processo — o cache degrada para in-process (cada réplica com
+// o seu, o comportamento pré-J4.3) e a Query segue respondendo. É a mesma
+// postura que redisQueryCache.Get já tem para uma falha DEPOIS de
+// conectado (devolve hit=false, como um miss comum); sem isto, a janela de
+// abertura seria a única fail-CLOSED do seam, e num pacote de DOMÍNIO —
+// importado por todo teste gerado, não só pelo binário do service.
+func newGetWalletCache() runtime.QueryCache {
+	if getWalletCacheRedisClientErr != nil {
+		slog.Warn("cache: Redis indisponível na abertura — degradando para cache in-process (fail-open, spec §15)", "query", "GetWallet", "error", getWalletCacheRedisClientErr)
+		return runtime.NewMemoryQueryCache()
+	}
+	return redisruntime.NewRedisQueryCache(getWalletCacheRedisClient, "GetWallet")
+}
+
+// GetWallet é a Query GetWallet (§6.3) com cache (spec §15, G3): ttl/negativeCacheTtl,
+// invalidação por [DepositPerformed, WalletCreated, WithdrawalPerformed], stampede protection (Coalesce — só 1 execução
+// real de getWalletRun por chave, mesmo sob N chamadas concorrentes) e bypass
+// "Cache-Control: no-cache" (runtime.NoCacheFrom pula a LEITURA; ainda
+// repopula o cache com o resultado fresco).
+func GetWallet(ctx context.Context, store runtime.EventStore, id WalletId) (WalletView, error) {
+	tenant, _ := runtime.TenantFrom(ctx)
+	key := runtime.CacheKey("GetWallet", tenant.ID, id)
+	if !runtime.NoCacheFrom(ctx) {
+		if v, cachedErr, hit := getWalletCache.Get(ctx, key); hit {
+			if cachedErr != nil {
+				var zero WalletView
+				return zero, cachedErr
+			}
+			return v.(WalletView), nil
+		}
+	}
+	result, err := getWalletCache.Coalesce(key, func() (any, error) {
+		return getWalletRun(ctx, store, id)
+	})
+	if err != nil {
+		if runtime.IsBusinessError(err) {
+			getWalletCache.SetErr(ctx, key, err, time.Duration(5000000000))
+		}
+		var zero WalletView
+		return zero, err
+	}
+	getWalletCache.Set(ctx, key, result, time.Duration(30000000000))
+	return result.(WalletView), nil
+}
+
+// WireQueryCache registra a invalidação de cache das Queries deste pacote no
+// runtime.Dispatcher (spec §15, G3): cada evento do conjunto inferido/
+// invalidateOn de uma Query com cache dispara InvalidateAll na respectiva
+// instância — in-process, imediatamente após emit (antes de qualquer fila
+// externa, §15), porque runtime.Dispatcher.Publish já roda de forma síncrona
+// dentro de uow.Run logo após o commit (uow.go.txt). Chamada por
+// cmd/<service>/main.go na inicialização, ao lado de
+// Wire/StartWorkers/StartIdempotencyCleanup.
+func WireQueryCache(d runtime.Dispatcher) {
+	d.Subscribe("DepositPerformed", func(ctx context.Context, ev runtime.Event) error {
+		getWalletCache.InvalidateAll()
+		return nil
+	})
+	d.Subscribe("WalletCreated", func(ctx context.Context, ev runtime.Event) error {
+		getWalletCache.InvalidateAll()
+		return nil
+	})
+	d.Subscribe("WithdrawalPerformed", func(ctx context.Context, ev runtime.Event) error {
+		getWalletCache.InvalidateAll()
+		return nil
+	})
 }

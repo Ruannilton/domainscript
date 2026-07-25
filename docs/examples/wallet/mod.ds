@@ -1,8 +1,56 @@
-// mod.ds — infraestrutura do módulo Wallet.
-// Declara o módulo e o banco que persiste seus Aggregates (§12).
+// mod.ds — infraestrutura do módulo Wallet (§12).
+// Este exemplo simula um deploy REAL de carteira digital: o estado dos
+// Aggregates vive num Postgres, e a leitura quente passa por um Redis
+// compartilhado (cache de Query, §15, e rate limit da borda, §16). Ambos são
+// providers reais desde o ciclo infra-providers/Marco J (REQ-41 Postgres,
+// REQ-44 Redis) — declarar o provider aqui é o que faz o gerador emitir os
+// adapters de verdade (`sqlruntime`/`redisruntime`) e puxar
+// `github.com/jackc/pgx/v5` + `github.com/redis/go-redis/v9` para o `go.mod`
+// do projeto gerado (NFR-21: nada disso entra quando o provider não é
+// declarado).
+//
+// Toda credencial/endpoint vem do ambiente via `env(...)` — nenhum DSN
+// hardcoded no domínio. Em desenvolvimento:
+//
+//     WALLET_DATABASE_URL=postgres://wallet:wallet@localhost:5432/wallet?sslmode=disable
+//     WALLET_REDIS_URL=redis://localhost:6379/0
 Module Wallet {
+    // Postgres é a fonte da verdade: o EventStore (um stream por Aggregate) e
+    // as Collections do Read Side. `retry`/`circuitBreaker` são a postura de
+    // resiliência esperada de um banco remoto — um Postgres gerenciado cai,
+    // faz failover e volta; a operação não deve morrer no primeiro timeout.
     Database MainDb {
         provider: "postgres"
+        connection: env("WALLET_DATABASE_URL")
         manages: [Wallet]
+        retry: { attempts: 3, backoff: "exponential" }
+        circuitBreaker: { threshold: 5, cooldown: 30s }
+    }
+
+    // Cache distribuído: várias réplicas do serviço compartilham o MESMO
+    // Redis, então o saldo lido numa réplica aproveita o trabalho feito por
+    // outra. A invalidação continua sendo por evento (inferida pelo
+    // compilador a partir dos Aggregates que a Query toca, §15) — o backend
+    // só troca onde as entradas moram.
+    Cache {
+        backend: "redis"
+        connection: env("WALLET_REDIS_URL")
+    }
+
+    // Rate limit no MESMO Redis: a cota precisa ser global ao cluster, não
+    // por processo — senão N réplicas multiplicam o limite por N.
+    RateLimit {
+        backend: "redis"
+        connection: env("WALLET_REDIS_URL")
+    }
+
+    // Idempotência de Command (§14) no próprio Postgres (`storage: same`): a
+    // chave é gravada na MESMA transação que persiste os eventos, então um
+    // retry do cliente (a rede caiu depois do commit e o app reenviou) nunca
+    // duplica um depósito. Dinheiro é o caso canônico de "exatamente uma vez
+    // do ponto de vista do usuário".
+    Idempotency {
+        storage: same
+        window: 24h
     }
 }

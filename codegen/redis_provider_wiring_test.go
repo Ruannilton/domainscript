@@ -120,10 +120,16 @@ func TestCacheModuleBlockAcceptsEnvConnection(t *testing.T) {
 // TestEmitQueryCacheRedisBackendGolden prova, sobre o Go de fato gerado, a
 // seleção do backend Redis para as 2 Queries cacheadas da fixture: cada uma
 // abre sua PRÓPRIA conexão (redisruntime.OpenClient sobre
-// os.Getenv("REDIS_URL"), R1), falha o startup (panic) se a conexão falhar,
-// registra seu tipo de retorno via encoding/gob (exigido por
-// redisruntime.NewRedisQueryCache — ver a doc de redisrt/cache.go.txt) e usa
-// redisruntime.NewRedisQueryCache no lugar de runtime.NewMemoryQueryCache.
+// os.Getenv("REDIS_URL"), R1), registra seu tipo de retorno via encoding/gob
+// (exigido por redisruntime.NewRedisQueryCache — ver a doc de
+// redisrt/cache.go.txt) e usa redisruntime.NewRedisQueryCache.
+//
+// FAIL-OPEN na abertura (spec §15, "Falha do backend: Fail-open"): até a
+// correção do wiring de cache, um erro de OpenClient dava `panic` num `init()`
+// do pacote de DOMÍNIO — o que derrubava qualquer teste que só IMPORTASSE o
+// pacote gerado, sem Redis vivo, e contrariava o próprio §15. Agora a var é
+// inicializada por `new<Query>Cache()`, que degrada para
+// runtime.NewMemoryQueryCache() com um slog.Warn quando o Redis não abre.
 func TestEmitQueryCacheRedisBackendGolden(t *testing.T) {
 	prog := parseCacheRedisFixture(t)
 	got := emitCacheQueries(t, prog)
@@ -131,20 +137,25 @@ func TestEmitQueryCacheRedisBackendGolden(t *testing.T) {
 
 	for _, want := range []string{
 		`var getWidgetCacheRedisClient, getWidgetCacheRedisClientErr = redisruntime.OpenClient(os.Getenv("REDIS_URL"))`,
-		"if getWidgetCacheRedisClientErr != nil {",
-		"panic(getWidgetCacheRedisClientErr)",
 		"var zero WidgetView",
 		"gob.Register(zero)",
-		`var getWidgetCache = redisruntime.NewRedisQueryCache(getWidgetCacheRedisClient, "GetWidget")`,
+		"var getWidgetCache = newGetWidgetCache()",
+		"func newGetWidgetCache() runtime.QueryCache {",
+		"if getWidgetCacheRedisClientErr != nil {",
+		"return runtime.NewMemoryQueryCache()",
+		`return redisruntime.NewRedisQueryCache(getWidgetCacheRedisClient, "GetWidget")`,
 		`var getWidgetAutoInvalidateCacheRedisClient, getWidgetAutoInvalidateCacheRedisClientErr = redisruntime.OpenClient(os.Getenv("REDIS_URL"))`,
-		`var getWidgetAutoInvalidateCache = redisruntime.NewRedisQueryCache(getWidgetAutoInvalidateCacheRedisClient, "GetWidgetAutoInvalidate")`,
+		"var getWidgetAutoInvalidateCache = newGetWidgetAutoInvalidateCache()",
+		`return redisruntime.NewRedisQueryCache(getWidgetAutoInvalidateCacheRedisClient, "GetWidgetAutoInvalidate")`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("esperava %q no Go gerado, não achei:\n%s", want, s)
 		}
 	}
-	if strings.Contains(s, "runtime.NewMemoryQueryCache()") {
-		t.Fatalf("com Cache{backend:\"redis\"}, não deveria mais usar runtime.NewMemoryQueryCache():\n%s", s)
+	// A metade negativa do fail-open: NENHUM panic no pacote de domínio por
+	// causa de Redis — é exatamente isso que derrubava a suíte inteira antes.
+	if strings.Contains(s, "panic(getWidgetCacheRedisClientErr)") {
+		t.Fatalf("o wiring de cache não pode mais dar panic na abertura (fail-open, spec §15):\n%s", s)
 	}
 	// O wrapper público (Get/Coalesce/Set/SetErr) continua sendo o MESMO —
 	// só a var de cache que ele referencia mudou de backend.
@@ -291,17 +302,25 @@ func TestGenerateRateLimitRedisBackendGolden(t *testing.T) {
 	s := string(mainGo)
 	for _, want := range []string{
 		`var placeOrderPerIpLimiterRedisClient, placeOrderPerIpLimiterRedisClientErr = redisruntime.OpenClient(os.Getenv("REDIS_URL"))`,
+		"var placeOrderPerIpLimiter runtime.Limiter = newPlaceOrderPerIpLimiter()",
+		"func newPlaceOrderPerIpLimiter() runtime.Limiter {",
 		"if placeOrderPerIpLimiterRedisClientErr != nil {",
-		"panic(placeOrderPerIpLimiterRedisClientErr)",
-		`var placeOrderPerIpLimiter runtime.Limiter = redisruntime.NewRedisLimiter(placeOrderPerIpLimiterRedisClient, "placeOrderPerIpLimiter", "token_bucket", 5, time.Duration(60000000000), 0)`,
+		`return redisruntime.NewRedisLimiter(placeOrderPerIpLimiterRedisClient, "placeOrderPerIpLimiter", "token_bucket", 5, time.Duration(60000000000), 0)`,
 		"checks = append(checks, runtime.RateLimitCheck{Limiter: placeOrderPerIpLimiter, Key: rateLimitClientIP(r), FailOpen: true})",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("esperava %q em cmd/orders/main.go, não achei:\n%s", want, s)
 		}
 	}
-	if strings.Contains(s, `runtime.NewLimiter("token_bucket"`) {
-		t.Fatalf("com RateLimit{backend:\"redis\"}, não deveria mais usar runtime.NewLimiter:\n%s", s)
+	// FALLBACK LOCAL na abertura (REQ-44.5), não panic: um Redis fora do ar no
+	// startup degrada para o limitador in-process (proteção por-réplica) em vez
+	// de derrubar o processo — a mesma postura que redisruntime.Allow já tem
+	// para uma falha depois de conectado. O `runtime.NewLimiter` passa a
+	// aparecer, portanto, DENTRO do construtor de fallback — o que a asserção
+	// negativa antiga proibia. O que ela protegia continua protegido pela
+	// asserção positiva acima: o caminho feliz usa NewRedisLimiter.
+	if strings.Contains(s, "panic(placeOrderPerIpLimiterRedisClientErr)") {
+		t.Fatalf("o wiring de rate limit não pode mais dar panic na abertura (REQ-44.5):\n%s", s)
 	}
 }
 

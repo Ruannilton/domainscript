@@ -650,14 +650,28 @@ func emitRateLimitLimiterVar(e *emit.Emitter, varName, describe, algoLit, burstG
 	redisAlias := e.Import(path.Join(domainModuleRoot, "redisruntime"))
 	clientVar := varName + "RedisClient"
 	clientErrVar := varName + "RedisClientErr"
+	ctorFn := "new" + strings.ToUpper(varName[:1]) + varName[1:]
 	e.Line("var %s, %s = %s.OpenClient(%s)", clientVar, clientErrVar, redisAlias, connGo)
+	e.Line("var %s %s.Limiter = %s()", varName, runtimeAlias, ctorFn)
 	e.Line("")
-	e.Block("func init()", func() {
+	e.Line("// %s resolve o backend do limitador com FALLBACK LOCAL na abertura da", ctorFn)
+	e.Line("// conexão (REQ-44.5): um Redis fora do ar NUNCA derruba o processo — o")
+	e.Line("// limitador degrada para o in-process (proteção por-réplica em vez de")
+	e.Line("// global, exatamente o fallback que redisruntime.Allow já aplica para uma")
+	e.Line("// falha DEPOIS de conectado; ver a doc de redisrt/ratelimit.go.txt). Note")
+	e.Line("// que rate limit NÃO é fail-open total, ao contrário do cache: continuar")
+	e.Line("// limitando localmente é o ponto — desligar a proteção seria pior que")
+	e.Line("// limitar por réplica.")
+	e.Block(fmt.Sprintf("func %s() %s.Limiter", ctorFn, runtimeAlias), func() {
 		e.Block(fmt.Sprintf("if %s != nil", clientErrVar), func() {
-			e.Line("panic(%s)", clientErrVar)
+			slogAlias := e.Import("log/slog")
+			e.Line("%s.Error(%q, %q, %q, %q, %s)", slogAlias,
+				"rate limit: Redis indisponível na abertura — usando fallback local por-réplica (REQ-44.5)",
+				"limiter", varName, "error", clientErrVar)
+			e.Line("return %s.NewLimiter(%s, %d, %s, %s)", runtimeAlias, algoLit, rule.count, rule.periodGo, burstGo)
 		})
+		e.Line("return %s.NewRedisLimiter(%s, %q, %s, %d, %s, %s)", redisAlias, clientVar, varName, algoLit, rule.count, rule.periodGo, burstGo)
 	})
-	e.Line("var %s %s.Limiter = %s.NewRedisLimiter(%s, %q, %s, %d, %s, %s)", varName, runtimeAlias, redisAlias, clientVar, varName, algoLit, rule.count, rule.periodGo, burstGo)
 }
 
 // emitRouteRateLimitChecks emite, no nível de PACOTE (ver a doc de

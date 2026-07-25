@@ -260,7 +260,12 @@ func TestWalletGoModRequiresOnlyPostgresDriverAfterG1(t *testing.T) {
 		t.Fatal("esperava go.mod entre os arquivos gerados do wallet")
 	}
 	content := string(goMod)
-	if !strings.Contains(content, "require github.com/jackc/pgx/v5 ") {
+	// Sem prefixo "require " na asserção: desde que o wallet passou a declarar
+	// TAMBÉM Cache/RateLimit sobre redis, o go.mod tem DOIS requires e o
+	// emissor troca a forma de linha única ("require X v1") pelo bloco
+	// ("require (\n\tX v1\n\tY v2\n)"). O que a task prova continua o mesmo:
+	// pgx presente, sqlite ausente.
+	if !strings.Contains(content, "github.com/jackc/pgx/v5 ") {
 		t.Fatalf("esperava go.mod exigir github.com/jackc/pgx/v5 (Database MainDb, provider \"postgres\"), achei:\n%s", content)
 	}
 	if strings.Contains(content, "modernc.org/sqlite") {

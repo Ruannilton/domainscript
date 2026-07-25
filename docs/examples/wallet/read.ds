@@ -7,12 +7,36 @@ View WalletView {
     holder  HolderName
 }
 
-// Leitura cirúrgica de uma carteira por id.
+// Leitura cirúrgica de uma carteira por id — a rota mais quente da carteira
+// (o app consulta o saldo a cada abertura de tela), e por isso a única
+// cacheada. O backend é o Redis declarado em mod.ds (§15): as réplicas
+// compartilham as entradas, e a chave inclui o parâmetro `id`.
+//
+// `ttl: 30s` é deliberadamente curto — saldo é um dado que o usuário confere
+// contra o extrato do banco, então nem o TTL nem a invalidação sozinhos
+// bastam: os dois se somam. A invalidação por evento é INFERIDA dos Applies
+// do Aggregate Wallet (`WalletCreated`, `DepositPerformed`,
+// `WithdrawalPerformed`), de forma que qualquer movimentação derruba a
+// entrada in-process no mesmo instante do commit, antes de qualquer fila
+// externa. O TTL é só a rede de segurança para o que a inferência não cobre
+// (ex. um ajuste aplicado fora deste serviço).
+//
+// `negativeCacheTtl: 5s`: carteira inexistente também é resposta — cachear o
+// "não achei" por poucos segundos protege o Postgres de uma enxurrada de
+// consultas a ids inválidos (varredura/enumeração), sem esconder por muito
+// tempo uma carteira recém-aberta.
 Query GetWallet(id WalletId) -> WalletView {
+    cache {
+        ttl: 30s
+        negativeCacheTtl: 5s
+    }
     return load Wallet(id) as WalletView
 }
 
-// Listagem do extrato de uma carteira.
+// Listagem do extrato de uma carteira. Deliberadamente SEM `cache`: o
+// compilador avisa (§15/REQ-5.20) que cache sobre listagem é de alta
+// cardinalidade e tende a ser ineficaz — cada combinação de filtro/página
+// vira uma entrada própria com taxa de acerto baixa.
 Query ListEntries(id WalletId) -> List<StatementEntry> {
     return list StatementEntry
 }
