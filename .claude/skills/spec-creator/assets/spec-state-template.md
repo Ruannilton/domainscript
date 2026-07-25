@@ -1,0 +1,7 @@
+## PENDING TASKS:
+- [TASK-NUMBER]
+...
+
+## BLOCKED TASKS:
+- [TASK-NUMBER]
+....
