@@ -69,12 +69,15 @@ change is needed, update the spec.
                                 one file per issue (open-issues.md indexes them)
 .claude/skills/issue-generator/ skill that registers a new issue under
                                 .claude/issues/ from a template
-.claude/agents/                 subagent definitions (spec-writer: authors a
+.claude/agents/                 subagent definitions — spec-writer (authors a
                                 new spec end-to-end, opens its PR and follows
-                                it; read-only over code)
+                                it; read-only over code) and task-implementer
+                                (implements exactly ONE task of a spec, one
+                                branch/PR per spec, never runs tests)
 .claude/hooks/                  hook scripts referenced by agent frontmatter
-                                (spec-writer-guard.sh enforces spec-writer's
-                                "no code changes, no test runs" boundary)
+                                (spec-writer-guard.sh: no code changes / no
+                                test runs; task-implementer-guard.sh: no
+                                test runs, build & fmt still allowed)
 .claude/state.md               tracks the status of every spec::task, so
                                 execution can resume after an interruption
 ```
