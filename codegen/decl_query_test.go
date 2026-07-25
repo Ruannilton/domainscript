@@ -9,6 +9,7 @@ import (
 	"domainscript/codegen"
 	"domainscript/codegen/gentest"
 	"domainscript/codegen/goname"
+	"domainscript/codegen/redisrt"
 	"domainscript/driver"
 	"domainscript/program"
 	"domainscript/types"
@@ -114,6 +115,35 @@ func querySmokeFiles(t *testing.T) map[string][]byte {
 	files := walletAggregateLoadSmokeFiles(t)
 	files[filepath.Join("wallet", "view_wallet.go")] = emitWalletView(t)
 	files[filepath.Join("wallet", "queries.go")] = emitWalletQueries(t)
+	return withRedisRuntimeSmoke(t, files)
+}
+
+// redisSmokeGoMod é o go.mod dos harnesses de smoke cujo pacote de módulo
+// importa `redisruntime` — o caso do read side do wallet desde que o exemplo
+// passou a declarar `Cache { backend: "redis" }` e a Query GetWallet ganhou
+// bloco `cache` (§15). O `require` também é o gatilho de
+// gentest.needsModTidy: com ele, SmokeCompile roda `go mod tidy` antes do
+// build e resolve o módulo de verdade. A versão espelha
+// redisDriverVersion (codegen/project.go) — se divergir, o `tidy` reconcilia
+// e o smoke segue verde.
+const redisSmokeGoMod = "module domainscript/generated\n\ngo 1.22\n\nrequire github.com/redis/go-redis/v9 v9.21.0\n"
+
+// withRedisRuntimeSmoke acrescenta a um conjunto de arquivos de smoke as
+// fontes do adapter Redis (`redisruntime/*`, o mesmo redisrt.Sources() que
+// codegen.Generate vendoraria) e troca o go.mod pelo que declara go-redis.
+// Necessário porque os harnesses de smoke montam um projeto MÍNIMO à mão (só
+// runtime + os arquivos sob teste), não o projeto inteiro — então nada
+// vendorava redisruntime para eles.
+func withRedisRuntimeSmoke(t *testing.T, files map[string][]byte) map[string][]byte {
+	t.Helper()
+	files["go.mod"] = []byte(redisSmokeGoMod)
+	srcs, err := redisrt.Sources()
+	if err != nil {
+		t.Fatalf("redisrt.Sources(): %v", err)
+	}
+	for name, content := range srcs {
+		files[filepath.Join("redisruntime", name)] = content
+	}
 	return files
 }
 

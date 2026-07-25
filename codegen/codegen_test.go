@@ -148,8 +148,16 @@ func TestGenerateWalletMainWiresUseCases(t *testing.T) {
 	}
 	for _, want := range []string{
 		"runtime.NewMemoryEventStore()",
-		"runtime.NewUnitOfWork(store)",
+		// Desde que o exemplo wallet passou a declarar `Cache { backend:
+		// "redis" }` e a Query GetWallet ganhou bloco `cache` (§15), o módulo
+		// tem uma Query cacheada — o que força needsDispatcher (G3: o
+		// WireQueryCache assina o MESMO runtime.Dispatcher), e a unit of work
+		// passa a receber o dispatcher como publisher. Antes disso o wallet não
+		// tinha nenhum assinante e a forma era "NewUnitOfWork(store)".
+		"dispatcher := runtime.NewDispatcher()",
+		"runtime.NewUnitOfWork(store, dispatcher)",
 		"wallet.Wire(uow)",
+		"wallet.WireQueryCache(dispatcher)",
 		`fmt.Sprintf(":%s", port)`,
 	} {
 		if !strings.Contains(string(main), want) {

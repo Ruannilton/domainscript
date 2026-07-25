@@ -3,6 +3,7 @@ package wallet
 import (
 	context "context"
 	runtime "domainscript/generated/runtime"
+	slog "log/slog"
 	time "time"
 )
 
@@ -17,9 +18,15 @@ func Wire(u runtime.UnitOfWork) {
 	uow = u
 }
 
-// PerformDeposit é o UseCase PerformDeposit (§5.2): abre uma unit of work, executa
-// o corpo (load/ensure/dispatch de Handle) e propaga commit/rollback.
-func PerformDeposit(ctx context.Context, cmd Deposit) error {
+// idem é o idempotency store do módulo (spec §14, G2), compartilhado por
+// todo UseCase que declara "idempotency { ... }" — o default in-memory
+// ("storage: same", ver a doc de idempotency.go.txt); sem Wire, mesmo
+// padrão do SagaStore de uma Saga async (decl_saga.go).
+var idem runtime.IdempotencyStore = runtime.NewMemoryIdempotencyStore()
+
+// performDepositRun carrega o corpo de verdade do UseCase PerformDeposit (§5.2) — a idempotência
+// (spec §14, G2) mora no wrapper público PerformDeposit, abaixo.
+func performDepositRun(ctx context.Context, cmd Deposit) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(5000000000))
 	defer cancel()
 	caller, _ := runtime.CallerFrom(ctx)
@@ -38,4 +45,80 @@ func PerformDeposit(ctx context.Context, cmd Deposit) error {
 		}
 		return nil
 	})
+}
+
+// PerformDeposit é a borda idempotente do UseCase PerformDeposit (spec §14, G2): decide, a partir
+// da Idempotency-Key do chamador (runtime.IdempotencyKeyFrom), se roda performDepositRun de
+// verdade, repete um resultado já cacheado (sucesso ou erro de negócio),
+// recusa um conflito (mesma chave, Command diferente) ou aplica a política
+// de corrida (concurrentRetry) sobre um run concorrente da MESMA chave.
+func PerformDeposit(ctx context.Context, cmd Deposit) error {
+	key, hasKey := runtime.IdempotencyKeyFrom(ctx)
+	if !hasKey {
+		return performDepositRun(ctx, cmd)
+	}
+
+	fingerprint := runtime.IdempotencyFingerprint(cmd)
+	for {
+		begin, err := idem.Begin(ctx, key, fingerprint)
+		if err != nil {
+			return err
+		}
+		switch begin.Outcome {
+		case runtime.BeginConflict:
+			return runtime.ErrIdempotencyKeyConflict
+		case runtime.BeginCached:
+			return begin.Cached.Err()
+		case runtime.BeginInFlight:
+			waitCtx, cancel := context.WithTimeout(ctx, time.Duration(30000000000))
+			wr, err := idem.Wait(waitCtx, key)
+			cancel()
+			if err != nil {
+				return err
+			}
+			if wr.Outcome == runtime.WaitReleased {
+				continue
+			}
+			return wr.Result.Err()
+		}
+
+		runErr := performDepositRun(ctx, cmd)
+		if runErr != nil && !runtime.IsBusinessError(runErr) {
+			_ = idem.Release(ctx, key)
+			return runErr
+		}
+		_ = idem.Complete(ctx, key, runtime.NewCompletedResult(runErr), time.Duration(172800000000000))
+		return runErr
+	}
+}
+
+// PerformDepositIsReplay reporta se cmd, sob a Idempotency-Key de ctx, já tem um
+// resultado concluído registrado (peek — nunca muta nada, spec §14/§16,
+// G4): usado pela borda HTTP para pular a checagem de rate limit inteira
+// quando esta requisição é um replay conhecido.
+func PerformDepositIsReplay(ctx context.Context, cmd Deposit) bool {
+	key, ok := runtime.IdempotencyKeyFrom(ctx)
+	if !ok {
+		return false
+	}
+	return idem.Peek(ctx, key, runtime.IdempotencyFingerprint(cmd))
+}
+
+// StartIdempotencyCleanup roda o worker de limpeza de chaves de idempotência
+// expiradas (spec §14, G2) — gerado automaticamente porque este módulo usa
+// idempotência; chamado por cmd/<service>/main.go na inicialização, ao lado
+// de StartWorkers/Wire. Roda até ctx ser cancelado.
+func StartIdempotencyCleanup(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if _, err := idem.Cleanup(ctx, time.Now()); err != nil {
+			slog.Error("idempotency: falha na limpeza de chaves expiradas", "error", err)
+		}
+	}
 }

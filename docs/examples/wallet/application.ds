@@ -19,8 +19,26 @@ Command Withdraw {
 
 // --- UseCases: carregam o Aggregate e despacham o Handle (§5.2) ---
 
+// Movimentar dinheiro é a operação que MAIS sofre com retry de cliente: app
+// móvel em rede instável reenvia o POST, gateway de pagamento repete o
+// callback. Por isso os dois UseCases declaram idempotência (§14): quando o
+// cliente manda um `Idempotency-Key`, a chave é gravada na MESMA transação que
+// persiste os eventos (`storage: same`, mod.ds), então o reenvio devolve o
+// resultado do primeiro request em vez de duplicar o lançamento. A janela é
+// maior que a do módulo (24h) porque uma conciliação de adquirente pode
+// reprocessar um lote no dia seguinte.
+//
+// A chave é OPCIONAL de propósito (`required` fica de fora), como nas APIs de
+// pagamento reais — o Stripe, por exemplo, recomenda o header e não o exige.
+// Há também um motivo de ferramenta: com `required: true` o UseCase fica
+// intestável pelo formato nativo `*.test.ds`, porque a gramática de cenário
+// não tem como fornecer uma `Idempotency-Key` (o runtime já sabe recebê-la via
+// `WithIdempotencyKey`; quem não sabe emiti-la é o gerador de testes) — mesma
+// natureza do gap de "cenário como o caller X". Ver ISSUE-13.
+
 UseCase PerformDeposit handles Deposit {
     timeout 5s
+    idempotency { window: 48h }
     execute {
         wallet = load Wallet(cmd.walletId)
         wallet.Deposit(cmd.amount, cmd.description)
@@ -29,6 +47,7 @@ UseCase PerformDeposit handles Deposit {
 
 UseCase PerformWithdrawal handles Withdraw {
     timeout 5s
+    idempotency { window: 48h }
     execute {
         wallet = load Wallet(cmd.walletId)
         wallet.Withdraw(cmd.amount, cmd.description)

@@ -430,9 +430,6 @@ func emitQueryCacheVar(e *emit.Emitter, decl *ast.QueryDecl, plan *queryCachePla
 	e.Line("var %s, %s = %s.OpenClient(%s)", clientVar, clientErrVar, redisAlias, connGo)
 	e.Line("")
 	e.Block("func init()", func() {
-		e.Block(fmt.Sprintf("if %s != nil", clientErrVar), func() {
-			e.Line("panic(%s)", clientErrVar)
-		})
 		e.Line("var zero %s", returnGoType)
 		e.Line("%s.Register(zero)", gobAlias)
 	})
@@ -440,8 +437,34 @@ func emitQueryCacheVar(e *emit.Emitter, decl *ast.QueryDecl, plan *queryCachePla
 	e.Line("// %s: instância Redis (spec §15/REQ-44.4, G3/J4.3) — nunca compartilhada", varName)
 	e.Line("// com outra Query cacheada (mesmo princípio de \"1 instância por Query\" já")
 	e.Line("// estabelecido acima para o backend in-memory).")
-	e.Line("var %s = %s.NewRedisQueryCache(%s, %q)", varName, redisAlias, clientVar, decl.Name)
+	e.Line("var %s = %s()", varName, cacheCtorFuncName(decl.Name))
+	e.Line("")
+	e.Line("// %s resolve o backend do cache com FAIL-OPEN na abertura da conexão", cacheCtorFuncName(decl.Name))
+	e.Line("// (spec §15, \"Falha do backend: Fail-open\"): um Redis fora do ar NUNCA")
+	e.Line("// derruba o processo — o cache degrada para in-process (cada réplica com")
+	e.Line("// o seu, o comportamento pré-J4.3) e a Query segue respondendo. É a mesma")
+	e.Line("// postura que redisQueryCache.Get já tem para uma falha DEPOIS de")
+	e.Line("// conectado (devolve hit=false, como um miss comum); sem isto, a janela de")
+	e.Line("// abertura seria a única fail-CLOSED do seam, e num pacote de DOMÍNIO —")
+	e.Line("// importado por todo teste gerado, não só pelo binário do service.")
+	e.Block(fmt.Sprintf("func %s() %s.QueryCache", cacheCtorFuncName(decl.Name), runtimeAlias), func() {
+		e.Block(fmt.Sprintf("if %s != nil", clientErrVar), func() {
+			slogAlias := e.Import("log/slog")
+			e.Line("%s.Warn(%q, %q, %q, %q, %s)", slogAlias,
+				"cache: Redis indisponível na abertura — degradando para cache in-process (fail-open, spec §15)",
+				"query", decl.Name, "error", clientErrVar)
+			e.Line("return %s.NewMemoryQueryCache()", runtimeAlias)
+		})
+		e.Line("return %s.NewRedisQueryCache(%s, %q)", redisAlias, clientVar, decl.Name)
+	})
 	return nil
+}
+
+// cacheCtorFuncName é o nome da função que resolve o backend do cache de uma
+// Query com fail-open (ver emitQueryCacheVar): "new<Query>Cache", ao lado da
+// var "<query>Cache" que ela inicializa.
+func cacheCtorFuncName(queryName string) string {
+	return "new" + queryName + "Cache"
 }
 
 // cachedQueryWire é o que EmitQueries acumula, por Query cacheada, para
