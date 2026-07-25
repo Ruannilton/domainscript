@@ -27,11 +27,11 @@ L2.2*/L2.3* começam por L2.2a (imediata) e L2.3a (design) quando priorizadas.
 
 ## Issues em aberto
 
-Ver `.claude/issues.md`. ISSUE-1 (read-side/I5.1) **RESOLVIDA** (commit
-`3a22df3`): `codegen/decl_collections.go` centraliza a declaração de
-`Collection[T]` var disputado entre `EmitQueries`/`EmitPolicies` num único
-`collections.go` por módulo. ISSUE-9/10/11 têm **spec de correção criada**
-(`.claude/specs/correcoes-issues-9-10-11/`, Marco K) e ISSUE-6/7/8 também
-(`.claude/specs/correcoes-issues-6-7-8/`, Marco L) — todas ainda abertas até a
-execução dos respectivos Marcos fechá-las. ISSUE-2/3/4/5 seguem abertas sem spec
-dedicada (itens maiores / front-end / spec-da-linguagem).
+Ver `.claude/issues/open-issues.md` (um arquivo por issue, cadastrado pela
+skill `issue-generator` — substitui o antigo `.claude/issues.md`/`ISSUE-<n>`).
+As antigas ISSUE-1 e ISSUE-9/10/11 já estavam **RESOLVIDAS** antes da migração
+(ISSUE-1 no commit `3a22df3`; ISSUE-9/10/11 pelo Marco K,
+`.claude/specs/correcoes-issues-9-10-11/`) e não foram migradas. As demais
+seguem abertas: as ex-ISSUE-6/7/8/12 têm spec em andamento
+(`.claude/specs/correcoes-issues-6-7-8/`, Marco L); as ex-ISSUE-2/3/4/5/13
+seguem sem spec dedicada (itens maiores / front-end / spec-da-linguagem).
