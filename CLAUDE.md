@@ -71,13 +71,18 @@ change is needed, update the spec.
                                 .claude/issues/ from a template
 .claude/agents/                 subagent definitions — spec-writer (authors a
                                 new spec end-to-end, opens its PR and follows
-                                it; read-only over code) and task-implementer
-                                (implements exactly ONE task of a spec, one
-                                branch/PR per spec, never runs tests)
+                                it), task-implementer (implements exactly ONE
+                                task of a spec, one branch/PR per spec) and
+                                issue-registrar (proves a suspected defect is
+                                real, then registers it). None of them edits
+                                repo code except task-implementer; only
+                                issue-registrar may run tests
 .claude/hooks/                  hook scripts referenced by agent frontmatter
                                 (spec-writer-guard.sh: no code changes / no
                                 test runs; task-implementer-guard.sh: no
-                                test runs, build & fmt still allowed)
+                                test runs, build & fmt still allowed;
+                                issue-registrar-guard.sh: no repo code edits,
+                                tests unrestricted)
 .claude/state.md               tracks the status of every spec::task, so
                                 execution can resume after an interruption
 ```
@@ -119,14 +124,20 @@ change is needed, update the spec.
   so execution never needs to re-plan mid-spec. Use the `spec-creator` skill
   to scaffold a new spec; it writes `requirements.md`, `design.md`, one
   `tasks/<code>.md` per task, and the spec's `state.md`.
-- **Who does what.** Two subagents in `.claude/agents/` implement this flow
+- **Who does what.** Three subagents in `.claude/agents/` implement this flow
   and their definitions are the operative detail: `spec-writer` authors a new
   spec (never touches code, never runs tests), `task-implementer` executes
   exactly one task (never runs tests either — the spec's PR is its only test
   feedback, and a blocker becomes a registered issue plus a `blocked` task
-  rather than a workaround). A task run through `task-implementer` therefore
+  rather than a workaround), and `issue-registrar` investigates a suspected
+  defect and files it. A task run through `task-implementer` therefore
   overrides the "Test scope per task" rule above: nothing is run locally,
   `go build`/`go vet`/`gofmt` aside.
+- **Only `issue-registrar` runs tests.** It is the one agent allowed to
+  execute the suite, because its job is proving a defect is real before it
+  reaches `.claude/issues/` — and it files nothing when the problem doesn't
+  reproduce. It never fixes what it finds: repro work happens in a copy
+  outside the repository, and the versioned tree stays untouched.
 
 ## What is being built
 
