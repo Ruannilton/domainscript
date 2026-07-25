@@ -5,12 +5,13 @@ description: Use this when you need to register/cadastrar a new issue found duri
 
 # Issue Generator
 
-Registers a new issue as its own file under `.claude/issues/`. This is a
-separate mechanism from the sequential `ISSUE-<n>` blocks appended to
-`.claude/issues.md` (that log is reserved for errors found mid-task that are
-out of scope for the spec/task being worked on — see root `CLAUDE.md`). Use
-this skill whenever the user asks to open/register/cadastrar an issue outside
-that flow.
+Registers a new issue as its own file under `.claude/issues/`. This replaces
+the old mechanism of sequential `ISSUE-<n>` blocks appended to
+`.claude/issues.md` (now retired — all issues were migrated to
+`.claude/issues/`). Use this skill whenever the user asks to open/register/
+cadastrar an issue found during work in this repo, including errors found
+mid-task that are out of scope for the spec/task being worked on (see root
+`CLAUDE.md`).
 
 ## Resources
 

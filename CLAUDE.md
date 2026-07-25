@@ -56,8 +56,11 @@ change is needed, update the spec.
 .claude/specs/<nome-da-spec>/  requirements.md, design.md, tasks.md per spec
 .claude/steerings/             reference docs useful as ambient context
                                 (e.g. domainscript-spec-v6.md, the language spec)
-.claude/issues.md              errors found during execution that are out of
-                                scope for the spec/task being worked on
+.claude/issues/                 open issues found during execution that are out
+                                of scope for the spec/task being worked on —
+                                one file per issue (open-issues.md indexes them)
+.claude/skills/issue-generator/ skill that registers a new issue under
+                                .claude/issues/ from a template
 .claude/state.md               tracks the status of every spec::task, so
                                 execution can resume after an interruption
 ```
@@ -70,10 +73,10 @@ change is needed, update the spec.
   - If the error belongs to the spec/task currently being developed, fix it
     as part of the current task.
   - If the error comes from a different scope (another spec/task, pre-existing
-    code), log it in `.claude/issues.md` (`ISSUE-<n>` header with `SPEC`,
-    `TASK`, `DESCRIPTION` fields) and keep going — unless the error blocks
-    the current task from being completed, in which case stop and report it
-    instead of working around it.
+    code), register it with the `issue-generator` skill (one file per issue
+    under `.claude/issues/`, indexed in `.claude/issues/open-issues.md`) and
+    keep going — unless the error blocks the current task from being
+    completed, in which case stop and report it instead of working around it.
 - **Test scope per task.** At the end of a task, run only the tests needed to
   validate that task (e.g. `go test ./parser/ -run TestX`), not the whole
   suite. Once green, update `.claude/state.md` and the current spec's
