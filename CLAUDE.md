@@ -141,6 +141,9 @@ spec.
   tests); `task-implementer` executes exactly one task and **never runs
   tests** — the spec's PR is its only test feedback, and a blocker becomes a
   registered issue plus a `blocked` task, never a workaround;
+  `spec-implementer` drives an entire spec by dispatching `task-implementer`
+  one task at a time — pure orchestrator, it never edits code and only
+  advances after the previous task's commit exists on the spec branch;
   `issue-registrar` investigates a suspected defect and files it.
 - **Only `issue-registrar` runs tests**, because its job is proving a defect
   is real before it reaches `.claude/issues/` — and it files nothing when the
