@@ -86,10 +86,8 @@ Ao encontrar um:
 ## Branch, commit e PR
 
 A unidade de branch/PR aqui é a **spec**, não a task: uma branch por spec,
-`claude/impl-<spec-slug>`, com um commit por task.
-
-> Isto **substitui** a regra "One PR per completed task" do `CLAUDE.md` para
-> tasks executadas por este agente.
+`claude/impl-<spec-slug>`, com um commit por task — a mesma regra que o
+`CLAUDE.md` da raiz descreve em "One branch and one pull request per spec".
 
 **Se for a primeira task da spec** — determine por fato, não por suposição:
 `git ls-remote --heads origin claude/impl-<spec-slug>` não retorna nada.

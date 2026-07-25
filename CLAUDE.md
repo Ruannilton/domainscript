@@ -101,10 +101,14 @@ change is needed, update the spec.
   model, or set `status: completed` in the task's own `tasks/<code>.md`
   frontmatter and drop it from the spec's `state.md` for a spec scaffolded
   by `spec-creator` — then commit.
-- **Open a pull request when a task is done.** After the commit for a
-  completed task lands, push the branch and open a PR for it — CI then runs
-  the full suite (see the rule above) against that task's diff. One PR per
-  completed task, not one PR per spec.
+- **One branch and one pull request per spec.** A spec gets a single branch,
+  `claude/impl-<spec-slug>`, cut from `main`, carrying one atomic commit per
+  completed task. The first completed task creates the branch and opens the
+  PR against `main`; every later task adds a commit to that same branch and
+  PR. CI runs the full suite on each push, so every task's diff is still
+  validated on its own commit. When every task is `completed`, `SPEC
+  FINALIZADA` is commented on the PR and it closes with the spec. (This
+  replaces the earlier rule of one PR per completed task.)
 - **No full-suite run at spec closure.** `go test ./...` and `go vet ./...`
   are not run locally at the end of a spec — CI runs them on the pull
   request. Closing a spec still means every task is checked off (in
@@ -115,6 +119,14 @@ change is needed, update the spec.
   so execution never needs to re-plan mid-spec. Use the `spec-creator` skill
   to scaffold a new spec; it writes `requirements.md`, `design.md`, one
   `tasks/<code>.md` per task, and the spec's `state.md`.
+- **Who does what.** Two subagents in `.claude/agents/` implement this flow
+  and their definitions are the operative detail: `spec-writer` authors a new
+  spec (never touches code, never runs tests), `task-implementer` executes
+  exactly one task (never runs tests either — the spec's PR is its only test
+  feedback, and a blocker becomes a registered issue plus a `blocked` task
+  rather than a workaround). A task run through `task-implementer` therefore
+  overrides the "Test scope per task" rule above: nothing is run locally,
+  `go build`/`go vet`/`gofmt` aside.
 
 ## What is being built
 
