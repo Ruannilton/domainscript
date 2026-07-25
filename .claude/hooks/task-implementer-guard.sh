@@ -15,41 +15,56 @@
 # comando que apenas MENCIONE "go test" em texto livre — aceitável dada a
 # ênfase do requisito.
 #
+# **Sem dependência de `jq`** (ver `spec-implementer-guard.sh`): há máquina de
+# desenvolvimento sem `jq` instalado, e a versão anterior deste guard falhava
+# ABERTO nela — `jq` erra, o campo vem vazio, o script sai 0 e nada é bloqueado.
+# A leitura dos campos agora é feita com `sed` sobre o payload cru, e todo
+# caminho de erro falha FECHADO: campo ilegível ⇒ a checagem roda mesmo assim.
+#
 # Contrato de hook (PreToolUse): payload JSON no stdin, decisão em JSON no
 # stdout. Sai 0 sempre — negar é `permissionDecision: deny`, não exit code.
 set -uo pipefail
 
-payload=$(cat)
-tool=$(printf '%s' "$payload" | jq -r '.tool_name // ""')
-[ "$tool" = "Bash" ] || exit 0
+payload=$(cat | tr '\n' ' ')
 
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // ""')
+# Lê o valor (string) de uma chave JSON do payload. O valor sai ainda escapado
+# em JSON (`\"`, `\\`), o que basta para casar padrão e compor mensagem.
+json_str() {
+  printf '%s' "$payload" | sed -n -E 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p'
+}
 
 deny() {
-  jq -n --arg reason "$1" '{
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: $reason
-    }
-  }'
+  # Escapa o mínimo para um JSON válido: barra invertida, aspas e tabs.
+  reason=$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/ /g')
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$reason"
   exit 0
 }
 
-reason_tail="Este agente não executa testes em hipótese alguma — escreva os testes que a task especifica e deixe o CI da PR rodá-los. Para checar que a árvore está sã use 'go build ./...', 'go vet ./...' ou 'gofmt -l .'. Comando recusado: $cmd"
+tool=$(json_str tool_name)
+# Só Bash interessa. Tool ilegível (vazio) NÃO sai: cai na checagem abaixo.
+if [ -n "$tool" ] && [ "$tool" != "Bash" ]; then
+  exit 0
+fi
+
+cmd=$(json_str command)
+# Sem comando legível, casa contra o payload inteiro — falha fechado.
+haystack=$cmd
+[ -n "$haystack" ] || haystack=$payload
+
+reason_tail="Este agente nao executa testes em hipotese alguma — escreva os testes que a task especifica e deixe o CI da PR roda-los. Para checar que a arvore esta sa use 'go build ./...', 'go vet ./...' ou 'gofmt -l .'. Comando recusado: ${cmd:-<ilegivel>}"
 
 # go test (inclusive prefixado por env vars ou precedido de cd/&&) e gotestsum.
-if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_./-])go[[:space:]]+test([[:space:]]|$)'; then
+if printf '%s' "$haystack" | grep -Eq '(^|[^[:alnum:]_./-])go[[:space:]]+test([[:space:]]|\\?"|$)'; then
   deny "'go test' bloqueado. $reason_tail"
 fi
 
-if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_./-])(gotestsum|richgo|ginkgo|gotest)([[:space:]]|$)'; then
+if printf '%s' "$haystack" | grep -Eq '(^|[^[:alnum:]_./-])(gotestsum|richgo|ginkgo|gotest)([[:space:]]|\\?"|$)'; then
   deny "Runner de teste bloqueado. $reason_tail"
 fi
 
 # make com alvo `test` (make/make build/make lint/make fmt seguem liberados —
 # o alvo default deste Makefile é `build`).
-if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_./-])make[[:space:]]+([^;&|]*[[:space:]])?test([[:space:]]|$)'; then
+if printf '%s' "$haystack" | grep -Eq '(^|[^[:alnum:]_./-])make[[:space:]]+([^;&|"]*[[:space:]])?test([[:space:]]|\\?"|$)'; then
   deny "'make test' bloqueado. $reason_tail"
 fi
 
