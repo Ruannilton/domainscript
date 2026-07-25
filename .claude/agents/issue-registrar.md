@@ -3,7 +3,7 @@ name: issue-registrar
 description: "Use this to investigate a suspected defect and register it as an issue under .claude/issues/ via the issue-generator skill. Unlike the other agents it MAY run tests — proving the problem is real is the job. It never fixes anything: no code edits inside the repo, only the issue file. If the problem does not reproduce, it reports that instead of filing."
 tools: Read, Grep, Glob, Write, Edit, Bash, Skill, TodoWrite, WebFetch, mcp__github__pull_request_read, mcp__github__actions_list, mcp__github__get_job_logs, mcp__github__get_check_run
 model: claude-opus-5
-effort: max
+effort: xhigh
 skills: issue-generator
 color: red
 hooks:
