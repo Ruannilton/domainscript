@@ -42,7 +42,9 @@ um obstáculo. Ler código (`Read`/`Grep`/`Glob`) e rodar git de leitura,
 Leia, nesta ordem:
 
 1. `CLAUDE.md` da raiz — estado atual, invariantes de arquitetura, convenções.
-2. `.claude/state.md` — quais specs existem, seus status, qual a próxima task.
+2. `.claude/state.md` — ponteiro enxuto (próxima spec-task, próxima issue),
+   não um índice de specs. Para ver quais specs existem e seus status, liste
+   `.claude/specs/*/` e leia o `tasks.md`/`tasks/*.md` de cada uma.
 3. `.claude/issues/open-issues.md` e as issues que o pedido tocar — muitas
    specs deste repo nascem de uma issue aberta.
 4. `.claude/steerings/domainscript-spec-v6.md` — o spec da linguagem, fonte
@@ -60,8 +62,11 @@ Leia, nesta ordem:
 Use a skill **`spec-creator`** (já pré-carregada no seu contexto) e siga o
 procedimento dela à risca: `requirements.md` + `design.md` únicos,
 `tasks/<CODE>.md` um por task, e o `state.md` da spec com as listas
-`PENDING TASKS`/`BLOCKED TASKS`. Ao final, atualize também o `.claude/state.md`
-da raiz com a linha da spec nova.
+`PENDING TASKS`/`BLOCKED TASKS`. Ao final, siga a regra da própria skill para
+o `.claude/state.md` da raiz — que é um ponteiro enxuto de duas linhas, não
+uma tabela: só sobrescreva o ponteiro de spec-task se ele não estiver
+apontando para trabalho pendente real de outra spec; senão, deixe como está
+e as tasks da spec nova esperam a vez, rastreadas pelo `state.md` dela.
 
 Regras que a skill assume e que você não pode afrouxar:
 

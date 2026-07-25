@@ -107,7 +107,10 @@ push. **Não** abra outra PR — localize a existente com
 Commit: Conventional Commits, imperativo em português, com o código da task —
 `feat(codegen): <resumo> (<CODE>)`. Um commit atômico por task, incluindo a
 atualização de status (`tasks/<CODE>.md` → `status: completed`, saída do
-`PENDING TASKS` do `state.md` da spec, e `.claude/state.md` da raiz).
+`PENDING TASKS` do `state.md` da spec, e o ponteiro de "próxima spec-task" em
+`.claude/state.md` da raiz sobrescrito para a próxima task pendente — desta
+spec, ou de outra se esta não tiver mais nenhuma. `.claude/state.md` é um
+ponteiro enxuto de duas linhas: sobrescreva, nunca transforme numa tabela.
 
 ## Acompanhe o CI até o fim
 
