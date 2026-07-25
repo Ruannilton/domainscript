@@ -16,7 +16,7 @@ Convenção de status: `done` | `in-progress` | `pending` | `blocked`.
 | read-side (REQ-33..40) | `.claude/specs/read-side/` | done | — |
 | infra-providers (REQ-41..48) | `.claude/specs/infra-providers/` | done (recorte de 5 fechado; residual REQ-42.6 registrado) | — |
 | correcoes-issues-9-10-11 (REQ-49..51) | `.claude/specs/correcoes-issues-9-10-11/` | done | — |
-| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d PAUSADA por decisão do usuário — ver nota; L1.3e/L1.3f bloqueadas em cascata) | L2.2 |
+| correcoes-issues-6-7-8 (REQ-52..54) | `.claude/specs/correcoes-issues-6-7-8/` | in-progress (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d PAUSADA por decisão do usuário; L1.3e/L1.3f bloqueadas em cascata; L2.2/L2.3 re-escritas em cadeias L2.2a-d / L2.3a-c após validação de coerência) | L2.5 |
 
 ## transpilador — `.claude/specs/transpilador/tasks.md`
 
@@ -2370,8 +2370,79 @@ como esperado: o caminho novo só ativa com `sc.Then.State != nil`, e a
 mensagem do `default` de `emitApplyDispatch` foi mantida intocada de
 propósito para preservar essa byte-identidade).
 
-**Próxima task (Fase L2, independente de L1): L2.2** — `emitted`/`released` a
-partir de passo de Saga (§22.3, REQ-53.2).
+**Validação de coerência das tasks restantes (após L1.3d e L2.1 terem tido
+premissa errada).** Antes de implementar qualquer coisa da Fase L2/L3, as sete
+tasks restantes foram validadas **empiricamente** (fixtures reais rodadas por
+`dsc check`/`dsc gen`, não só leitura de código). Resultado: **cinco coerentes,
+duas com premissa errada.**
+
+**Coerentes, textos intactos:**
+- **L2.4** (shrinking): `gentest_property.go` de fato reporta a sequência cheia,
+  e o seed já é fixo/determinístico (`rand.NewSource(propertySeed(nome))`, nunca
+  `time.Now`) — a própria doc do arquivo (linhas ~133-135) já esboça o shrinker.
+  Implementável como escrito.
+- **L2.5** (`rolledback`/staging): `memoryTx.Append` escreve direto em
+  `tx.store.Append(...)`; o doc de `memoryUnitOfWork` diz explicitamente que
+  commit/rollback são no-ops. Fix contido em `rtsrc/uow.go.txt`, e a task já
+  sinaliza a nuance certa (o `Load` terá de mesclar buffer+store para preservar
+  read-your-writes).
+- **L2.6** (acesso NEGADO, doc): confirmado que não há gramática para "como o
+  caller X" e que `emitAggregateScenarioBody` fixa
+  `runtime.NewTestCaller(string(receiver.state.Id))`. **Refinamento achado:** o
+  RUNTIME já está pronto — `NewTestCaller(id string, roles ...string)`
+  (`rtsrc/caller.go.txt`) já tem o variádico de roles, e nenhum código gerado o
+  usa. O ciclo de front-end futuro é MENOR que a doc sugere: gramática + passar
+  o caller nesse único call site. Vale registrar isso ao executar L2.6.
+- **L3.1** (§22.7): a resposta à pergunta da própria task é **sim**, dá para
+  refinar. `handleRaisesError` (`sema/rules_warnings.go`) enxerga cada `ensure
+  ... else <Error>` mas devolve só `bool`; `testedErrorHandles` lê
+  `sc.Then.Error` mas guarda só o nome do Handle. Os dois lados já têm a
+  informação por-Error e a descartam — refinar para (Handle, Error) é viável.
+- **L3.2**: doc puro, sem premissa de código a validar.
+
+**Com premissa errada — RE-ESCRITAS (não viraram issue nova; o usuário pediu
+para recriá-las coerentes, partidas em tasks menores):**
+
+- **L2.2** (`emitted`/`released` de passo de Saga) — errada em DOIS níveis.
+  **(a)** ISSUE-6/§design afirmam "erro de geração claro" para `emit` em passo
+  de Saga; **não existe**. Fixture mínima (`step Reserve { up { emit
+  OrderCancelled(state.id) } }`) valida no front-end, `dsc gen` sai **0**, e o
+  Go emitido NÃO COMPILA: `sagas.go:18:18: undefined: events` —
+  `StmtLowerer.emitStmt` sem `WithEmitDispatch` cai no ramo `events =
+  append(...)`, mas o passo é `func(ctx, state *S) error`, sem `events` no
+  escopo. Falha **silenciosa**, pior que erro claro. **(b)** "Reusar a coleta
+  de §22.4/Policy" não é aplicável: `Step[S]` (`rtsrc/saga.go.txt:45`) tem
+  `state` como ÚNICO receptor, sem `Tx`/`EventStore` (o próprio
+  `decl_saga.go:562` documenta isso), e o `SagaStore` de `mode async` guarda
+  `SagaStatus`, não eventos — o passo não pode apensar a stream nem despachar
+  `Handle` de Aggregate, que é justamente o que o exemplo do §22.3 (`Order
+  emitted OrderCancelled`) afirma. Reescrita como **L2.2a** (fechar a falha
+  silenciosa com erro claro — imediata, independente), **L2.2b** (design: como
+  o passo emite — Dispatcher publish-only / dar Tx ao passo / delimitar),
+  **L2.2c** (implementar a rota escolhida) e **L2.2d** (a asserção `Subject
+  emitted X`). O `released` foi **delimitado sem task**: aparece 1× em todo o
+  spec (linha 1153), sem semântica operacional, e `grep '"released"'` no código
+  devolve zero — mesma natureza do acesso NEGADO/ISSUE-2.
+
+- **L2.3** (`mock returns X`) — sintoma certo, dimensão errada. A auditoria
+  pedida foi feita e confirma o `_ = goExpr` em `emitSagaMock`, mas faltam TRÊS
+  camadas: (1) `Call<Nome>` é emitido como `... error` (`decl_io.go:445`), sem
+  canal de valor; (2) a única sintaxe do spec que consumiria o retorno,
+  `result = call PaymentRequest(...)` — que está no **exemplo de Saga do próprio
+  spec, §18.2** — falha a geração hoje (`QueryExpr.Op "call" ... não é
+  suportado — fora do escopo de G1a`), nunca foi implementada; (3) **nenhuma
+  seção do spec define tipo de resposta de Adapter** — o `PaymentResult(...)` do
+  §22.3 não é declarado em lugar nenhum. Reescrita como **L2.3a** (design:
+  definir o contrato de resposta), **L2.3b** (implementar `result = call ...`,
+  §18.2 — tem valor próprio), **L2.3c** (o mock injetando X, a task original).
+
+`tasks.md` traz as cadeias novas com os textos originais preservados em nota,
+mais tabela de rastreabilidade e mapa de dependências atualizados.
+
+**Próxima task: L2.5** — `rolledback` com reversão real (staging na
+`memoryUnitOfWork`, §22.2/REQ-53.5). Escolhida por ser a coerente de maior
+valor e escopo contido (`rtsrc/uow.go.txt`); L2.4/L3.1 vêm depois, e as cadeias
+L2.2*/L2.3* começam por L2.2a (imediata) e L2.3a (design) quando priorizadas.
 
 ## Issues em aberto
 
