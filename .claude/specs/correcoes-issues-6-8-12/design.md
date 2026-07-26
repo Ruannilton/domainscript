@@ -208,15 +208,122 @@ Marco L só mapeou uma:
 escolhe: ou o `dispatcher` publica, ou o canal publica — nunca os dois. Com dois
 produtores, nem sequer há um canal único a escolher.
 
-**Direção do fix (a decidir e registrar em M1.4, antes de código).** A rota
-recomendada é **fan-out no Dispatcher**: a UoW publica sempre no `dispatcher`
-(um só `Publisher`, contrato intocado), e **cada canal de saída assina o
-Dispatcher** para os `PublicEvent` que atravessa — em vez de ser o publisher
-direto. Isso resolve as duas guardas de uma vez (N produtores viram N
-assinaturas) e reusa o mecanismo de subscrição que Policy/cache/Metric já usam,
-sem tocar `Step`/`RunSaga` nem o contrato de `UnitOfWork`. A task M1.4 confirma
-ou refuta essa rota **por leitura**, registra a decisão aqui, e só então M1.5
-implementa.
+**Decisão confirmada por leitura (M1.4).** A rota recomendada — **fan-out no
+Dispatcher** — é confirmada como o mecanismo central para as duas guardas, com
+uma extensão adicional necessária para coexistir com o produtor durável de
+Marco K (item 4 abaixo, achado desta task). Mecanismo concreto:
+
+1. **Publisher único do lado "em memória".** Sempre que o service tem QUALQUER
+   módulo que precise de Dispatcher (Policy — local OU cross-service, Query
+   cacheada G3, Metric H3) OU qualquer módulo produtor NÃO-durável (fora de
+   `durableProducer`), `main.go` constrói `dispatcher :=
+   runtime.NewDispatcher()` e a UoW COMPARTILHADA desses módulos publica
+   sempre nele: `uow := runtime.NewUnitOfWork(store, dispatcher)` — contrato
+   de `UnitOfWork`/`Publisher` intocado (um único argumento `Publisher`, hoje
+   já o caso do ramo `needsDispatcher`).
+2. **Cada canal de saída não-durável assina o Dispatcher, em vez de ser o
+   publisher da UoW.** Para cada módulo produtor cujo canal NÃO é durável
+   (`durableProducer` devolve `false`), depois de construir o canal
+   (`emitChannelTransportVar`, como hoje) o `main.go` gerado emite
+   `dispatcher.Subscribe(<eventType>, <canal>.Publish)` — um `Subscribe` por
+   `PublicEvent` do módulo produtor (`buckets[producerModule].pubEvents`, o
+   MESMO conjunto ordenado que já alimenta `producerOutboxEventTypes`, NFR-13).
+   Isso substitui `uow := runtime.NewUnitOfWork(store, <canal>)` do caminho de
+   hoje: com N módulos produtores não-duráveis, cada um contribui suas
+   próprias assinaturas ao MESMO dispatcher, sem disputa por "o publisher
+   único da UoW" — resolve REQ-55.7 (múltiplos produtores) e REQ-55.8
+   (produtor + Dispatcher) na MESMA mudança, porque os dois eram, na raiz, o
+   mesmo sintoma: um `Publisher` só, vários candidatos a ocupá-lo.
+3. **Cada `wireTarget` passa a ter SUA PRÓPRIA instância de `uow`, não uma
+   única variável de serviço.** É a peça que faltava na versão anterior desta
+   seção. Hoje `generateCmdMainFile` declara UMA variável `uow` (escolhida
+   pelo `switch` em `codegen.go:1322`) e a passa a `Wire()` de TODOS os
+   módulos do grupo — correto enquanto existe no máximo um caminho de UoW por
+   serviço. Com o produtor durável de Marco K (item 4) e a UoW compartilhada
+   (item 1) coexistindo no MESMO serviço — o caso do `pizzeria`: `Sales` é
+   produtor durável, `Kitchen` não é, os dois declaram UseCase —, a função
+   precisa escolher, POR módulo, qual instância de `uow` esse módulo recebe: o
+   módulo produtor durável recebe a UoW SQL de `emitSingleDatabaseWiring`;
+   todo outro módulo com UseCase recebe a UoW compartilhada do item 1. Nenhuma
+   mudança na assinatura Go de `Wire`: cada módulo já recebe
+   `runtime.UnitOfWork` como interface, nunca o tipo concreto.
+4. **Produtor durável (Marco K): a rota do outbox continua exatamente como
+   está — com uma extensão para permitir Dispatcher local no MESMO módulo.**
+   `sqlruntime.NewOutboxUnitOfWork` continua enfileirando via
+   `tx.EnqueueOutbox` só os `PublicEvent` do canal (`outboxEventTypes`),
+   publicados depois pelo relay do `DurableOutbox` — nada disso muda
+   (REQ-51/REQ-42.6 preservados byte a byte para `producer_outbox_test.go`/
+   `anchor_fixture_test.go` de Marco K, que não declaram Dispatcher). A
+   extensão: `NewOutboxUnitOfWork` (`codegen/sqlrt/uow.go.txt`) ganha um
+   `publisher ...runtime.Publisher` OPCIONAL, no MESMO padrão variádico de
+   `NewUnitOfWork` — quando o serviço TAMBÉM tem `dispatcher` (item 1),
+   `main.go` passa esse `dispatcher` como publisher; `Run` publica nele,
+   pós-commit, exatamente os apensados que NÃO estão em `outboxEventTypes`
+   (eventos privados do módulo — no `pizzeria`, `MenuItemCreated`/
+   `MenuItemPriceUpdated` de `Sales`, que `WireQueryCache` precisa ver para
+   invalidar o cache de `GetAvailableMenu`). Sem essa extensão, um módulo que
+   seja AO MESMO TEMPO produtor durável e dono de Query cacheada/Policy local
+   nunca veria seus próprios eventos privados no Dispatcher — exatamente a
+   lacuna que `correcoes-issues-9-10-11/design.md` §4.3 já documentava como
+   fora do recorte de Marco K ("`generateCmdMainFile` recusa combinar... Fora
+   do escopo — o recorte é o produtor 'puro'"). Quando o serviço NÃO tem
+   `dispatcher` (o recorte original de Marco K, ex. `shop`/`AnchorOrders`),
+   `NewOutboxUnitOfWork` continua chamado com os MESMOS 4 argumentos de hoje —
+   byte-idêntico (NFR-31).
+
+**Confirmação dos três pontos do Passo 2 de `tasks/M1.4.md`:**
+
+- **(a) O canal satisfaz o que uma assinatura do Dispatcher espera —
+  Confirmado.** `ChannelTransport` (`rtsrc/channel.go.txt`) já documenta a
+  MESMA forma de 2 métodos que `Dispatcher` (`var _ ChannelTransport =
+  NewDispatcher()`); o handler que `Dispatcher.Subscribe` espera é `func(ctx,
+  ev) error` — exatamente a assinatura de `<canal>.Publish`.
+  `dispatcher.Subscribe(eventType, <canal>.Publish)` é uma referência de
+  método direta, sem wrapper.
+- **(b) O produtor durável de Marco K continua funcionando sob fan-out — Sim,
+  mas só com a extensão do item 4 (achado desta task).** Verificado por
+  leitura de `codegen/sqlrt/uow.go.txt`: `NewOutboxUnitOfWork` hoje NUNCA
+  publica pós-commit (`u.publisher` é sempre `nil` nesse construtor) — os
+  eventos fora de `outboxEventTypes` ficam só no stream, invisíveis a
+  qualquer assinante do Dispatcher. Fan-out sozinho, sem a extensão, deixaria
+  a invalidação de cache de `Sales.GetAvailableMenu` (G3) quebrada mesmo
+  depois de as duas guardas caírem — por isso a rota recomendada, tal como
+  registrada antes desta task, era insuficiente para REQ-55.8 no caso
+  específico em que o MESMO módulo é produtor durável e precisa de Dispatcher
+  local; a extensão do item 4 fecha essa lacuna sem alterar o comportamento
+  do recorte original de Marco K.
+- **(c) A ordem total de `orderBy` é preservada — Confirmado.**
+  `Dispatcher.Publish` chama os handlers assinados, em ordem de assinatura,
+  SINCRONAMENTE, um por vez, na MESMA chamada `Publish(ctx, ev)` que a UoW já
+  faz por evento apensado, na ordem de apensação (`tx.appended`/`memoryTx`).
+  Como cada canal está assinado só para SEUS PRÓPRIOS `PublicEvent`
+  (`dispatcher.Subscribe` por `eventType`), o Dispatcher entrega ao canal
+  exatamente os mesmos eventos, na MESMA ordem, que o canal recebia como
+  publisher direto hoje — o Dispatcher é um repasse síncrono e transparente,
+  nunca reordena; é `<canal>.Publish` quem já faz o enfileiramento
+  assíncrono/particionado por `orderBy`, inalterado por esta mudança.
+
+**Achado adicional, FORA do escopo de REQ-55.7/55.8 (registrado como issue
+própria, não ampliando REQ-55 — REQ-55.11).** A leitura de
+`emitSingleDatabaseWiring`/`newMux` (`codegen/sql_wiring.go`,
+`codegen/codegen.go`) mostra que TODA rota de Query do serviço lê da MESMA
+`store` em memória (`runtime.NewMemoryEventStore()`), nunca do banco real do
+produtor durável — `correcoes-issues-9-10-11/design.md` §4.1 já documentava
+essa `store` como "não o Database declarado" para o produtor, mas nunca
+precisou lidar com uma Query do MESMO módulo lendo seu próprio estado, porque
+o recorte de Marco K excluía Dispatcher (e portanto Query cacheada) do módulo
+produtor. O `pizzeria` reintroduz exatamente essa combinação:
+`Sales.GetAvailableMenu`/`GetActiveOrders` leem `MenuItem`/`Order` —
+Aggregates que `Sales`, como produtor durável, escreve no Postgres real, nunca
+em `store`. Sob a extensão do item 4, o Dispatcher passa a ver os eventos
+privados de `Sales` (resolvendo a invalidação de cache), mas a QUERY em si
+continuaria lendo de uma `store` que nunca recebeu esses eventos — resultado:
+`GetAvailableMenu`/`GetActiveOrders` sempre vazias para dados escritos pelo
+caminho durável, uma miscompilação silenciosa de leitura (o Go gerado compila
+e roda, o resultado é semanticamente errado). É um bloqueio ADICIONAL e
+INDEPENDENTE de REQ-55.7/REQ-55.8 (é sobre o Read Side de um módulo com banco
+real, não sobre quem publica) — registrado em issue própria, a ser resolvido
+antes ou junto de M1.6.
 
 ### 4.4. `emit` em passo de Saga (Atende REQ-56)
 
@@ -372,7 +479,11 @@ filtrar — O(n) streams por chamada. É a semântica correta para uma store
 in-process e casa com o seam já existente (`SelectSlice` também filtra em
 memória). Prefiltro no store fica para o ciclo de providers reais (G-4).
 
-### 5.2. Guarda de service: como as duas recusas caem
+### 5.2. Guarda de service: como as duas recusas caem — e o wiring que M1.5 constrói
+
+**Antes (hoje, guardas F5/F5-G3):** as duas recusas de `codegen.go:1138/1143`
+bloqueiam, sem distinção, qualquer service com >1 módulo produtor de canal, ou
+com um produtor E um módulo que precisa de Dispatcher.
 
 ```mermaid
 graph TD
@@ -382,11 +493,33 @@ graph TD
     C -->|"hoje: erro F5/G3"| X2["❌ pizzeria: cache 1h em Sales<br/>+ Policies"]
     C -->|não| D["✅ wiring atual"]
 
-    X1 -.->|"M1.4/M1.5: fan-out no Dispatcher"| D
-    X2 -.->|"M1.4/M1.5: fan-out no Dispatcher"| D
-
     style X1 fill:#fdd,stroke:#c00
     style X2 fill:#fdd,stroke:#c00
+```
+
+**Depois (M1.5, decisão de M1.4 — §4.3):** as duas guardas caem; cada módulo
+produtor escolhe UMA de duas rotas de publicação — durável (Marco K, outbox +
+relay, publisher opcional pro Dispatcher para eventos privados) ou fan-out no
+Dispatcher (assina para seus próprios `PublicEvent`) — e cada módulo com
+UseCase recebe SUA PRÓPRIA instância de `uow` (§4.3, item 3).
+
+```mermaid
+graph TD
+    A["generateCmdMainFile"] --> B{"Algum módulo precisa de<br/>Dispatcher OU tem canal<br/>de saída não-durável?"}
+    B -->|sim| DISP["dispatcher := NewDispatcher()<br/>uow := NewUnitOfWork(store, dispatcher)<br/>— UoW COMPARTILHADA"]
+    B -->|não| NODISP["sem dispatcher —<br/>caminho de hoje inalterado"]
+
+    DISP --> LOOP{"para cada módulo<br/>produtor de canal"}
+    NODISP --> LOOP
+
+    LOOP -->|"durável (Marco K:<br/>Database real + rabbitmq)"| DUR["uow própria = NewOutboxUnitOfWork(db, ..., outboxEventTypes[, dispatcher])<br/>canal alimentado pelo relay do DurableOutbox (inalterado)"]
+    LOOP -->|"não-durável"| SUB["canal construído (como hoje) +<br/>dispatcher.Subscribe(eventType, canal.Publish)<br/>por PublicEvent do módulo"]
+
+    DUR --> WIRE["cada wireTarget.Wire(SUA uow, dispatcher)"]
+    SUB --> WIRE
+
+    style DUR fill:#dfd,stroke:#292
+    style SUB fill:#dfd,stroke:#292
 ```
 
 ---
@@ -441,6 +574,11 @@ graph TD
 | §22.7 **fecha em `sema`** neste ciclo | Reclassificar para um ciclo de `sema` dedicado | A análise de raiz (§4.6) mostrou que a informação já existe nos dois lados; a reclassificação era uma saída condicional que a verificação tornou desnecessária |
 | `released` e acesso NEGADO: **delimitar** | Implementar por analogia | `released` aparece 1× no spec inteiro, sem definição operacional, e `grep` no código dá zero; acesso NEGADO exige gramática nova. Implementar seria adivinhar semântica |
 | `sqlrt` **não** ganha `StreamLister` agora | Implementar nos dois de uma vez | Fora do escopo declarado; sem provider real exercitando, seria código não testado. O erro de REQ-55.5 cobre o caso |
+| Wiring de service: **fan-out no Dispatcher** (canal assina, UoW publica sempre no dispatcher) | Manter o canal como publisher direto da UoW (hoje) | Um `Publisher` só por UoW não escala para N produtores nem coexiste com um módulo que precise de Dispatcher local — é a causa raiz das duas guardas F5/F5-G3 (§4.3) |
+| Wiring de service: **um Publisher composto que faz fan-out** | Rejeitada — considerada no Passo 3 de `tasks/M1.4.md` como alternativa caso o fan-out no Dispatcher fosse refutado | Não foi necessária: o fan-out no Dispatcher (acima) resolve as duas guardas sem precisar de um tipo `Publisher` composto novo; um canal recebendo TODO evento (não só os seus) desperdiçaria o pipeline de workers/rate limit/circuit breaker do canal para eventos que ele descarta em `deliver` mesmo assim |
+| `NewOutboxUnitOfWork` ganha `publisher ...runtime.Publisher` **opcional** (variádico, como `NewUnitOfWork`) | Delimitar: produtor durável nunca combina com Dispatcher local (manter a fronteira de Marco K) | O `pizzeria` exige exatamente essa combinação (`Sales` é produtor durável E dono de `GetAvailableMenu` com `cache`, G3) — delimitar aqui reabriria a guarda F5/G3 pela porta dos fundos. A extensão é aditiva: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos de hoje (byte-idêntico, NFR-31) |
+| Cada `wireTarget` recebe **sua própria instância de `uow`** (não uma variável de serviço única) | Manter uma única variável `uow` para todo o service, como hoje | Um serviço pode combinar um módulo produtor durável (UoW SQL) com módulos que só têm a UoW compartilhada (memória + dispatcher) — as duas nunca são a MESMA instância; a versão anterior desta seção não distinguia isso |
+| Mismatch de leitura do produtor durável (Query lê `store` em memória, nunca o banco real): **registrar issue própria, fora de REQ-55.7/55.8** | Resolver dentro de M1.4/M1.5 | É um bloqueio ADICIONAL e INDEPENDENTE (REQ-55.11): é sobre o Read Side de um módulo com banco real, não sobre quem publica no Dispatcher — amplia REQ-55 silenciosamente se resolvido aqui sem uma task própria |
 
 ---
 
@@ -448,7 +586,9 @@ graph TD
 
 | Risco | Mitigação |
 |---|---|
-| A rota de fan-out no Dispatcher (§4.3) se revelar inviável ao implementar | M1.4 é **design sem código** e confirma por leitura antes de M1.5 tocar qualquer arquivo; se refutar, registra a rota alternativa aqui antes de prosseguir |
+| A rota de fan-out no Dispatcher (§4.3) se revelar inviável ao implementar | **Fechado por M1.4**: confirmada por leitura (`ChannelTransport`/`Dispatcher` já têm a mesma forma), com a extensão de `NewOutboxUnitOfWork` (item 4 de §4.3) registrada para o caso produtor-durável + Dispatcher local |
+| A extensão de M1.4 a `NewOutboxUnitOfWork` (`publisher` opcional) quebrar o recorte original de Marco K | O parâmetro é variádico: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos — `producer_outbox_test.go`/`anchor_fixture_test.go` (Marco K) ficam byte-idênticos (NFR-31), a validar em M1.5 |
+| O mismatch de leitura do produtor durável (`store` em memória vs. banco real, achado por M1.4) bloquear a prova e2e do `pizzeria` (M1.6) | Registrado como issue própria (REQ-55.11), fora do escopo de REQ-55.7/55.8 — a resolver antes ou junto de M1.6, nunca ampliando REQ-55 silenciosamente |
 | Staging quebrar a durabilidade do commit ou o carimbo de `Sequence` | M4.2 mantém os testes comportamentais de `rtsrc_test.go` verdes e valida explicitamente dois `Append` ao mesmo stream no mesmo `Run` (§4.5) |
 | `list <Aggregate>` ficar não-determinístico e deixar o CI flaky | `ListStreams` ordena (§5.1); o e2e do `pizzeria` (M1.6) gera duas vezes e compara bytes |
 | A enumeração O(n) degradar uma Query real | Aceito e documentado (§5.1): store in-process, mesma natureza de `SelectSlice`. Prefiltro fica para o ciclo de providers reais (G-4) |
