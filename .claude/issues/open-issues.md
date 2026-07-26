@@ -15,6 +15,8 @@ que as originou está em `.claude/steerings/review-v7.md`.
 
 ## Implementação
 
+- [`Cache`/`RateLimit` `backend:` exige string literal, contra a forma da §13](cache-ratelimit-backend-exige-string-contra-spec.md)
+- [`access { requires ... }` em UseCase não é parseado (§14)](usecase-access-block-nao-parseado.md)
 - [Features do spec v6 nunca modeladas pelo front-end](features-spec-v6-nao-modeladas-pelo-frontend.md)
 - [Providers reais de infraestrutura ausentes (G-4)](providers-reais-de-infraestrutura-ausentes.md)
 - [Field-Level Security de View não implementado (`visibility` ignorado)](visibility-de-view-nao-implementado.md)

@@ -1,6 +1,6 @@
 # Pizzeria bloqueado por múltiplos defeitos independentes de codegen (ex-ISSUE-12)
 - SPEC: correcoes-issues-6-7-8
-- TASK: L1.2 (achado ao provar `docs/examples/pizzeria` fim-a-fim, REQ-52.4/52.7)
+- TASK: L1.2 (achado ao provar `testdata/projects/pizzeria` fim-a-fim, REQ-52.4/52.7)
 - DESCRIPTION: L1.2 pedia para confirmar que o `Kitchen` do `pizzeria` não
   esbarra na guarda F5/G3 pré-existente (`codegen/codegen.go:1143`:
   `"codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo
@@ -9,14 +9,14 @@
   needsDispatcher`). **A leitura confirma que ele ESBARRA, sim** — ao
   contrário do que a task text presumia ("é UseCase+Policy local, sem canal
   próprio"):
-  - `docs/examples/pizzeria/kitchen/domain.ds`: `Handle Finish` faz `emit
+  - `testdata/projects/pizzeria/kitchen/domain.ds`: `Handle Finish` faz `emit
     TicketFinished(self.orderRef)`, e `TicketFinished` é um `PublicEvent`.
-  - `docs/examples/pizzeria/topology.ds`: o canal `Kitchen -> Sales` (`via:
+  - `testdata/projects/pizzeria/topology.ds`: o canal `Kitchen -> Sales` (`via:
     queue`, `provider: "rabbitmq"`, `orderBy: orderRef`) existe DENTRO do
     MESMO service `PizzeriaMonolith { modules: [Sales, Kitchen] }` que
     `Sales -> Kitchen`. Logo `producerChannelFor(prog, "Kitchen")` resolve
     esse canal: Kitchen **é** produtor de canal de saída.
-  - `docs/examples/pizzeria/kitchen/policy.ds`: `Policy
+  - `testdata/projects/pizzeria/kitchen/policy.ds`: `Policy
     CreateTicketOnOrderPaid on OrderPaid` é uma Policy LOCAL do módulo
     Kitchen, que força `needsDispatcher = true` para o grupo
     `PizzeriaMonolith` (`codegen.go:1089`).
@@ -26,7 +26,7 @@
     parcial (abaixo) — não foi possível chegar ao PONTO exato do erro F5/G3
     rodando o `pizzeria` real porque **outros bloqueios independentes, mais
     cedo no pipeline, impedem a geração de chegar a `generateCmdMainFile`**
-    (onde a guarda mora). Rodando `dsc gen docs/examples/pizzeria` hoje
+    (onde a guarda mora). Rodando `dsc gen testdata/projects/pizzeria` hoje
     (pós-L1.1) o erro real é:
     ```
     dsc: codegen: módulo Kitchen: aggregate_kitchen_ticket.go: codegen:

@@ -6,7 +6,7 @@
   codegen consome `Visibility`** — a omissão condicional de campos na
   serialização não acontece. É a lacuna "silenciosa" mais arriscada do
   inventário (cheiro de segurança que falha em silêncio): o programa compila,
-  o bloco é aceito e ignorado. O exemplo `docs/examples/pizzeria`
+  o bloco é aceito e ignorado. O exemplo `testdata/projects/pizzeria`
   (`sales/read.ds`, `OrderVW`) exercita e documenta essa limitação. Atenuantes:
   o spec marca a feature como "em evolução" (§25) e wallet/shop não a usam.
   Fechar exige decidir a semântica de serialização condicional por caller na

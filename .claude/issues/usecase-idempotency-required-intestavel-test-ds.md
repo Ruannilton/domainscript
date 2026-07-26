@@ -1,5 +1,5 @@
 # UseCase com `idempotency { required: true }` é intestável via `*.test.ds` (ex-ISSUE-13)
-- SPEC: (nenhuma — achado ao atualizar `docs/examples/wallet` para infra real)
+- SPEC: (nenhuma — achado ao atualizar `testdata/projects/wallet` para infra real)
 - TASK: atualização do exemplo wallet (Postgres + Redis)
 - DESCRIPTION: um `UseCase` com `idempotency { required: true, ... }` (§14)
   fica **intestável pelo formato nativo `*.test.ds`**: a gramática de cenário

@@ -10,10 +10,12 @@
 > cada fase. Cada item traz a evidência: a mensagem real do compilador e/ou o
 > `arquivo:linha` que documenta o limite. Nada aqui é inferido só da leitura.
 >
-> **Baseline.** `dsc check` passa limpo nos três exemplos empacotados
-> (`wallet`, `shop`, `pizzeria`); `dsc gen` passa em `wallet` e `shop` e falha
-> em `pizzeria` (defeito já registrado). O que segue é a distância entre esse
-> baseline e o que a v7 descreve.
+> **Baseline.** `dsc check` passa limpo nos três projetos-fixture
+> (`testdata/projects/{wallet,shop,pizzeria}`); `dsc gen` passa em `wallet` e
+> `shop` e falha em `pizzeria` (defeito já registrado). O que segue é a
+> distância entre esse baseline e o que a v7 descreve. Os exemplos didáticos
+> (`docs/examples/`) são outra coisa: escritos contra a spec, não passam hoje —
+> ver a seção G.
 >
 > **Relação com o que já existe.** `.claude/specs/codegen/gaps.md` mapeia o
 > transpilador contra a **v6** e continua válido no que cobre; os itens
@@ -93,7 +95,7 @@ por construto.
 
 **Correção:** trocar `value` por `self` nos três construtos e migrar os
 exemplos empacotados, que hoje usam a grafia da implementação
-(`docs/examples/wallet/domain.ds:8`: `Valid { value.length() > 0 }`). O
+(`testdata/projects/wallet/domain.ds:8`: `Valid { value.length() > 0 }`). O
 receptor `ok` que acompanha `value` em `Valid` é invenção da implementação —
 ver F-1.
 
@@ -110,7 +112,7 @@ $ dsc check p3/          # Aggregate Wallet da §4.5, verbatim
 51:36: error[E102]: membro inexistente: "id" em Wallet
 ```
 
-`docs/examples/wallet/domain.ds:84` contorna declarando `id WalletId` no
+`testdata/projects/wallet/domain.ds:84` contorna declarando `id WalletId` no
 `state` e semeando-o num `Apply`.
 
 **Correção:** modelar a identidade como membro implícito do Aggregate. A spec
@@ -130,7 +132,7 @@ no modelo de tipos — e o `Apply DepositPerformed` da §4.5 usa `event.timestam
 
 Sem isso, o `StatementEntry` do exemplo canônico não tem como se datar sem um
 campo explícito no evento (que é o que o wallet real faz — e por isso o
-`StatementEntry` de `docs/examples/wallet` não tem `date`).
+`StatementEntry` de `testdata/projects/wallet` não tem `date`).
 
 ### A-4. `cmd` é invisível dentro dos steps de Saga (§19.2)
 
@@ -405,6 +407,62 @@ demais 24 estão cobertas, cada uma com par de teste positivo/negativo
 
 ---
 
+### A-8. `Cache`/`RateLimit` `backend:` só aceita string; a §13 escreve sem aspas
+
+A §13 escreve o valor de `backend:` como identificador nu — `Cache { backend:
+layered }`, `RateLimit { backend: redis }` —, coerente com o resto do bloco,
+que só aspa valores opacos (`provider: "Postgres"`, `backoff: "exponential"`)
+e deixa nus os enumerados (`storage: same`, `algorithm: token_bucket`,
+`strategy: row_level`). O gerador exige a forma com aspas:
+
+```
+dsc: codegen: mod.ds Cache.backend: backend: esperava um literal string, veio *ast.Ident
+```
+
+Curiosamente os demais campos enumerados do mesmo bloco aceitam identificador
+nu — o defeito é específico de `backend`, em
+`codegen/decl_query_cache.go` (~l.295-352) e `codegen/ratelimit.go` (~l.264).
+
+**Correção:** aceitar o identificador nu. É defeito de código puro, sem lacuna
+de spec envolvida — issue
+`.claude/issues/cache-ratelimit-backend-exige-string-contra-spec.md`.
+
+---
+
+### A-9. `access { requires ... }` num UseCase é erro de sintaxe (§14)
+
+A §14 fecha com o exemplo canônico de acesso cross-tenant, e ele declara
+`access` **no UseCase**:
+
+```ds
+UseCase GenerateGlobalReport handles GlobalReportCmd {
+    tenancy: cross_tenant
+    access { requires caller.hasRole("super_admin") }
+    execute { ... }
+}
+```
+
+O parser não modela `access` em UseCase — só em Aggregate. Rodando o exemplo
+verbatim:
+
+```
+5:5:  error: membro de UseCase inesperado: IDENT
+5:29: error: membro de UseCase inesperado: .
+6:5:  error: esperava uma declaração de topo, encontrei IDENT
+```
+
+`tenancy: cross_tenant` sozinho passa; é o bloco `access` que quebra. Sem ele,
+a exigência de "role privilegiada" que a §14 impõe ao opt-in cross-tenant não é
+expressável — a regra de compilação existe (`checkCrossTenantOptIn`) mas a
+sintaxe que a satisfaria, não.
+
+**Correção:** aceitar `access` em `UseCaseDecl`. Anotar que a spec mostra a
+forma **uma única vez**, de passagem, e a §5.2 (UseCases) não a menciona —
+vale confirmar o alcance ao implementar (só `requires`? mesma gramática de
+condição do Aggregate?).
+
+---
+
 ## 🟣 F. Implementado **fora** da spec
 
 A regra "nada deve ser implementado fora da especificação" corta nos dois
@@ -418,9 +476,11 @@ e `codegen/decl_value.go:59` o reconhece como "validação que sempre passa". A
 string `ok` **não aparece uma única vez em toda a v7**. A spec já tem a forma
 canônica para isso — `Valid { true }` (§2.2, `ValueObject ActiveStatus`).
 
-Os exemplos empacotados dependem dele em 8 lugares
-(`docs/examples/wallet/domain.ds:20,55`, `pizzeria/*`), então removê-lo é uma
-migração, não uma deleção.
+**Estado:** os 8 usos nos exemplos empacotados já foram migrados para
+`Valid { true }` (auditoria dos exemplos, seção G) — nenhum `.ds` do
+repositório depende mais do sentinela. Falta só remover `ok` do
+`resolver/receivers.go` e do `codegen/decl_value.go`, o que agora é deleção,
+não migração.
 
 ### F-2. Receptor `value` (é o outro lado de A-1)
 
@@ -448,6 +508,43 @@ não especificada. A §9.2 define `notify`. Como em F-2, a correção de A-5 dev
 **substituir**, não acumular.
 
 ---
+
+## 📗 G. Exemplos e fixtures — duas árvores, dois papéis
+
+> **Esta seção descreve o estado pós-merge da PR de exemplos**
+> (`claude/exemplos-spec-first-1gcypy`), que é onde a separação é feita de
+> fato. Se `testdata/projects/` ainda não existe na sua árvore, é porque
+> aquela PR não entrou — os caminhos citados aqui são o destino, não o
+> presente.
+
+A auditoria dos exemplos levou a uma separação estrutural, porque os dois usos
+eram incompatíveis: material didático precisa seguir a spec, fixture de teste
+precisa seguir a implementação, e uma árvore só não faz as duas coisas.
+
+| Árvore | Escrita contra | Compila hoje? | Quem valida |
+|---|---|---|---|
+| `docs/examples/` | a **especificação** | **não, de propósito** | ninguém — é a meta de conformidade |
+| `testdata/projects/` | o que o **transpilador aceita** | sim (menos `pizzeria`) | job `fixtures` do CI + 10 testes que as leem |
+
+**`docs/examples/`** foi reescrito do zero: um exemplo por área da spec,
+`01-tipos-e-fluxo/` a `09-testes/`, cada um com README apontando as seções que
+demonstra e as regras da §25 que exercita. Usa livremente tudo o que a v7
+descreve e a implementação ainda não tem — `self` em corpos de VO, `notify`,
+`Foreign` com `pure`/`impure`, identidade implícita do Aggregate,
+`event.timestamp`, `tenant.*`, `provision tenant()`, `RetryWithBackoff`. Cada
+uma dessas formas é, ao mesmo tempo, uma demonstração e um item desta
+auditoria.
+
+**`testdata/projects/`** são os antigos `wallet`/`shop`/`pizzeria`, movidos sem
+alteração de conteúdo. Conformidade **não se aplica** a eles: existem para
+pinar comportamento, então formas fora da spec (o sentinela `ok`, o receptor
+`value`) são legítimas ali enquanto a implementação as tiver. Alterá-los muda
+o Go gerado e quebra o golden correspondente — o que é o alarme desejado.
+
+Consequência prática para esta auditoria: **os itens A-1 a A-8 e F-1 a F-5
+deixaram de ter "exemplo bloqueado" como custo**. Antes, corrigir `value` →
+`self` exigia migrar os exemplos junto; agora o exemplo já está na forma certa,
+esperando a implementação alcançar. O que sobra é só o trabalho de código.
 
 ## E. O que fazer com isso
 
@@ -503,7 +600,11 @@ código antes de a spec ser atualizada:
    (warning de geração "visibility declarado e ignorado") **não é conforme** —
    é diagnóstico fora da §25. O caminho é implementar a §6.2 de fato.
 
-8. **F-3 (`asc`/`desc`)** é limpeza de uma linha, oportunista.
+8. **A-8 (`backend:` sem aspas)** é defeito de código isolado, sem lacuna de
+   spec: dois leitores de config passando a aceitar `*ast.Ident`. Fecha a
+   última divergência dos exemplos que não depende de outra coisa.
+
+9. **F-3 (`asc`/`desc`)** é limpeza de uma linha, oportunista.
 
 Os itens de C já têm registro próprio (`gaps.md` G-4/G-6/G-7, issues abertas) e
 não precisam de entrada nova — a v7 não mudou nada neles.
