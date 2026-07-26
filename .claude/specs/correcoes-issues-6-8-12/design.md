@@ -479,6 +479,42 @@ filtrar — O(n) streams por chamada. É a semântica correta para uma store
 in-process e casa com o seam já existente (`SelectSlice` também filtra em
 memória). Prefiltro no store fica para o ciclo de providers reais (G-4).
 
+**Como `aggregateType` chega a `Append` (decisão de M1.1).** M1.1 verificou por
+leitura que nenhuma das duas rotas originalmente prescritas (derivar de
+`EventType()` via um registro já disponível; usar um campo que `Event`/
+`EventMeta` já ofereça) existe hoje — ver
+`.claude/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. Decisão:
+**thread via `ctx`, o mesmo mecanismo já usado para `tenantID`** — um novo par
+`WithAggregateType`/`AggregateTypeFrom` em `codegen/rtsrc/contextkeys.go.txt`,
+seguindo exatamente a forma de `WithTenant`/`TenantFrom` (§13, já em uso no
+mesmo arquivo).
+
+Diferença importante em relação a `tenantID`: `tenantID` é carimbado UMA vez,
+no início do request (borda HTTP/gRPC), e vale para toda a duração dele porque
+é constante nesse escopo. `aggregateType` não tem essa garantia — precisa estar
+correto no ponto em que cada `Append` de fato grava. `memoryTx.Append`
+(`codegen/rtsrc/uow.go.txt:135-141`) delega a `tx.store.Append(tx.ctx, ...)`,
+e `tx.ctx` é fixado uma única vez, na chamada a `UnitOfWork.Run(ctx, fn)` — o
+`Tx` não recebe um `ctx` novo por chamada (`Tx.Append(aggregateID, events)`,
+sem parâmetro de contexto, por design: "already bound to the context.Context
+the unit of work was started with"). `Run(ctx, fn)` é invocado pelo código
+gerado em `codegen/decl_usecase.go:346` (`uow.Run(ctx, func(tx runtime.Tx)
+error {...})`), não em `codegen/lower/stmt.go` como a issue original supunha —
+é `decl_usecase.go` quem decide o `ctx` que entra na transação.
+
+Isso só é seguro se uma única `Tx.Run()` **nunca** grava eventos de mais de um
+`aggregateType` — carimbar uma vez, antes do `Run`, seria incorreto para uma
+transação que gravasse dois tipos de Aggregate diferentes. **M1.1 deve
+confirmar essa premissa por leitura** (`decl_usecase.go`, e a geração de Saga,
+que pode combinar múltiplos Aggregates numa mesma transação) antes de
+carimbar. Se a premissa se confirmar: `codegen/decl_usecase.go` (adicionado a
+`target_files`) chama `ctx = runtime.WithAggregateType(ctx, "<Tipo>")`
+imediatamente antes de `uow.Run(ctx, ...)`, e `memoryEventStore.Append`
+(`eventstore.go.txt`) lê `AggregateTypeFrom(ctx)` para carimbar `tenantStream`
+no primeiro `Append` do stream — mesmo ponto e mecanismo que `tenantID` já usa
+em `Load`. Se a premissa **não** se confirmar (uma `Run()` mistura tipos), essa
+rota não serve — M1.1 para e reporta, não adivinha um fallback.
+
 ### 5.2. Guarda de service: como as duas recusas caem — e o wiring que M1.5 constrói
 
 **Antes (hoje, guardas F5/F5-G3):** as duas recusas de `codegen.go:1138/1143`
@@ -579,6 +615,7 @@ graph TD
 | `NewOutboxUnitOfWork` ganha `publisher ...runtime.Publisher` **opcional** (variádico, como `NewUnitOfWork`) | Delimitar: produtor durável nunca combina com Dispatcher local (manter a fronteira de Marco K) | O `pizzeria` exige exatamente essa combinação (`Sales` é produtor durável E dono de `GetAvailableMenu` com `cache`, G3) — delimitar aqui reabriria a guarda F5/G3 pela porta dos fundos. A extensão é aditiva: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos de hoje (byte-idêntico, NFR-31) |
 | Cada `wireTarget` recebe **sua própria instância de `uow`** (não uma variável de serviço única) | Manter uma única variável `uow` para todo o service, como hoje | Um serviço pode combinar um módulo produtor durável (UoW SQL) com módulos que só têm a UoW compartilhada (memória + dispatcher) — as duas nunca são a MESMA instância; a versão anterior desta seção não distinguia isso |
 | Mismatch de leitura do produtor durável (Query lê `store` em memória, nunca o banco real): **registrar issue própria, fora de REQ-55.7/55.8** | Resolver dentro de M1.4/M1.5 | É um bloqueio ADICIONAL e INDEPENDENTE (REQ-55.11): é sobre o Read Side de um módulo com banco real, não sobre quem publica no Dispatcher — amplia REQ-55 silenciosamente se resolvido aqui sem uma task própria |
+| `aggregateType` chega a `Append` via **`ctx`** (`WithAggregateType`/`AggregateTypeFrom`, mesmo padrão de `tenantID`), carimbado em `codegen/decl_usecase.go` antes de `uow.Run(ctx, ...)` — decisão explícita do usuário, condicionada a M1.1 confirmar que uma `Tx.Run()` nunca mistura `aggregateType`s | `aggregateID` prefixado (`"<Tipo>:<id>"`); outra rota não considerada | Opção 1 do pedido de decisão registrado em `m1-1-aggregatetype-nao-chega-a-eventstore-append.md` — reusa o mecanismo já validado de `tenantID` em vez de mudar o formato do id armazenado (que arriscaria REQ-55.6, byte-identidade de Queries já suportadas) |
 
 ---
 

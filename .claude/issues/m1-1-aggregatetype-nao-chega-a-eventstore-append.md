@@ -95,4 +95,11 @@
   proíbe (`CLAUDE.md`, "A fronteira do spec da linguagem é parada, não
   adivinhação" — mesmo espírito aplicado aqui a uma lacuna do `design.md`
   desta spec, não do spec da linguagem).
-- SOLVED: FALSE
+- SOLVED: [decisão do usuário — opção 1 (thread via `ctx`, mesmo padrão de
+  `tenantID`) — registrada em `design.md` §5.1/§7.2 e em `tasks/M1.1.md`
+  (`status` volta a `pending`, `target_files` ampliado com
+  `contextkeys.go.txt` e `decl_usecase.go`, que é o call site real de
+  `uow.Run(ctx, ...)` — `lower/stmt.go`, citado nesta issue, não é. A
+  implementação da rota fica condicionada a M1.1 confirmar, por leitura,
+  que uma `Tx.Run()` nunca grava eventos de mais de um `aggregateType`;
+  ver a nota na própria task]

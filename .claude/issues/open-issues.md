@@ -26,5 +26,4 @@ que as originou está em `.claude/steerings/review-v7.md`.
 - [Divergências menores do spec (§25, "em evolução")](divergencias-menores-do-spec-em-evolucao.md)
 - [Pizzeria bloqueado por múltiplos defeitos independentes de codegen](pizzeria-bloqueado-por-multiplos-defeitos-de-codegen.md)
 - [UseCase com `idempotency { required: true }` é intestável via `*.test.ds`](usecase-idempotency-required-intestavel-test-ds.md)
-- [M1.1: nenhuma rota leva o `aggregateType` até `EventStore.Append`](m1-1-aggregatetype-nao-chega-a-eventstore-append.md)
 - [M1.4: produtor durável escreve no banco real, mas toda Query do service lê da `store` em memória](m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md)
