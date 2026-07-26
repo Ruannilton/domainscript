@@ -370,6 +370,84 @@ error` — `state` é o **único** receptor, sem `Tx` nem `EventStore` (o própr
 `decl_saga.go` documenta que `storeGoName` fica vazio por isso). O `SagaStore` de
 `mode async` guarda `SagaStatus`, não eventos.
 
+**Decisão (M2.2): rota (i) — Dispatcher publish-only.** Mecanismo concreto,
+cópia do que `emitPolicyDeclsAndVars`/`emitPolicyDecl` (`decl_policy.go`) já
+fazem para uma Policy que usa `emit` (`policyDispatcher` + `WithEmitDispatch`):
+
+- `checkNoEmitInSagaStepBlock` (M2.1) deixa de barrar `emit`
+  incondicionalmente: M2.3 passa a permitir a forma que o dispatcher cobre e
+  mantém o erro de M2.1 só para o que não é coberto (nenhuma forma volta a
+  cair no ramo `events = append(...)`, REQ-56.5).
+- Um var de pacote `sagaDispatcher runtime.Dispatcher`, reatribuível pelo
+  `Wire` do módulo — mesmo padrão de `policyDispatcher`: nasce `nil` no
+  arquivo gerado, o `Wire` (`emitPolicyWireFunc`/`emitCombinedWireFunc`) o
+  atribui ao `runtime.Dispatcher` de verdade do serviço — condicional a pelo
+  menos um passo de alguma Saga do módulo usar `emit` (mesmo gate booleano de
+  `needsEmitDispatcher`, agora também varrendo `up`/`down`/`onInfraError`).
+- `emitSagaStepPhaseFunc` anexa `.WithEmitDispatch("sagaDispatcher", "ctx")`
+  ao `StmtLowerer` quando esse var existe — cai no MESMO ramo de
+  `lower/stmt.go` que já publica para Policy
+  (`sagaDispatcher.Publish(ctx, &Evento{...})`); nenhum código novo em
+  `lower/`.
+- `Step[S]`/`RunSaga` (`rtsrc/saga.go.txt`) **não mudam**: o dispatcher entra
+  por fechamento léxico sobre o var de pacote, não por parâmetro novo — a
+  assinatura `func(ctx, state *S) error` permanece intacta (é o motivo pelo
+  qual esta rota, ao contrário de (ii), não é uma mudança de núcleo
+  transacional).
+
+**O que fica coberto.** Um passo (`up`/`down`/`onInfraError`) pode `emit
+<Evento>(...)`; o evento é publicado no Dispatcher do módulo e chega a
+qualquer Policy do MESMO módulo assinada nele — o mesmo fan-out de §4.3. Em
+M2.4, `then { emitted <Evento>(...) }`/`then { emitted count N }` (gramática
+de §22.4, SEM `Subject`) reusa a MESMA coleta que a asserção `emitted` de
+Policy já usa (o dispatcher de teste que acumula publicações), agora
+generalizada para um cenário de Saga.
+
+**O que NÃO fica coberto.** `<Subject> emitted <Evento>(...)` — a forma
+literal do exemplo do spec (`Order emitted OrderCancelled`, §24.3, numeração
+v7; §22.3 na numeração deste design), em que um **Aggregate** (`Order`)
+emite e o evento passa a existir no SEU stream
+(`store.Load(ctx, "Order")`, o mesmo mecanismo que a asserção "Subject
+emitted" de UseCase usa, §22.2/`emitUseCaseThenAssert`) — **fica fora**.
+Publicar no Dispatcher não escreve nada no stream do Aggregate; as duas
+operações são independentes no runtime de hoje (`Dispatcher.Publish` nunca
+toca `EventStore.Append`). Cobrir a forma literal exigiria a rota (ii)
+(descartada abaixo). M2.4 implementa só a forma sem `Subject`, e produz erro
+de geração claro — nunca uma asserção que passa vacuamente — quando o `then`
+nomeia um `Subject` (o Step 3 de `tasks/M2.4.md` já antecipa exatamente
+isso).
+
+**Por que (ii) foi descartada.** Mudaria `Step[S]`/`RunSaga`
+(`rtsrc/saga.go.txt`) — o núcleo de orquestração reusado por TODA Saga
+gerada, hoje deliberadamente "burro" (só `state`, nenhum acoplamento a
+`Tx`/`EventStore`, ver a doc do arquivo). Dar a um passo acesso a `Tx`
+levanta uma pergunta que este ciclo não tem espaço para responder com
+cuidado: uma Saga não é atômica por definição — é o padrão que EXISTE para
+evitar uma transação distribuída — então cada passo que grava eventos
+precisaria abrir e comitar o SEU PRÓPRIO `UnitOfWork.Run`, não compartilhar
+uma `Tx` ao longo da Saga inteira; e despachar o `Handle` de um Aggregate de
+dentro de um passo (a única forma de produzir de fato `Order emitted
+OrderCancelled` como o exemplo do spec descreve) reabre a questão de quem é o
+dono da idempotência/validação daquele Handle quando chamado por uma Saga em
+vez de um UseCase. Nenhuma fixture de Saga hoje exercita esse caminho, então
+seria superfície nova e não validada do núcleo transacional (NFR-30) dentro
+de um ciclo de manutenção. Fica registrada como candidata a um ciclo
+dedicado, não como um "não" definitivo.
+
+**Por que (iii) foi descartada.** A rota (i) é aditiva de baixo custo — cópia
+do mecanismo já provado de Policy, sem tocar `rtsrc/saga.go.txt` — e fecha um
+caso de uso real (um passo notificando o resto do módulo, sem tocar estado de
+Aggregate nenhum) sem inventar nada novo. Delimitar por completo deixaria
+essa fatia de valor de fora sem necessidade, quando M2.3/M2.4 já a entregam
+pelo preço de reusar infraestrutura existente.
+
+**Consequência em M2.3/M2.4:** nenhuma mudança de escopo — as duas tasks já
+foram redigidas com passos condicionais por rota ("se foi (i) … se foi (ii)
+…", Step 1 de `tasks/M2.3.md`; "se foi (i), o que se assevera é o que o passo
+publicou", `tasks/M2.4.md`) e com a guarda explícita para `Subject` fora de
+cobertura (Step 3 de `tasks/M2.4.md`). Ambas seguem `pending`, sem
+cancelamento — só (iii) cancelaria M2.3/M2.4.
+
 ### 4.5. `mock … returns X`, shrinking e staging (Atende REQ-57/58/59)
 
 **`mock … returns X` (REQ-57) — três camadas ausentes, verificadas:**
@@ -606,6 +684,7 @@ graph TD
 | Reusar `hoistQueryPredicate`/`hoistOrderBy`/`SelectSlice` | Reimplementar filtro/ordenação em `decl_query.go` | A máquina de cláusulas do Marco I já é a única fonte de verdade; duplicá-la divergiria em `where`/`orderBy` |
 | `ListStreams` **ordena** antes de devolver | Devolver na ordem do `map` | Iteração de `map` em Go é aleatória → Query sem `orderBy` ficaria não-determinística (NFR-13) e o smoke do `pizzeria` flaky |
 | `emit` em Saga: **erro claro primeiro** (M2.1), semântica depois (M2.2+) | Implementar a semântica direto | M2.1 tem valor imediato e independe de qualquer decisão de design; deixar a miscompilação de pé enquanto se discute a rota é o pior dos mundos |
+| `emit` em passo de Saga (M2.2): rota **(i) Dispatcher publish-only** — var de pacote `sagaDispatcher` reatribuível pelo `Wire`, mesmo mecanismo de `policyDispatcher` | (ii) dar `Tx`/`UnitOfWork` ao passo, mudando `Step[S]`/`RunSaga`; (iii) delimitar por completo, sem implementar nada além de M2.1 | (ii) mexe no núcleo transacional reusado por toda Saga (`rtsrc/saga.go.txt`) sem fixture nenhuma exercitando o caminho (NFR-30) e reabre a questão de granularidade de commit por passo, fora do espaço deste ciclo; (iii) descartaria valor real e de baixo custo que (i) entrega de graça, reusando infraestrutura já provada. **Trade-off aceito:** (i) não cobre `<Subject> emitted <Evento>(...)` (o exemplo literal `Order emitted OrderCancelled`, §24.3) — só `emitted <Evento>(...)`/`emitted count N` sem `Subject`, que M2.4 implementa; um `then` com `Subject` em Test de Saga produz erro de geração claro |
 | M3 começa pelo **contrato de resposta** (M3.1) | Começar por `emitSagaMock` (o sintoma) | Sem contrato não há tipo que `X` possa assumir — foi exatamente esse salto que fez a task original do Marco L nascer subdimensionada |
 | §22.7 **fecha em `sema`** neste ciclo | Reclassificar para um ciclo de `sema` dedicado | A análise de raiz (§4.6) mostrou que a informação já existe nos dois lados; a reclassificação era uma saída condicional que a verificação tornou desnecessária |
 | `released` e acesso NEGADO: **delimitar** | Implementar por analogia | `released` aparece 1× no spec inteiro, sem definição operacional, e `grep` no código dá zero; acesso NEGADO exige gramática nova. Implementar seria adivinhar semântica |

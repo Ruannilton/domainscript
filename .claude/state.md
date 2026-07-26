@@ -8,10 +8,11 @@ tabela por spec, nada de histórico — isso já mora em cada
 
 ## Próxima spec-task
 
-`.claude/specs/correcoes-issues-6-8-12/tasks/M2.2.md` → **M2.2** (design, sem
-código) — Decidir como um passo de Saga emite, agora liberada (M2.1
-completou: `emit` em passo de Saga já falha a geração com erro claro em vez
-de miscompilar). M1.1 segue `blocked` DE NOVO: a rota decidida (thread de
+`.claude/specs/correcoes-issues-6-8-12/tasks/M2.3.md` → **M2.3** — Implementar
+o caminho de `emit` de passo de Saga escolhido em M2.2 (rota (i) Dispatcher
+publish-only: var de pacote `sagaDispatcher` reatribuível pelo `Wire`, mesmo
+mecanismo de `policyDispatcher`; `Step[S]`/`RunSaga` não mudam; `design.md`
+§4.4/§7.2). M1.1 segue `blocked` DE NOVO: a rota decidida (thread de
 `aggregateType` via `ctx`, `design.md` §5.1/§7.2) partia da premissa de que
 uma única `Tx.Run()` nunca grava eventos de mais de um `aggregateType` —
 verificado por leitura e refutado (`sema/rules_crossfile.go:checkTransactions`

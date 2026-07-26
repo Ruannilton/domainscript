@@ -24,8 +24,8 @@
 - M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as) —
   mesma dependência transitiva de M1.1 via M1.2.
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
-- M2.2 — (design) Decidir como um passo de Saga emite
-- M2.3 — Implementar o caminho de `emit` escolhido em M2.2
+- M2.3 — Implementar o caminho de `emit` escolhido em M2.2 (rota (i)
+  Dispatcher publish-only, `design.md` §4.4)
 - M2.4 — Asserção `emitted` no `then` de um Test de Saga
 - M3.1 — (design) Contrato de resposta de Adapter
 - M3.2 — Implementar `result = call Adapter(...)` (§18.2)
