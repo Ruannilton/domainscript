@@ -27,3 +27,4 @@ que as originou está em `.claude/steerings/review-v7.md`.
 - [Pizzeria bloqueado por múltiplos defeitos independentes de codegen](pizzeria-bloqueado-por-multiplos-defeitos-de-codegen.md)
 - [UseCase com `idempotency { required: true }` é intestável via `*.test.ds`](usecase-idempotency-required-intestavel-test-ds.md)
 - [M1.4: produtor durável escreve no banco real, mas toda Query do service lê da `store` em memória](m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md)
+- [M1.1: uma `Tx.Run()` pode gravar eventos de mais de um `aggregateType` — a rota "thread via `ctx`" não serve](m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md)

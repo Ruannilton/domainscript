@@ -18,12 +18,11 @@
 
 ## PENDING TASKS:
 
-- M1.1 — Seam de enumeração de streams no runtime (StreamLister). Desbloqueada
-  — decisão do usuário (opção 1: thread via `ctx`) registrada em `design.md`
-  §5.1/§7.2 e em `tasks/M1.1.md` (target_files ampliado). Ver a nota na
-  própria task antes de implementar.
-- M1.2 — `list <Aggregate>` sem cláusulas em EmitQuery
-- M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as)
+- M1.2 — `list <Aggregate>` sem cláusulas em EmitQuery. `depends_on:
+  TASK-M1.1`, que voltou a `blocked` — não iniciar até M1.1 ser desbloqueada
+  de novo (ver BLOCKED TASKS abaixo).
+- M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as) —
+  mesma dependência transitiva de M1.1 via M1.2.
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
 - M2.1 — `emit` em passo de Saga vira erro de geração claro
 - M2.2 — (design) Decidir como um passo de Saga emite
@@ -40,4 +39,14 @@
 
 ## BLOCKED TASKS:
 
-_(vazio — M1.1 desbloqueada; ver PENDING acima.)_
+- M1.1 — Seam de enumeração de streams no runtime (StreamLister). Bloqueada
+  DE NOVO: a rota decidida em `design.md` §5.1/§7.2 (thread de
+  `aggregateType` via `ctx`, carimbado uma vez antes de `uow.Run`) partia da
+  premissa de que uma única `Tx.Run()` nunca grava eventos de mais de um
+  `aggregateType` — verificado por leitura e **refutado**
+  (`sema/rules_crossfile.go:checkTransactions` só restringe por `Database`,
+  nunca por tipo de Aggregate; um módulo sem `Database` ou com dois
+  Aggregates no mesmo `Database` pode despachar `Handle` de tipos diferentes
+  no mesmo `Run`). Issue nova (a original já está `SOLVED`):
+  `.claude/issues/m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md`.
+  `design.md` §5.1/§7.2 precisa decidir de novo antes de reabrir.
