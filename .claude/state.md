@@ -8,15 +8,20 @@ tabela por spec, nada de histórico — isso já mora em cada
 
 ## Próxima spec-task
 
-`.claude/specs/correcoes-issues-6-8-12/tasks/M1.5.md` → **M1.5** — implementa
-o wiring decidido por M1.4 (`design.md` §4.3/§5.2): remove as guardas F5 e
-F5/G3 em `generateCmdMainFile` (REQ-55.7/55.8). **M1.1 está `blocked`**:
-nenhuma rota dentro do seu escopo leva `aggregateType` até
-`EventStore.Append` — ver
-`.claude/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. M1.2 e
-M1.3 dependem de M1.1 e ficam travadas até a decisão de design. M1.5 também
-precisa considerar `.claude/issues/m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md`,
-achado independente de REQ-55.7/55.8 durante M1.4, registrado para M1.6.
+`.claude/specs/correcoes-issues-6-8-12/tasks/M2.1.md` → **M2.1** — sem
+dependências, `emit` em passo de Saga vira erro de geração claro
+(REQ-56.1/56.5). M1.5 concluída (fan-out via Dispatcher em
+`generateCmdMainFile`, REQ-55.7/55.8); a combinação residual "módulo AO MESMO
+TEMPO produtor durável E dono de Dispatcher local" segue com erro de geração
+claro (não implementada — exigiria estender `NewOutboxUnitOfWork`,
+`codegen/sqlrt/uow.go.txt`, fora de `target_files` de M1.5), documentada em
+`tasks/M1.5.md`. **M1.1 está `blocked`**: nenhuma rota dentro do seu escopo
+leva `aggregateType` até `EventStore.Append` — ver
+`.claude/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. M1.2,
+M1.3 e M1.6 dependem, direta ou transitivamente, de M1.1 e ficam travadas até
+a decisão de design; M1.6 também precisa considerar
+`.claude/issues/m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md`,
+achado independente de REQ-55.7/55.8 durante M1.4.
 
 ## Próxima issue
 

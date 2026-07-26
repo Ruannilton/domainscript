@@ -1008,18 +1008,48 @@ func defaultCmdDirName(modules []string) string {
 // (findGroupInterface devolve nil) ainda sobe um servidor, só que com o mux
 // vazio (grupos só-worker).
 //
-// --- Produtor de canal de saída (F5, REQ-25.3, REQ-26.1/26.5, §design 3.11) ---
+// --- Produtor(es) de canal de saída (REQ-25.3, REQ-26.1/26.5, REQ-55.7/55.8,
+// §design 3.11/4.3) ---
 //
-// Quando um módulo do grupo PRODUZ PublicEvent que atravessam um canal
-// "queue" da topologia (producerChannelFor), a unit of work do service
-// recebe esse transporte como publisher (runtime.NewUnitOfWork(store,
-// <canal>) em vez de "(store)" puro) — o lado "emissor" do mesmo mecanismo
-// que decl_policy.go:emitPolicyWireFunc já cuida do lado "assinante". Cada
-// service constrói sua PRÓPRIA instância (ver a doc de
-// rtsrc/channel.go.txt sobre o limite de Marco F: só entrega de verdade
-// dentro do MESMO processo). needsDispatcher (Policy local) e um canal de
-// saída no MESMO service ainda não têm wiring combinado suportado — erro de
-// geração claro (nem wallet nem shop combinam os dois hoje).
+// Quando um ou mais módulos do grupo PRODUZEM PublicEvent que atravessam um
+// canal "queue" da topologia (producerChannelFor, um por módulo produtor),
+// generateCmdMainFile resolve, POR módulo produtor, uma de duas rotas de
+// publicação (§design 4.3, decisão M1.4/M1.5 — fecha as antigas guardas F5 e
+// F5/G3, que recusavam de fora qualquer combinação):
+//
+//   - Durável (Marco K, no máximo 1 por service — durableProducer, Database
+//     real + canal "rabbitmq"): a UnitOfWork do módulo é o adapter SQL de
+//     emitSingleDatabaseWiring/NewOutboxUnitOfWork, sempre nomeada "uow" (o
+//     nome é fixo dentro desse helper); o canal é alimentado pelo relay do
+//     DurableOutbox (emitProducerOutboxRelay), como sempre.
+//   - Fan-out no Dispatcher (todo módulo produtor NÃO-durável, quantos forem):
+//     em vez de ser o publisher direto da UoW, o canal assina o
+//     runtime.Dispatcher para os PublicEvent que carrega
+//     (dispatcher.Subscribe(eventType, <canal>.Publish)) — e a UoW
+//     COMPARTILHADA desses módulos publica sempre no dispatcher
+//     (runtime.NewUnitOfWork(store, dispatcher)). Isso resolve tanto múltiplos
+//     produtores no mesmo service (2+ módulos brigando pelo único slot de
+//     Publisher da UoW) quanto um produtor coexistindo com um módulo que
+//     precisa de Dispatcher (Policy local, Query cacheada G3, Metric H3): os
+//     dois casos eram, na raiz, o mesmo sintoma. O caminho de hoje (produtor
+//     único, sem Dispatcher em lugar nenhum do service) permanece
+//     byte-idêntico: só entra em jogo o Dispatcher/fan-out quando há de fato
+//     contenção pelo Publisher (2+ produtores não-duráveis, OU 1 produtor
+//     não-durável junto de needsDispatcher).
+//
+// Cada wireTarget com UseCase recebe SUA PRÓPRIA instância de uow (§design
+// 4.3 item 3): o módulo produtor durável usa a variável "uow" fixa acima;
+// todo outro módulo com UseCase (produtor não-durável incluso) usa a
+// variável compartilhada (também chamada "uow" quando não há produtor
+// durável no service — o caso comum — ou "sharedUow" quando um produtor
+// durável já ocupa o nome "uow").
+//
+// Resta uma combinação genuinamente não suportada, erro de geração claro
+// (nem wallet nem shop a exercitam): um módulo AO MESMO TEMPO produtor
+// durável E dono de Policy/Query cacheada/Metric — precisaria que
+// NewOutboxUnitOfWork (codegen/sqlrt/uow.go.txt) aceitasse um Publisher
+// opcional para alimentar o Dispatcher local com os eventos privados do
+// próprio módulo (§design 4.3 item 4), fora do escopo desta task.
 //
 // --- Cache de Query (G3, REQ-21.3, spec §15) ---
 //
@@ -1028,12 +1058,9 @@ func defaultCmdDirName(modules []string) string {
 // assina o MESMO runtime.Dispatcher que Policy já usa (WireQueryCache, ver
 // decl_query_cache.go) — "in-process imediata após emit" vem de graça
 // porque Dispatcher.Publish já roda de forma síncrona dentro de uow.Run,
-// logo após o commit (uow.go.txt), antes de qualquer entrega externa. Isso
-// reusa a MESMA guarda que já recusa combinar Policy local com um canal de
-// saída no mesmo service (abaixo): uma Query cacheada num módulo que também
-// produz para um canal "queue" cai no mesmo erro claro, documentado como
-// wiring ainda não combinado (nem wallet nem shop hoje combinam nenhum dos
-// dois casos).
+// logo após o commit (uow.go.txt), antes de qualquer entrega externa. Um
+// módulo produtor durável que TAMBÉM tenha Query cacheada cai na combinação
+// não suportada documentada acima.
 //
 // --- Metric de negócio (H3, REQ-30.3, spec §21) ---
 //
@@ -1108,21 +1135,27 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 	}
 
-	// producerModule/producerChannel (F5, REQ-25.3, REQ-26.1/26.5, §design
-	// 3.11): o módulo do grupo (no máximo 1, ver producerChannelFor) que
-	// PRODUZ PublicEvent atravessando um canal de saída "queue" da
-	// topologia — precisa que a unit of work do service publique todo
-	// evento que emitir através desse transporte (runtime.NewUnitOfWork(
-	// store, <canal>), ver uow.go.txt), exatamente o mecanismo que liga
-	// "emit" a "dispatcher/notify" do lado de quem PUBLICA (o lado
-	// CONSUMIDOR, Policy cross-service, já é decl_policy.go:
-	// emitPolicyWireFunc). Um módulo que precise tanto de Dispatcher
-	// (Policy local) quanto de canal de saída no MESMO service ainda não
-	// tem wiring combinado suportado (não exercitado por wallet nem shop
-	// hoje) — erro de geração claro, mesmo espírito da guarda de
-	// generateModuleFiles sobre UseCase+Policy no mesmo módulo.
-	var producerModule string
-	var producerChannel *program.Channel
+	// producer (REQ-25.3, REQ-26.1/26.5, REQ-55.7/55.8, §design 3.11/4.3):
+	// TODO módulo do grupo (não mais no máximo 1, ver a doc acima sobre a
+	// decisão M1.4/M1.5) que PRODUZ PublicEvent atravessando um canal de
+	// saída "queue" da topologia (producerChannelFor, ainda no máximo 1
+	// canal POR módulo). durable/pkgAlias/eventTypes (K3.2/K3.3, ISSUE-9/
+	// REQ-51.5, §design correcoes-issues-9-10-11 4.1/4.2-P1) são resolvidos
+	// no mesmo laço: durableProducer (sql_wiring.go) é o predicado puro
+	// Database real + canal provider:"rabbitmq"; eventTypes (NFR-13,
+	// ordenado) alimenta tanto a UoW do produtor durável
+	// (emitSingleDatabaseWiring, que enfileira só esses no outbox) quanto o
+	// registry do DurableOutbox (emitProducerOutboxRelay) — só preenchido
+	// quando durable, igual ao producerOutboxEventTypes de antes.
+	type producerInfo struct {
+		module         string
+		channel        *program.Channel
+		durable        bool
+		pkgAlias       string
+		eventTypes     []string
+		channelVarName string
+	}
+	var producers []producerInfo
 	for _, m := range group.modules {
 		if !modulesWithUseCases[m] || len(buckets[m].pubEvents) == 0 {
 			continue
@@ -1134,50 +1167,97 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		if ch == nil {
 			continue
 		}
-		if producerChannel != nil {
-			return nil, fmt.Errorf("codegen: cmd/%s/main.go: mais de um módulo produtor de canal de saída via queue no mesmo service (%s, %s) — wiring combinado ainda não suportado (F5)", group.dirName, producerModule, m)
-		}
-		producerModule, producerChannel = m, ch
-	}
-	if producerChannel != nil && needsDispatcher {
-		return nil, fmt.Errorf("codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo produtor de canal de saída no mesmo service ainda não têm wiring combinado suportado (F5/G3)", group.dirName)
-	}
-
-	// producerDurable/producerPkgAlias (K3.2, ISSUE-9/REQ-51.5, §design
-	// correcoes-issues-9-10-11 4.1/4.2-P1): quando o módulo produtor
-	// (producerModule) também qualifica como "produtor durável" —
-	// durableProducer (K3.1, sql_wiring.go), predicado puro sobre Database
-	// real + canal provider:"rabbitmq" — a UnitOfWork do produtor troca de
-	// runtime.NewMemoryEventStore() para uma conexão sql real
-	// (emitSingleDatabaseWiring, abaixo). producerPkgAlias é resolvido aqui
-	// (a partir de wireTargets, já montado acima) para não repetir a busca
-	// dentro do corpo de func main()/run() mais abaixo.
-	var producerDurable bool
-	var producerPkgAlias string
-	// producerOutboxEventTypes (K3.3, REQ-51.4): o conjunto de event_type que
-	// o canal de saída carrega — os PublicEvent do módulo produtor
-	// (buckets[producerModule].pubEvents), ordenado (NFR-13). Alimenta tanto a
-	// UoW do produtor (que enfileira só esses no outbox, emitSingleDatabaseWiring)
-	// quanto o registry do DurableOutbox (emitProducerOutboxRelay). Não-vazio
-	// sempre que producerDurable (o canal carrega ao menos um PublicEvent).
-	var producerOutboxEventTypes []string
-	if producerChannel != nil {
-		var err error
-		producerDurable, err = durableProducer(prog, producerModule)
+		durable, err := durableProducer(prog, m)
 		if err != nil {
-			return nil, fmt.Errorf("cmd/%s/main.go: produtor durável do módulo %s: %w", group.dirName, producerModule, err)
+			return nil, fmt.Errorf("cmd/%s/main.go: produtor durável do módulo %s: %w", group.dirName, m, err)
 		}
+		p := producerInfo{module: m, channel: ch, durable: durable, channelVarName: strings.ToLower(m[:1]) + m[1:] + "Channel"}
 		for _, wt := range wireTargets {
-			if wt.module == producerModule {
-				producerPkgAlias = wt.alias
+			if wt.module == m {
+				p.pkgAlias = wt.alias
 				break
 			}
 		}
-		if producerDurable {
-			for _, ev := range buckets[producerModule].pubEvents {
-				producerOutboxEventTypes = append(producerOutboxEventTypes, ev.Name)
+		if durable {
+			for _, ev := range buckets[m].pubEvents {
+				p.eventTypes = append(p.eventTypes, ev.Name)
 			}
-			sort.Strings(producerOutboxEventTypes)
+			sort.Strings(p.eventTypes)
+		}
+		producers = append(producers, p)
+	}
+
+	// durableProducers/nonDurableProducers particionam producers (ordem
+	// preservada de group.modules, NFR-13). O adapter SQL de
+	// emitSingleDatabaseWiring nomeia sua UoW "uow" sem parâmetro — não dá
+	// para chamá-lo 2x no mesmo main.go sem colisão de variável — então 2+
+	// produtores duráveis no MESMO service permanecem uma combinação não
+	// suportada, erro de geração claro (não exercitado por nenhum exemplo
+	// real hoje). E um produtor durável que TAMBÉM precisa de Dispatcher
+	// (Policy/Query cacheada/Metric no MESMO módulo) é a combinação
+	// documentada na doc acima como fora do escopo desta task — precisaria
+	// estender NewOutboxUnitOfWork (codegen/sqlrt/uow.go.txt) com um
+	// Publisher opcional (§design 4.3 item 4).
+	var durableProducers, nonDurableProducers []producerInfo
+	for _, p := range producers {
+		if p.durable {
+			durableProducers = append(durableProducers, p)
+		} else {
+			nonDurableProducers = append(nonDurableProducers, p)
+		}
+	}
+	if len(durableProducers) > 1 {
+		return nil, fmt.Errorf("codegen: cmd/%s/main.go: mais de um módulo produtor durável de canal de saída no mesmo service (%s, %s) — wiring combinado ainda não suportado", group.dirName, durableProducers[0].module, durableProducers[1].module)
+	}
+	var producerDurable bool
+	var producerPkgAlias string
+	var producerOutboxEventTypes []string
+	if len(durableProducers) == 1 {
+		dp := durableProducers[0]
+		if modulesWithPolicies[dp.module] || modulesWithCachedQueries[dp.module] || modulesWithMetrics[dp.module] {
+			return nil, fmt.Errorf("codegen: cmd/%s/main.go: módulo %s é produtor durável de canal de saída E precisa de Dispatcher (Policy/Query cacheada/Metric) no MESMO módulo — wiring combinado ainda não suportado (requer estender NewOutboxUnitOfWork com Publisher opcional, §design 4.3 item 4)", group.dirName, dp.module)
+		}
+		producerDurable = true
+		producerPkgAlias = dp.pkgAlias
+		producerOutboxEventTypes = dp.eventTypes
+	}
+	// dispatcherNeeded (§design 4.3 item 1): o service constrói o
+	// runtime.Dispatcher compartilhado sempre que ALGUM módulo precisa dele
+	// por Policy/Query cacheada/Metric (needsDispatcher, já computado acima)
+	// OU quando 2+ módulos produtores NÃO-duráveis disputam o único slot de
+	// Publisher da UoW — com no máximo 1 produtor não-durável e nenhum outro
+	// motivo, o caminho de hoje (canal como publisher direto) permanece
+	// byte-idêntico.
+	dispatcherNeeded := needsDispatcher || len(nonDurableProducers) >= 2
+	// needGenericUow/sharedUowVar (§design 4.3 item 3): cada wireTarget com
+	// UseCase recebe sua PRÓPRIA instância de uow — o produtor durável (se
+	// houver) usa a variável fixa "uow" de emitSingleDatabaseWiring; todo
+	// outro módulo com UseCase (produtor não-durável incluso) usa uma
+	// variável compartilhada, batizada "uow" quando não há produtor durável
+	// no service (o caso comum, hoje) ou "sharedUow" quando o produtor
+	// durável já ocupa esse nome.
+	var durableModule string
+	if len(durableProducers) == 1 {
+		durableModule = durableProducers[0].module
+	}
+	needGenericUow := len(durableProducers) == 0
+	for _, wt := range wireTargets {
+		if wt.hasUseCases && wt.module != durableModule {
+			needGenericUow = true
+			break
+		}
+	}
+	sharedUowVar := "uow"
+	if len(durableProducers) == 1 {
+		sharedUowVar = "sharedUow"
+	}
+	uowVarByModule := make(map[string]string, len(wireTargets))
+	if len(durableProducers) == 1 {
+		uowVarByModule[durableModule] = "uow"
+	}
+	for _, wt := range wireTargets {
+		if wt.hasUseCases && wt.module != durableModule {
+			uowVarByModule[wt.module] = sharedUowVar
 		}
 	}
 
@@ -1213,10 +1293,10 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 	runMode := false
 	{
 		resourceCount := 0
-		if producerChannel != nil {
-			kind, err := channelProviderKind(producerChannel)
+		for _, p := range producers {
+			kind, err := channelProviderKind(p.channel)
 			if err != nil {
-				return nil, fmt.Errorf("cmd/%s/main.go: canal de saída do módulo %s: %w", group.dirName, producerModule, err)
+				return nil, fmt.Errorf("cmd/%s/main.go: canal de saída do módulo %s: %w", group.dirName, p.module, err)
 			}
 			if kind == "rabbitmq" {
 				resourceCount++
@@ -1224,7 +1304,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 			// K3.2: o produtor durável abre, ADEMAIS do canal, uma conexão
 			// real para seu Database — mais um recurso fallível em
 			// sequência neste corpo (ver emitSingleDatabaseWiring).
-			if producerDurable {
+			if p.durable {
 				resourceCount++
 			}
 		}
@@ -1303,27 +1383,31 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 		}
 		e.Line("store := %s.NewMemoryEventStore()", runtimeAlias)
 
-		var channelVarName string
-		if producerChannel != nil {
-			channelVarName = strings.ToLower(producerModule[:1]) + producerModule[1:] + "Channel"
+		// Canal(is) de saída (§design 4.3): construídos ANTES da UoW/Dispatcher,
+		// mesma ordem de antes — um produtor durável usa seu canal como
+		// publisher do relay do DurableOutbox (emitProducerOutboxRelay, depois
+		// de workerCtx); um produtor não-durável usa o canal como assinante do
+		// Dispatcher (dispatcherNeeded) ou, no caso comum de um único produtor
+		// sem nenhum outro motivo de Dispatcher, como publisher direto da UoW
+		// (idêntico ao caminho de antes desta task).
+		for _, p := range producers {
 			var candidates []channelEventCandidate
-			if channelOrderByField(producerChannel) != "" {
+			if channelOrderByField(p.channel) != "" {
 				contractsAlias := e.Import(path.Join(domainModuleRoot, "contracts"))
-				for _, ev := range buckets[producerModule].pubEvents {
+				for _, ev := range buckets[p.module].pubEvents {
 					candidates = append(candidates, channelEventCandidate{evtDecl: ev, goPtrType: "*" + goname.QualifiedRef(contractsAlias, ev.Name)})
 				}
 			}
-			if err := emitChannelTransportVar(e, channelVarName, ":=", producerChannel, candidates, model, tab, producerModule, goname.NewVOOperatorRegistry(), runtimeAlias, true, runMode); err != nil {
-				mainErr = fmt.Errorf("canal de saída do módulo %s: %w", producerModule, err)
+			if err := emitChannelTransportVar(e, p.channelVarName, ":=", p.channel, candidates, model, tab, p.module, goname.NewVOOperatorRegistry(), runtimeAlias, true, runMode); err != nil {
+				mainErr = fmt.Errorf("canal de saída do módulo %s: %w", p.module, err)
 				return
 			}
 		}
 
-		switch {
-		case needsDispatcher:
+		if dispatcherNeeded {
 			e.Line("dispatcher := %s.NewDispatcher()", runtimeAlias)
-			e.Line("uow := %s.NewUnitOfWork(store, dispatcher)", runtimeAlias)
-		case producerChannel != nil && producerDurable:
+		}
+		if len(durableProducers) == 1 {
 			// K3.2/K3.3 (ISSUE-9/REQ-51.1/51.3/51.5, §design 4.2-P1/P2/P3): a
 			// UnitOfWork do produtor sai da store em memória (irrelevante para
 			// este produtor: "store" acima segue existindo só para newMux/
@@ -1333,18 +1417,37 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 			// da UoW (K3.3): a UoW recebe o conjunto de event_type do canal e os
 			// enfileira no outbox dentro da tx; quem publica no canal é o relay
 			// do DurableOutbox montado por emitProducerOutboxRelay (depois de
-			// workerCtx, abaixo).
-			dbName := moduleOutboxDatabaseName(prog, producerModule) // durableProducer garante exatamente 1 Database real neste módulo
-			if err := emitSingleDatabaseWiring(e, prog, producerModule, producerPkgAlias, dbName, producerOutboxEventTypes, runMode); err != nil {
-				mainErr = fmt.Errorf("wiring do produtor durável do módulo %s: %w", producerModule, err)
+			// workerCtx, abaixo). A guarda acima já barrou este módulo
+			// precisando de Dispatcher, então dispatcherNeeded aqui só existe
+			// por causa de OUTRO módulo do service — irrelevante para esta UoW.
+			dp := durableProducers[0]
+			dbName := moduleOutboxDatabaseName(prog, dp.module) // durableProducer garante exatamente 1 Database real neste módulo
+			if err := emitSingleDatabaseWiring(e, prog, dp.module, producerPkgAlias, dbName, producerOutboxEventTypes, runMode); err != nil {
+				mainErr = fmt.Errorf("wiring do produtor durável do módulo %s: %w", dp.module, err)
 				return
 			}
-		case producerChannel != nil:
-			e.Line("uow := %s.NewUnitOfWork(store, %s)", runtimeAlias, channelVarName)
-		default:
-			e.Line("uow := %s.NewUnitOfWork(store)", runtimeAlias)
 		}
-		if anyWorkers || anyIdempotency || anyOutboxDatabases || producerDurable {
+		if needGenericUow {
+			switch {
+			case dispatcherNeeded:
+				e.Line("%s := %s.NewUnitOfWork(store, dispatcher)", sharedUowVar, runtimeAlias)
+				// Fan-out (§design 4.3 item 2): cada canal de saída NÃO-durável
+				// assina o Dispatcher para os PublicEvent que carrega, em vez de
+				// ser o publisher direto da UoW compartilhada — resolve tanto
+				// múltiplos produtores (REQ-55.7) quanto produtor+Dispatcher no
+				// mesmo service (REQ-55.8) com o MESMO mecanismo.
+				for _, p := range nonDurableProducers {
+					for _, ev := range buckets[p.module].pubEvents {
+						e.Line("dispatcher.Subscribe(%s, %s.Publish)", strconv.Quote(ev.Name), p.channelVarName)
+					}
+				}
+			case len(nonDurableProducers) == 1:
+				e.Line("%s := %s.NewUnitOfWork(store, %s)", sharedUowVar, runtimeAlias, nonDurableProducers[0].channelVarName)
+			default:
+				e.Line("%s := %s.NewUnitOfWork(store)", sharedUowVar, runtimeAlias)
+			}
+		}
+		if anyWorkers || anyIdempotency || anyOutboxDatabases || len(durableProducers) > 0 {
 			e.Line("workerCtx := %s.Background()", ctxAlias)
 		}
 		e.Line("")
@@ -1363,7 +1466,7 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 				}
 				var args []string
 				if wt.hasUseCases {
-					args = append(args, "uow")
+					args = append(args, uowVarByModule[wt.module])
 				}
 				if wt.hasPolicies {
 					args = append(args, "dispatcher")
@@ -1450,14 +1553,15 @@ func generateCmdMainFile(prog *program.Program, group cmdGroup, modulesWithUseCa
 
 		// Produtor durável (K3.3, ISSUE-9/REQ-51.2/51.4, §design 4.2-P4): monta
 		// o OutboxStore + DurableOutbox sobre a MESMA conexão que a UoW já abriu
-		// (emitSingleDatabaseWiring, no switch acima) e sobe o relay/cleanup —
-		// DEPOIS de "workerCtx :=" (o relay/cleanup precisam de um context) e
-		// DEPOIS de Wire (a UoW do produtor já enfileira na tx). O canal é o
-		// publisher do relay, não da UoW (a troca de publisher, P3).
-		if producerChannel != nil && producerDurable {
-			dbName := moduleOutboxDatabaseName(prog, producerModule)
-			if err := emitProducerOutboxRelay(e, prog, producerModule, dbName, channelVarName, producerOutboxEventTypes, runtimeAlias, "workerCtx"); err != nil {
-				mainErr = fmt.Errorf("relay do outbox do produtor durável do módulo %s: %w", producerModule, err)
+		// (emitSingleDatabaseWiring, acima) e sobe o relay/cleanup — DEPOIS de
+		// "workerCtx :=" (o relay/cleanup precisam de um context) e DEPOIS de
+		// Wire (a UoW do produtor já enfileira na tx). O canal é o publisher do
+		// relay, não da UoW (a troca de publisher, P3).
+		if len(durableProducers) == 1 {
+			dp := durableProducers[0]
+			dbName := moduleOutboxDatabaseName(prog, dp.module)
+			if err := emitProducerOutboxRelay(e, prog, dp.module, dbName, dp.channelVarName, producerOutboxEventTypes, runtimeAlias, "workerCtx"); err != nil {
+				mainErr = fmt.Errorf("relay do outbox do produtor durável do módulo %s: %w", dp.module, err)
 				return
 			}
 		}

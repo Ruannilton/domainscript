@@ -20,7 +20,6 @@
 
 - M1.2 — `list <Aggregate>` sem cláusulas em EmitQuery
 - M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as)
-- M1.5 — Implementar o wiring: remover as guardas F5 e F5/G3
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
 - M2.1 — `emit` em passo de Saga vira erro de geração claro
 - M2.2 — (design) Decidir como um passo de Saga emite
