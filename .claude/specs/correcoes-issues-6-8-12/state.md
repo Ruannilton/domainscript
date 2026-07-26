@@ -18,7 +18,6 @@
 
 ## PENDING TASKS:
 
-- M1.1 — Seam de enumeração de streams no runtime (StreamLister)
 - M1.2 — `list <Aggregate>` sem cláusulas em EmitQuery
 - M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as)
 - M1.4 — (design) Wiring de service com múltiplos produtores e Dispatcher
@@ -39,6 +38,17 @@
 
 ## BLOCKED TASKS:
 
-_(vazio — só ganha entradas quando a execução descobrir que uma task não pode
-prosseguir. Registre o motivo inline e, se o bloqueio for fora do escopo desta
-spec, abra a issue com a skill `issue-generator`.)_
+- M1.1 — Seam de enumeração de streams no runtime (StreamLister). Step 2 pede
+  para decidir como `aggregateType` chega até `Append` (registro já
+  disponível, ou o seam que `Event`/`EventMeta` já oferece) e manda parar se
+  nenhuma rota funcionar sem alterar `EventStore`. Verificado por leitura:
+  nenhuma das duas rotas existe hoje dentro de `target_files`, e a rota que
+  existe (thread via `ctx`, mesmo mecanismo de `tenantID`) exige tocar
+  `codegen/rtsrc/contextkeys.go.txt` e o call site de `Append`
+  (`codegen/rtsrc/uow.go.txt`/`codegen/lower/stmt.go`), fora do escopo desta
+  task. Pedido de decisão de `design.md` §4.1/§5.1, registrado em
+  `.claude/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. M1.2
+  e M1.3 dependem de M1.1 (`depends_on`) e ficam transitivamente travadas até
+  a decisão — seguem listadas em PENDING acima porque nenhuma execução
+  chegou a tentá-las ainda; quem as pegar vai encontrar a dependência não
+  concluída no pré-voo e parar do mesmo jeito.
