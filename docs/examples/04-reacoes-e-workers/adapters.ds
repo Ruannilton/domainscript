@@ -1,0 +1,93 @@
+// Notifications e Adapters (§9) — a fronteira de saída.
+//
+// A `Notification` é o CONTRATO (o que sai). O `Adapter` é o TRANSPORTE (como
+// sai). O domínio só conhece o contrato — trocar SendGrid por SES não toca uma
+// linha de domínio.
+//
+// Notification sem Adapter correspondente é ERRO de compilação (§25): um
+// contrato de saída que ninguém entrega é código morto que parece vivo.
+
+Notification DepositNotification { to Email, amount Money }
+Notification PaymentRequest { paymentId PaymentId, amount Money, method PaymentMethod }
+
+ValueObject PaymentId(string) { Valid { self.length > 0 } }
+
+Enum PaymentStatus : string {
+    Approved = "APPROVED"
+    Declined = "DECLINED"
+}
+
+ValueObject PaymentResult {
+    status PaymentStatus
+    authCode string
+}
+
+// --- Adapter nível 1: HTTP declarativo (§9.3) ---------------------------
+// Sem escrever cliente HTTP. Este nível MIGRA sozinho ao trocar a linguagem
+// alvo — não há código de plataforma envolvido.
+
+Adapter DepositNotification {
+    mode async
+    http POST "https://api.sendgrid.com/v3/mail/send"
+    headers { "Authorization" = "Bearer {env('SENDGRID_KEY')}" }
+    body {
+        to      = notification.to
+        subject = "Depósito recebido"
+        body    = "Você recebeu {notification.amount}."
+    }
+}
+
+// --- Adapter nível 2: FFI vinculado a Notification (§9.3) ---------------
+// Para o que HTTP declarativo não cobre: SDK proprietário, protocolo binário,
+// biblioteca da plataforma. Assinatura incompatível é erro de compilação.
+// Este nível EXIGE reimplementação ao trocar a linguagem alvo — é o preço de
+// sair do declarativo, e a spec deixa isso explícito.
+
+Adapter PaymentRequest {
+    mode sync
+    foreign "go" from "adapters/payment_gateway"
+    function "ProcessPayment"
+    map {
+        paymentId = notification.paymentId
+        amount    = notification.amount
+    }
+}
+
+// --- `notify` (async) vs `call` (sync) (§9.2) ---------------------------
+// A escolha não é de estilo: `notify` dispara e segue; `call` bloqueia e
+// devolve resultado, então o fluxo pode decidir com base nele.
+
+Error PaymentDeclined { message "Pagamento recusado." }
+
+Policy NotifyOnDeposit on DepositPerformed {
+    delivery AtLeastOnce
+    execute {
+        wallet = load Wallet(event.id)
+        // async: não há retorno, e o fluxo não espera
+        notify DepositNotification(to: wallet.state.email, amount: event.amount)
+    }
+}
+
+Command PayCmd {
+    paymentId ref Payment
+    amount Money
+    paymentMethod PaymentMethod
+}
+
+UseCase ProcessPayment handles PayCmd {
+    execute {
+        payment = load Payment(cmd.paymentId)
+        ensure payment exists else PaymentNotFound
+
+        // sync: o resultado decide o que acontece a seguir
+        result = call PaymentRequest(
+            paymentId: payment.id,
+            amount: cmd.amount,
+            method: cmd.paymentMethod
+        )
+        ensure result.status == PaymentStatus.Approved else PaymentDeclined
+        payment.Confirm(result.authCode)
+    }
+}
+
+Error PaymentNotFound { message "Pagamento não encontrado." }

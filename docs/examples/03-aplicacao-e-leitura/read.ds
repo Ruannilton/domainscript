@@ -1,0 +1,137 @@
+// Read Side (§6), cache de Query (§16) e Smart Partial Loading (§22).
+//
+// Aqui primitivos SÃO permitidos: o dado já foi validado por ValueObject na
+// borda de entrada. Insistir em VO no Read Side seria cerimônia sem ganho.
+
+// --- Views (§6.1) -------------------------------------------------------
+
+// Auto-mapping a partir do Aggregate, com flattening dos VOs compostos.
+View WalletSummaryVW From Wallet
+
+// Ou campos próprios, achatados à mão — repare que `Money` virou
+// `amount_value decimal` + `amount_currency string`.
+View StatementEntryVW {
+    type string
+    amount_value decimal
+    amount_currency string
+    description string
+    date datetime
+}
+
+// --- Field-level security (§6.2) ----------------------------------------
+// `access` do Aggregate controla QUEM INVOCA; `visibility` da View controla
+// QUEM VÊ QUAIS CAMPOS. São eixos diferentes e ambos necessários.
+//
+// Campo não autorizado é OMITIDO da serialização — não volta como null. A
+// diferença importa: `null` vaza a existência do campo.
+
+View WalletDetailVW From Wallet {
+    visibility {
+        balance requires caller.id == self.id or caller.hasRole("admin")
+        email   requires caller.id == self.id or caller.hasRole("support")
+        // campos não listados: visíveis a qualquer caller que a Query já
+        // autorizou
+    }
+}
+
+// --- Queries (§6.3) -----------------------------------------------------
+// Consulta declarativa: `load`, `list`, `count`, `join`, `in`, `distinct`.
+// `join` só vale dentro do MESMO banco — cross-database é erro e exige uma
+// Projection (abaixo).
+
+ValueObject TicketVW_Id(string) { Valid { self.length > 0 } }
+
+View TicketVW {
+    id string
+    status string
+    orderId string
+}
+
+Query GetStatement(walletId WalletId, page int) -> List<StatementEntryVW> {
+    return load Wallet(walletId)
+           .entries
+           orderBy date descending
+           skip page * 20
+           take 20
+           as StatementEntryVW
+}
+
+Query GetMyTickets(userId UserId) -> List<TicketVW> {
+    return list Ticket t
+           join Order o on t.orderId == o.id
+           where o.userId == userId
+             and t.status in [TicketStatus.Sold, TicketStatus.Used]
+           as TicketVW
+}
+
+// --- Cache de Query (§16) -----------------------------------------------
+// A POLÍTICA fica na Query; o BACKEND fica no mod.ds. A invalidação é
+// inferida dos Aggregates que o corpo toca — `invalidateOn` é override, não
+// obrigação. Cache stampede é resolvido por construção (request coalescing),
+// e a chave já inclui o tenant automaticamente (§14).
+
+Query GetWalletSummary(walletId WalletId) -> WalletSummaryVW {
+    cache {
+        ttl: 5min
+        invalidateOn: [DepositPerformed, WithdrawalPerformed]
+        negativeCacheTtl: 10s
+    }
+    return load Wallet(walletId) as WalletSummaryVW
+}
+
+// --- Projections cross-database (§6.4) ----------------------------------
+// Quando os dados vivem em bancos diferentes, `join` é proibido. A Projection
+// é a resposta: uma view materializada, alimentada por eventos.
+
+Projection InvoiceWithHolderVW {
+    source Invoice, Wallet
+    map {
+        invoiceId = Invoice.id
+        amount    = Invoice.amount
+        holder    = Wallet.holder
+    }
+    refreshOn [InvoiceCreated, WalletUpdated]
+}
+
+// --- Smart Partial Loading (§22) ----------------------------------------
+// Carregar um Aggregate inteiro para olhar um item é desperdício. `focus`
+// busca um item da coleção sem materializar o resto; `sum` agrega no banco.
+// `AppendList<T>` com skip/take pagina nativamente.
+
+ValueObject ItemId(string) { Valid { self.length > 0 } }
+ValueObject Price { amount decimal
+    currency string
+    Valid { amount >= 0 } }
+
+Error CartLimitExceeded { message "Carrinho excede o limite permitido." }
+
+Event ItemFocused { id ItemId }
+
+Aggregate Cart {
+    state {
+        items AppendList<CartItem>
+    }
+
+    access {
+        Inspect requires caller.id == self.id
+    }
+
+    Handle Inspect(itemId ItemId) {
+        // SELECT * WHERE parent_id = self.id AND id = itemId — não traz a
+        // coleção inteira para a memória.
+        item = state.items.focus(itemId)
+
+        // SELECT SUM(...) — agrega sem materializar.
+        ensure state.items.sum(i => i.price) < Price(amount: 10000, currency: "BRL")
+            else CartLimitExceeded
+
+        emit ItemFocused(item.id)
+    }
+
+    Apply ItemFocused { }
+}
+
+ValueObject CartItem {
+    id ItemId
+    price Price
+}

@@ -36,7 +36,7 @@ import (
 // o runtime real).
 
 // generateWalletE2EProject roda GenerateProject sobre o wallet real
-// (docs/examples/wallet), escrevendo em um diretório temporário isolado — o
+// (testdata/projects/wallet), escrevendo em um diretório temporário isolado — o
 // MESMO caminho que `dsc gen <dir> -o <out>` percorre (REQ-32, E10.1),
 // diferente do codegen.Generate() in-memory que codegen_test.go (E9.1) e o
 // resto do pacote codegen exercitam. Devolve o diretório de saída.

@@ -219,9 +219,31 @@ Load-bearing decisions — violating them breaks the design's core promises.
   idempotent into a populated output directory — unchanged files are not
   rewritten, files orphaned by a removed declaration are deleted.
 - **Golden test + smoke compile, paired (NFR-17).** Every emitter has a golden
-  test; on top of that the bundled examples (`docs/examples/wallet`, `shop`)
-  are generated via `GenerateProject` and built over the bytes actually written
-  to disk — a golden test alone does not prove the output compiles.
+  test; on top of that the fixture projects (`testdata/projects/wallet`,
+  `shop`) are generated via `GenerateProject` and built over the bytes actually
+  written to disk — a golden test alone does not prove the output compiles.
+
+## Examples vs. fixtures — two directories, two jobs
+
+Keep these apart; conflating them is what let the implementation's spelling
+leak into the teaching material in the first place.
+
+- **`docs/examples/`** — written against the **spec**, one example per area
+  (§2/§3, §4, §5/§6, …). They exist to show what the language can do, and they
+  **do not compile today** — on purpose. They are the conformance target.
+  Never "fix" one by retreating to a form the transpiler happens to accept;
+  that inverts the source of truth. No CI job validates them.
+- **`testdata/projects/`** — written against **what the transpiler accepts
+  today**, read from disk by tests in `driver/`, `codegen/`, `codegen/lower/`
+  and `codegen/goname/`, and swept by the `fixtures` CI job (`dsc check` +
+  `dsc gen` + `go build`/`go vet`). Their job is catching regressions, so they
+  may legitimately contain non-spec forms (the `ok` sentinel, the `value`
+  receiver). Editing a `.ds` here changes generated Go and breaks the matching
+  golden — intended when deliberate, a useful alarm when not.
+
+A new language feature lands in `docs/examples/` when the **spec** describes
+it, and in `testdata/projects/` when the **implementation** ships it. Those are
+different moments, and the gap between them is the point.
 
 ## Package layout
 

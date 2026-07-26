@@ -1,0 +1,109 @@
+// Onde cada natureza de FFI pode ser chamada (§10.4).
+//
+//   Contexto                      pure   impure
+//   ValueObject (Valid/Operator)    ✅      ❌
+//   Handle                          ✅      ⚠️ só com captura em evento
+//   Apply                           ❌      ❌
+//   UseCase / Saga / Policy / Worker ✅     ✅
+//   Query                           ✅      ❌
+//
+// A linha que mais importa é a do `Apply`.
+
+ValueObject TaxId(string) {
+    // pure num ValueObject: permitido. A validação continua determinística,
+    // então construir o mesmo TaxId duas vezes dá o mesmo resultado.
+    Valid { ValidateTaxId(self) }
+}
+
+ValueObject DocumentId(string) { Valid { self.length > 0 } }
+ValueObject Signature(bytes)   { Valid { true } }
+
+Error DocumentNotFound { message "Documento não encontrado." }
+
+Event DocumentSigned { id DocumentId, signature Signature }
+
+Aggregate Document {
+    state {
+        signature Signature
+        content bytes
+    }
+
+    access {
+        Sign requires caller.hasRole("signer")
+    }
+
+    // --- impure no Handle EXIGE captura em evento (§10.4) ---------------
+    // O resultado da chamada impura tem de ir PARA o evento. Usá-lo no
+    // controle de fluxo do Handle sem capturar é erro de compilação.
+    //
+    // É o mesmo princípio de now()/uuid(): o Handle roda uma vez, o Apply
+    // roda toda vez que o stream é reproduzido. O que for não-determinístico
+    // precisa ser congelado no evento na primeira passagem.
+    Handle Sign() {
+        signature = SignViaHsm(state.content)   // impure — DEVE ir ao evento
+        emit DocumentSigned(self.id, Signature(signature))
+    }
+
+    // --- Apply é HERMÉTICO (§10.4) --------------------------------------
+    // Nem FFI pura entra aqui. A razão é replay: um Apply reproduzido daqui a
+    // cinco anos tem de produzir exatamente o mesmo estado, mesmo que a
+    // biblioteca externa tenha mudado de versão, de algoritmo ou deixado de
+    // existir. Depender só do evento e de built-ins é o que garante isso.
+    //
+    // Chamar ComputeMerkleRoot(...) nesta linha seria ERRO de compilação.
+    Apply DocumentSigned {
+        state.signature = event.signature   // lê do evento, nunca re-executa
+    }
+}
+
+// --- pure em Query: permitido; impure: proibido -------------------------
+// Uma Query é leitura: precisa ser repetível e cacheável (§16). Efeito
+// colateral ali quebraria as duas coisas.
+
+Query VerifyDocument(id DocumentId, publicKey string) -> boolean {
+    doc = load Document(id)
+    ensure doc exists else DocumentNotFound
+    return VerifySignature(doc.state.content, doc.state.signature, publicKey)
+}
+
+// --- UseCase: as duas naturezas são permitidas --------------------------
+// É o contexto mais permissivo, porque é onde a orquestração mora.
+
+ValueObject ReportTemplate(string) {
+    Valid { self.length > 0 }
+}
+
+Command IssueReportCmd {
+    documentId ref Document
+    template ReportTemplate
+    // O Map entra pelo Command já tipado — a fronteira de entrada é onde os
+    // dados ganham forma, e é ela que o marshalling do FFI vai atravessar
+    // (§10.3: Map<K,V> cruza, e o compilador gera a conversão).
+    data Map<string, string>
+}
+
+UseCase IssueReport handles IssueReportCmd {
+    execute {
+        doc = load Document(cmd.documentId)
+        ensure doc exists else DocumentNotFound
+
+        // impure num UseCase: permitido, sem exigência de captura.
+        //
+        // ⚠️ Warning do compilador (§10.7): FFI impura DENTRO de transação
+        // não é revertida em rollback. Se o PDF for para um bucket e a
+        // transação falhar depois, o arquivo fica lá. Quando isso importa, o
+        // desenho certo é uma Saga com compensação — ver o exemplo 06.
+        pdf = GeneratePdf(cmd.template, cmd.data)
+        doc.Sign()
+    }
+}
+
+// --- O que NUNCA atravessa a fronteira (§10.3) --------------------------
+//
+//   Primitivos, List/Set/Map, ValueObject, Enum, Event, File/FileRef/
+//   FileStream  → atravessam; o compilador gera o marshalling
+//   Aggregate                                        → ERRO de compilação
+//
+// Aggregate tem identidade, ciclo de vida e fronteira transacional. Deixá-lo
+// sair seria entregar essas três garantias a código que a linguagem não
+// controla. Passe ValueObjects ou os campos específicos.

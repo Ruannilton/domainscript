@@ -21,7 +21,7 @@ import (
 // tipo declarado + error — leitura pura, SEM unit of work (uma Query nunca
 // abre uma transação, ao contrário de UseCase/decl_usecase.go). Cobre, com
 // suporte de verdade (golden + smoke + comportamental), exatamente os DOIS
-// corpos que o wallet real exercita (docs/examples/wallet/read.ds):
+// corpos que o wallet real exercita (testdata/projects/wallet/read.ds):
 //
 //   - "return load Agg(id) as View" (REQ-21.2, a cláusula "as" de um load):
 //     carrega o Aggregate normalmente — via Load<Agg> (E6.2), agora sobre o

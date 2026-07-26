@@ -1,0 +1,166 @@
+// 02-write-side — o núcleo do domínio (§4).
+//
+// Reusa os ValueObjects do exemplo 01 (WalletId, HolderName, Email, Money,
+// TransactionDescription, ActiveStatus, TransactionType, StatementEntry).
+
+// --- Errors de negócio (§4.1) -------------------------------------------
+// Erro de NEGÓCIO é declarado no domínio e vira 4xx. Erro de
+// INFRAESTRUTURA nunca aparece aqui: ele é tratado no mod.ds, com retry e
+// circuit breaker (§23).
+
+Error InsufficientBalance { message "Saldo insuficiente." }
+Error InactiveWallet      { message "Carteira inativa." }
+Error WalletNotFound      { message "Carteira não encontrada." }
+
+// --- Events e PublicEvents (§4.2) ---------------------------------------
+// Todo Event carrega metadata implícito readonly: `timestamp`, `sequence`,
+// `aggregateId`, `eventType` — não se declara, e está sempre lá.
+//
+// `Event` é interno ao módulo. `PublicEvent` é o contrato compartilhado, que
+// mora em contracts/*.ds e outros módulos podem escutar. Uma Policy de outro
+// módulo escutando um `Event` privado é ERRO de compilação (§25) — é o que
+// impede acoplamento acidental entre módulos.
+
+Event WithdrawalPerformed {
+    id WalletId
+    amount Money
+    description TransactionDescription
+}
+
+// Campos `redactable` (§4.4): direito ao esquecimento (GDPR Art. 17) sem
+// corromper o replay. A redação troca o campo por um placeholder TIPADO — a
+// estrutura do evento continua íntegra, o replay continua funcionando, e a
+// PII sai. Um evento não pode ser apagado; um campo dele pode ser esvaziado.
+Event WalletCreated {
+    id WalletId
+    holder HolderName redactable
+    email Email redactable
+}
+
+// --- Versionamento de evento (§4.3) -------------------------------------
+// Evento é imutável e vive para sempre — então a versão nova precisa saber
+// ler o que a versão velha gravou. Duas ferramentas:
+//
+// 1. Campo novo com `default`: o caminho barato. Eventos antigos, que não
+//    têm o campo, resolvem para o default na leitura.
+// 2. `Upcast`: para o que default não resolve — derivar um campo de outros,
+//    renomear, mudar forma.
+//
+// O compilador valida que TODA versão histórica tem caminho resolvível até a
+// atual, e avisa quando um Upcast poderia ter sido só um default (§25).
+
+ValueObject Channel(string) {
+    Valid { self.length > 0 }
+}
+
+PublicEvent DepositPerformed {
+    id WalletId
+    amount Money
+    description TransactionDescription
+    channel Channel = Channel("unknown")   // adicionado numa versão posterior
+}
+
+Event TransferSent {
+    id WalletId
+    to WalletId
+    amount Money
+    fee Money
+}
+
+Upcast TransferSent v1 -> v2 {
+    // v1 não tinha `fee`; derivá-la exige olhar o próprio evento, então
+    // default não bastaria.
+    fee = Money(amount: 0, currency: event.amount.currency)
+}
+
+// --- Aggregate (§4.5) ---------------------------------------------------
+// A fronteira transacional e de consistência. `self.id` é a identidade do
+// Aggregate — implícita, não se declara no state.
+//
+// `strategy`: StateStored (padrão) ou EventSourced. Snapshot é opt-in.
+// `access` é FECHADO POR PADRÃO: um Handle sem entrada no bloco é erro de
+// compilação (§25). Não existe "esqueci de proteger este comando".
+
+Aggregate Wallet {
+    strategy EventSourced
+    snapshot every 50 events
+
+    state {
+        balance Money
+        active ActiveStatus
+        holder HolderName
+        email Email
+        // AppendList: o extrato só cresce. O compilador otimiza storage e
+        // paginação, e proíbe remove()/clear().
+        entries AppendList<StatementEntry>
+    }
+
+    access {
+        Create          requires caller.authenticated
+        Deposit         requires caller.authenticated
+        Withdraw        requires caller.id == self.id or caller.hasRole("admin")
+        SendTransfer    requires caller.id == self.id
+        ReceiveTransfer requires caller.authenticated
+    }
+
+    Handle Create(holder HolderName, email Email) {
+        emit WalletCreated(self.id, holder, email)
+    }
+
+    Apply WalletCreated {
+        state.holder = event.holder
+        state.email = event.email
+        state.balance = Money(amount: 0, currency: "BRL")
+        state.active = ActiveStatus(true)
+    }
+
+    Handle Deposit(amount Money, description TransactionDescription) {
+        ensure state.active == ActiveStatus(true) else InactiveWallet
+        emit DepositPerformed(self.id, amount, description)
+    }
+
+    Apply DepositPerformed {
+        state.balance = state.balance + event.amount
+        state.entries.add(StatementEntry(
+            type: TransactionType.Deposit,
+            amount: event.amount,
+            description: event.description,
+            // metadata implícito do evento (§4.2) — nunca declarado
+            date: event.timestamp
+        ))
+    }
+
+    Handle Withdraw(amount Money, description TransactionDescription) {
+        ensure state.active == ActiveStatus(true) else InactiveWallet
+        ensure state.balance >= amount else InsufficientBalance
+        emit WithdrawalPerformed(self.id, amount, description)
+    }
+
+    Apply WithdrawalPerformed {
+        state.balance = state.balance - event.amount
+        state.entries.add(StatementEntry(
+            type: TransactionType.Withdrawal,
+            amount: event.amount,
+            description: event.description,
+            date: event.timestamp
+        ))
+    }
+}
+
+// --- Event stream nativo (§4.5) -----------------------------------------
+// `events()` é o log TÉCNICO do Aggregate — auditoria, depuração, replay.
+// O `AppendList` do state é a visão de NEGÓCIO (o extrato que o cliente vê).
+// Os dois coexistem de propósito: um responde "o que aconteceu no sistema",
+// o outro "o que aconteceu na minha conta".
+
+Query AuditTrail(walletId WalletId) -> List<StatementEntry> {
+    wallet = load Wallet(walletId)
+    ensure wallet exists else WalletNotFound
+    return wallet.events(from: 100, to: 200)
+}
+
+Query AuditWindow(walletId WalletId, since datetime, until datetime) -> List<StatementEntry> {
+    wallet = load Wallet(walletId)
+    ensure wallet exists else WalletNotFound
+    return wallet.events(since: since, until: until)
+}

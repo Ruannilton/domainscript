@@ -21,7 +21,7 @@ import (
 // decl_aggregate_load.go ACRESCENTA à emissão de decl_aggregate.go (E6.1).
 //
 // Duas fixtures:
-//   - o Aggregate Wallet real (docs/examples/wallet), EventSourced sem
+//   - o Aggregate Wallet real (testdata/projects/wallet), EventSourced sem
 //     snapshot — o caminho testado contra o domínio de verdade.
 //   - uma fixture SINTÉTICA (aggregateLoadFixtureSrc, abaixo) com um segundo
 //     Aggregate StateStored (o wallet não usa essa estratégia) e um terceiro
@@ -297,7 +297,7 @@ Aggregate SnapCounter {
 `
 
 // aggregateLoadFixtureModDs declara o módulo e o banco que "gerencia" os dois
-// Aggregates da fixture — mesma forma mínima de docs/examples/wallet/mod.ds.
+// Aggregates da fixture — mesma forma mínima de testdata/projects/wallet/mod.ds.
 const aggregateLoadFixtureModDs = `Module Counter {
     Database CounterDb {
         provider: "postgres"
@@ -646,7 +646,7 @@ func TestEmitAggregateLoadSnapshotBehavior(t *testing.T) {
 // Roda `go mod tidy` primeiro quando go.mod declara um bloco "require" (J1.2,
 // REQ-41.2, mesma detecção de gentest.needsModTidy — codegen/gentest/smoke.go):
 // desde que "postgres" virou um provider SQL real, qualquer fixture cujo
-// Database use provider:"postgres" (o wallet real, docs/examples/wallet,
+// Database use provider:"postgres" (o wallet real, testdata/projects/wallet,
 // incluído) ganha "require github.com/jackc/pgx/v5 ..." em go.mod, e sem
 // go.sum resolvido o `go test` abaixo falharia com "missing go.sum entry".
 func runGeneratedTests(t *testing.T, files map[string][]byte) {

@@ -17,16 +17,16 @@ import (
 
 // decl_policy_test.go prova os critérios de conclusão da task F1 (§design
 // codegen 3.10, REQ-23.1/23.5) sobre a Policy real do shop
-// (docs/examples/shop/shipping/policy.ds — "NotifyShipping on OrderPlaced",
+// (testdata/projects/shop/shipping/policy.ds — "NotifyShipping on OrderPlaced",
 // delivery AtLeastOnce): golden, determinismo, smoke compile e um teste
 // comportamental sobre o Go de fato gerado — mesmo padrão de
 // decl_projection_test.go (E8.2), a task mais recente sem exemplo real no
 // wallet antes desta.
 //
 // shopProjectDir espelha walletProjectDir (decl_aggregate_test.go): o shop é
-// o exemplo de referência de dois services (docs/examples/shop) — já provado
+// o exemplo de referência de dois services (testdata/projects/shop) — já provado
 // limpo por driver.TestShopExampleClean (driver/shop_regression_test.go).
-var shopProjectDir = filepath.Join("..", "docs", "examples", "shop")
+var shopProjectDir = filepath.Join("..", "testdata", "projects", "shop")
 
 // parseShopProgram resolve o exemplo shop real via driver.CheckProject — a
 // primeira vez que o pacote codegen_test usa essa fixture (E9.1 só exercitou
@@ -59,7 +59,7 @@ func findPolicyDecl(t *testing.T, prog *program.Program, name string) *ast.Polic
 // emitShippingPolicies gera o Go da Policy NotifyShipping real do shop
 // (módulo Shipping, reage ao PublicEvent OrderPlaced de Orders — cross-
 // module, daí "contracts.OrderPlaced" no tipo do handler). O módulo Shipping
-// não declara nenhum ValueObject (docs/examples/shop/shipping/mod.ds é só
+// não declara nenhum ValueObject (testdata/projects/shop/shipping/mod.ds é só
 // "Module Shipping {}"), então um VOOperatorRegistry vazio é suficiente — o
 // corpo real ("execute { return }") não referencia nenhum.
 func emitShippingPolicies(t *testing.T) []byte {

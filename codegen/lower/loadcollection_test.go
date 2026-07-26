@@ -16,7 +16,7 @@ import (
 // construção do aggregate — carrega o aggregate via a MESMA LoadCall de
 // hoistLoad (E6.2, intocada) e aplica runtime.SelectSlice sobre o campo de
 // coleção do state, SEM Collection[T] nenhum. Todos os testes usam o wallet
-// real (docs/examples/wallet): Wallet.state.entries é AppendList<StatementEntry>
+// real (testdata/projects/wallet): Wallet.state.entries é AppendList<StatementEntry>
 // — a coleção real que o exemplo-âncora GetStatement (spec §6.3) varre.
 //
 // A composição com where/orderBy/skip/take (Passo 2 de hoistLoadCollection)

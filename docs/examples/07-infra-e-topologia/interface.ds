@@ -1,0 +1,54 @@
+// Exposição (§11) — `interface.ds`.
+//
+// O domínio NÃO SABE qual protocolo o alcança. Este arquivo é a única coisa
+// que muda ao expor o mesmo UseCase por HTTP e por gRPC — e é onde moram
+// tenant resolution, versionamento e rate limit.
+
+Interface HTTP {
+    port: env("HTTP_PORT")
+    basePath: "/api"
+
+    // Versionamento de API (§18): o domínio só conhece a versão atual; a
+    // tradução acontece na borda. Ver o exemplo 08.
+    versioning {
+        strategy: path
+        current: v2
+        supported: [v1, v2]
+    }
+
+    // Resolução de tenant (§14): subdomain, header, jwt_claim ou path.
+    // Tenant é ambient context — nunca vira parâmetro do domínio.
+    tenant {
+        from: subdomain
+    }
+
+    // Default de TODAS as rotas; cada rota pode apertar (§17).
+    rateLimit {
+        perIp: 1000/min
+        perUser: 300/min
+    }
+
+    // Mapeamento automático: path param vira `ref`/parâmetro, query param vira
+    // query string, body vira JSON, e os status (200/201/422/404/429/503)
+    // saem do tipo de erro — ninguém escreve handler HTTP.
+    POST "/wallets"                       -> CreateWallet
+    POST "/wallets/{walletId}/deposit"    -> PerformDeposit {
+        rateLimit { perUser: 60/min, burst: 10 }
+    }
+    GET  "/wallets/{walletId}"            -> GetWalletSummary
+    GET  "/wallets/{walletId}/statement"  -> GetStatement
+
+    // Rotas sem tenant precisam dizer isso explicitamente: o default é
+    // fail-closed (tenant ausente → 400).
+    POST "/login"  -> Login       { tenancy: none, rateLimit: { perIp: 10/min, onBackendFailure: closed } }
+    GET  "/health" -> HealthCheck { tenancy: none }
+}
+
+// O MESMO UseCase exposto por outro protocolo. O compilador gera o `.proto`.
+Interface GRPC {
+    port: env("GRPC_PORT")
+    service WalletService {
+        rpc Deposit   -> PerformDeposit
+        rpc GetWallet -> GetWalletSummary
+    }
+}

@@ -17,7 +17,7 @@ import (
 
 // decl_query_test.go prova os critérios de conclusão da task E8.1 para Query
 // (§design codegen 3.9, REQ-21.2/21.5) sobre as 2 Queries reais do wallet
-// (docs/examples/wallet/read.ds): golden, determinismo, smoke compile e um
+// (testdata/projects/wallet/read.ds): golden, determinismo, smoke compile e um
 // teste comportamental — incl. a prova explícita, pedida pela task, de que a
 // correlação de "list <VO>" por id não mistura dois wallets diferentes.
 

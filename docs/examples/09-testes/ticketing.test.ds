@@ -1,0 +1,71 @@
+// Mocks, Sagas, Policies e Queries no teste nativo (§24.3, §24.4).
+
+// --- Saga com mock de Adapter/FFI (§24.3) -------------------------------
+// `mock X returns Y` substitui a fronteira de saída. FFI `pure` executa DE
+// VERDADE por padrão (é determinística — mockar seria testar o mock); FFI
+// `impure` e Adapters são mockados por padrão (§10.6).
+//
+// `fail step X with InfraError` injeta falha de INFRAESTRUTURA num passo
+// específico — é como se testa a compensação sem depender de o mundo real
+// falhar na hora certa.
+
+Test PurchaseTickets {
+    scenario "pagamento recusado dispara compensação" {
+        mock PaymentRequest returns PaymentResult(status: PaymentStatus.Declined)
+        given Event("E1") from [
+            EventCreated(id: "E1", name: "Show"),
+            TicketCreated(id: "T1", eventId: "E1")
+        ]
+        when PurchaseTicketsCmd(eventId: "E1", userId: "U1", quantity: 1, paymentMethod: PaymentMethod.Pix)
+        then {
+            saga compensated
+            Order emitted OrderCancelled
+            tickets released
+        }
+    }
+
+    scenario "falha de infra no step de confirmação" {
+        mock PaymentRequest returns PaymentResult(status: PaymentStatus.Approved)
+        fail step ConfirmPurchase with InfraError
+        when PurchaseTicketsCmd(eventId: "E1", userId: "U1", quantity: 1, paymentMethod: PaymentMethod.Pix)
+        then {
+            saga compensated
+            // A ORDEM importa: compensação roda em ordem reversa.
+            compensated [ConfirmPurchase, ProcessPayment, ReserveTickets]
+            called RefundRequest
+        }
+    }
+}
+
+// --- Policy (§24.4) -----------------------------------------------------
+// `when event X` dispara a reação. `given <binding> [...]` semeia entidades
+// com estado direto.
+
+Test RefundAllOnEventCancelled {
+    scenario "reembolso agrupado por pedido" {
+        given tickets [
+            Ticket("T1") { eventId: "E1", status: TicketStatus.Sold, orderId: "O1" },
+            Ticket("T2") { eventId: "E1", status: TicketStatus.Sold, orderId: "O1" },
+            Ticket("T3") { eventId: "E1", status: TicketStatus.Sold, orderId: "O2" }
+        ]
+        when event EventCancelled(id: "E1", reason: "Chuva")
+        then {
+            // Três ingressos, DOIS pedidos: o `distinct` da Policy agrupa, e
+            // é exatamente isso que `emitted count 2` prova.
+            emitted RefundRequested(orderId: "O1")
+            emitted RefundRequested(orderId: "O2")
+            emitted count 2
+        }
+    }
+}
+
+// --- Aggregate StateStored (§24.1) --------------------------------------
+// Sem event stream: o `given` é o estado, e a asserção também.
+
+Test KitchenTicket {
+    scenario "reivindicar um ticket pendente" {
+        given state { status: TicketStatus.Pending }
+        when Claim(cookId: "C1")
+        then state { status: TicketStatus.Preparing, cookId: "C1" }
+    }
+}

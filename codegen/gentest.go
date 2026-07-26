@@ -78,7 +78,7 @@ import (
 // LoadX: LoadWallet real (E6.2) começa SEMPRE de um state Go zero-value antes
 // do replay, e um VO composto com Operator (ex. Money.Add, §2.2) exige
 // "currency == other.currency" — o wallet real só ganhou "Apply WalletCreated"
-// (docs/examples/wallet/domain.ds, seedando balance/active) por causa desta
+// (testdata/projects/wallet/domain.ds, seedando balance/active) por causa desta
 // task; mesmo assim, um given no MEIO de um replay (ex. "DepositPerformed"
 // como 2º evento) precisaria que TODO evento anterior já tivesse Apply real —
 // gerar via EventStore faria um given válido (§22.1: "dado que estes eventos
@@ -95,7 +95,7 @@ import (
 //
 // "when Action(...)" invoca o Handle de MESMO NOME no Aggregate diretamente
 // (§22.1) — mesmo quando esse nome TAMBÉM nomeia um Command (convenção
-// Command↔Handle do wallet, docs/examples/wallet/application.ds) — por isso
+// Command↔Handle do wallet, testdata/projects/wallet/application.ds) — por isso
 // os args de Action NUNCA passam por Lowerer.Expr como um todo (isso
 // construiria o Command, não casaria com os parâmetros do Handle): cada arg é
 // casado contra HandleDecl.Params por nome/posição (handleCallArgsGoOrder,
@@ -458,7 +458,7 @@ func emitAggregateThenState(e *emit.Emitter, sl *lower.StmtLowerer, obj *ast.Obj
 
 // emitAggregateGiven emite UMA GivenClause (uma de possivelmente várias no
 // mesmo scenario, aplicadas em ordem — ver a doc do arquivo sobre a 2ª given
-// de "carteira inativa", docs/examples/wallet/wallet.test.ds, que sobrescreve
+// de "carteira inativa", testdata/projects/wallet/wallet.test.ds, que sobrescreve
 // active DEPOIS do given de eventos): "given state {...}" vira overlay direto
 // de campos; "given [entidades]" processa cada evento via Apply real (quando
 // existe) ou seed direto por nome (quando não existe — ex. WalletCreated

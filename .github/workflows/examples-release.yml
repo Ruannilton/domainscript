@@ -2,7 +2,13 @@ name: Examples release
 
 # Quando algum arquivo de docs/examples muda em main, empacota a pasta inteira
 # num .zip e publica numa release rolante (tag "examples") — assim dá para
-# baixar e testar os exemplos sem clonar o repositório.
+# baixar e LER os exemplos sem clonar o repositório.
+#
+# Estes exemplos são escritos contra a ESPECIFICAÇÃO da linguagem, não contra o
+# transpilador de hoje: eles ainda NÃO passam em `dsc check`/`dsc gen`, e é
+# intencional (ver docs/examples/README.md). Por isso este workflow só empacota
+# — não valida nem gera. Quem valida projetos que compilam é o job `fixtures`
+# do ci.yml, sobre testdata/projects/.
 on:
   push:
     branches: [main]
@@ -42,7 +48,9 @@ jobs:
             echo
             echo "**Download:** \`domainscript-examples.zip\` (confira a integridade com \`domainscript-examples.zip.sha256\`)."
             echo
-            echo "Ao extrair, você obtém a pasta \`examples/\` com \`wallet/\`, \`shop/\`, \`pizzeria/\` e o \`README.md\`. Rode, por exemplo, \`dsc gen examples/wallet -o saida\` (baixe o \`dsc\` na release \`nightly\`)."
+            echo "Ao extrair, você obtém a pasta \`examples/\` com um exemplo por área da especificação (\`01-tipos-e-fluxo/\` … \`09-testes/\`) e o \`README.md\` que os indexa."
+            echo
+            echo "⚠️ Estes exemplos são escritos contra a **especificação** da linguagem e **ainda não compilam** com o \`dsc\` atual — é intencional: eles são a meta de conformidade, não fixture. Leia o \`README.md\` do pacote antes de rodar qualquer coisa."
           } > notes.md
 
           # Recria a release/tag apontando para o commit atual, mantendo uma URL

@@ -17,7 +17,7 @@ import (
 // google.golang.org/grpc isolada num pacote de borda (grpcedge, opt-in,
 // ausente sem "Interface GRPC" — ver codegen/grpc.go). Nem o wallet nem o
 // shop declaram "Interface GRPC" (confirmado antes de escrever esta task —
-// grep em docs/examples/*/interface.ds), então a fixture é sintética, no
+// grep em testdata/projects/*/interface.ds), então a fixture é sintética, no
 // mesmo espírito de "Notes"/"Billing" (G5/G6, tenancy_test.go/
 // versioning_test.go): um módulo "GrpcDemo" mínimo com um Aggregate (Item),
 // um UseCase (TouchItemUseCase, escrita) e uma Query (GetItem, leitura),

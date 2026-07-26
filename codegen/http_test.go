@@ -10,7 +10,7 @@ import (
 
 // http_test.go prova os critérios de conclusão da task E9.2 (§design codegen
 // 3.12, REQ-28.1/28.2) sobre a borda HTTP real do wallet
-// (docs/examples/wallet/interface.ds): golden do cmd/wallet/main.go gerado
+// (testdata/projects/wallet/interface.ds): golden do cmd/wallet/main.go gerado
 // (newMux + as 4 rotas + devCaller/writeBusinessError), determinismo, smoke
 // compile do projeto inteiro, e um teste comportamental que roda `go test
 // ./...` de verdade sobre o projeto gerado — não uma reimplementação — para

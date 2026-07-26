@@ -1,0 +1,74 @@
+// Testing nativo (§24) — `*.test.ds`.
+//
+// Teste declarativo Given-When-Then, executado EM MEMÓRIA e validado contra o
+// domínio em tempo de COMPILAÇÃO. Não há mock de banco para configurar, nem
+// container para subir: o cenário é o histórico de eventos.
+
+// --- Aggregate (§24.1) --------------------------------------------------
+// EventSourced: `given` é a lista de eventos passados. StateStored: `given`
+// é o estado direto, e a asserção é `then state { ... }`.
+
+Test Wallet {
+    scenario "saque com saldo suficiente" {
+        given [
+            WalletCreated(id: "W1", holder: "João", email: "joao@x.com"),
+            DepositPerformed(id: "W1", amount: Money(100, "BRL"), description: "init")
+        ]
+        when Withdraw(amount: Money(30, "BRL"), description: "Saque")
+        then [ WithdrawalPerformed(id: "W1", amount: Money(30, "BRL"), description: "Saque") ]
+    }
+
+    scenario "saque com saldo insuficiente" {
+        given [
+            WalletCreated(id: "W1", holder: "João", email: "joao@x.com"),
+            DepositPerformed(id: "W1", amount: Money(20, "BRL"), description: "init")
+        ]
+        when Withdraw(amount: Money(50, "BRL"), description: "Saque")
+        then error InsufficientBalance
+    }
+
+    // --- Property-based (§24.5) -----------------------------------------
+    // Em vez de enumerar casos, declara-se a INVARIANTE. O compilador gera
+    // sequências válidas de comandos e, ao falhar, reporta o CONTRA-EXEMPLO
+    // MÍNIMO — não a sequência gigante que por acaso quebrou.
+    property "saldo nunca fica negativo" {
+        forall sequence of [Deposit, Withdraw, Transfer]
+        invariant state.balance >= Money(0, "BRL")
+    }
+}
+
+// --- UseCase: asserção transacional (§24.2) -----------------------------
+// Aqui o que se testa não é o Aggregate, é a UNIDADE DE TRABALHO: quais
+// Aggregates emitiram o quê, e se o conjunto commitou ou reverteu.
+
+Test PerformTransfer {
+    scenario "transferência bem-sucedida" {
+        given Wallet("W1") from [
+            WalletCreated(id: "W1", holder: "João", email: "joao@x.com"),
+            DepositPerformed(id: "W1", amount: Money(100, "BRL"), description: "init")
+        ]
+        given Wallet("W2") from [ WalletCreated(id: "W2", holder: "Maria", email: "maria@x.com") ]
+        when TransferCmd(fromWalletId: "W1", toWalletId: "W2", amount: Money(30, "BRL"), description: "x")
+        then {
+            Wallet("W1") emitted TransferSent(amount: Money(30, "BRL"))
+            Wallet("W2") emitted TransferReceived(amount: Money(30, "BRL"))
+            committed
+        }
+    }
+
+    scenario "carteira inexistente faz rollback" {
+        given Wallet("W1") from [ WalletCreated(id: "W1", holder: "João", email: "joao@x.com") ]
+        when TransferCmd(fromWalletId: "W1", toWalletId: "W2", amount: Money(30, "BRL"), description: "x")
+        then { error WalletNotFound, rolledback }
+    }
+}
+
+// --- Fixtures (§24.6) ---------------------------------------------------
+// Pré-condição reutilizável: sem `when`/`then`, só o cenário montado.
+
+Fixture activeWallet {
+    Wallet("W1") from [
+        WalletCreated(id: "W1", holder: "João", email: "joao@x.com"),
+        DepositPerformed(id: "W1", amount: Money(100, "BRL"), description: "init")
+    ]
+}

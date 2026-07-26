@@ -16,8 +16,8 @@ import (
 // no gatilho "on Evento" (subscriber no runtime.Dispatcher, WireMetrics) ou
 // "on Saga.completed" (hook direto no código gerado da Saga).
 //
-// Nem docs/examples/wallet nem docs/examples/shop declaram nenhuma Metric
-// (confirmado antes de escrever esta task, grep em docs/examples/**/*.ds) —
+// Nem testdata/projects/wallet nem testdata/projects/shop declaram nenhuma Metric
+// (confirmado antes de escrever esta task, grep em testdata/projects/**/*.ds) —
 // a fixture é sintética, mesmo espírito de TelemetryDemo (otel_test.go, H2):
 // um módulo "MetricsDemo" com dois casos do spec §21 lado a lado —
 //

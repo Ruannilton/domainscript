@@ -11,11 +11,11 @@ import (
 // diretório do pacote driver. Diferente do Wallet (módulo único), o Shop tem dois
 // módulos em services distintos, ligados por um canal na topologia — exercita as
 // regras cross-file que são o diferencial do DomainScript.
-var shopExampleDir = filepath.Join("..", "docs", "examples", "shop")
+var shopExampleDir = filepath.Join("..", "testdata", "projects", "shop")
 
 // TestShopExampleClean fixa o lado positivo (DoD §5): o exemplo Shop que acompanha
 // o repositório passa pela validação completa — agregação cross-file, regras
-// locais e cross-service — sem nenhum diagnóstico. `dsc docs/examples/shop` → exit 0.
+// locais e cross-service — sem nenhum diagnóstico. `dsc testdata/projects/shop` → exit 0.
 func TestShopExampleClean(t *testing.T) {
 	_, bag := CheckProject(shopExampleDir)
 	if bag.HasErrors() || bag.Len() != 0 {

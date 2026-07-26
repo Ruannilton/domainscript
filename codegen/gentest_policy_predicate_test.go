@@ -24,7 +24,7 @@ import (
 // hoisting FALHA em tempo de execução para um item específico (aqui, um
 // Money com moeda diferente da comparada — Operator >= de Money "ensure
 // currency == other.currency else CurrencyMismatch", mesma regra do Money
-// do wallet real, docs/examples/wallet/domain.ds), o Select/Count inteiro
+// do wallet real, testdata/projects/wallet/domain.ds), o Select/Count inteiro
 // aborta com ESSE erro (REQ-36.1) — nunca um item silenciosamente pulado.
 //
 // Fixture sintética NOVA (nem wallet, nem shop, nem Refunds): PriceCheck.

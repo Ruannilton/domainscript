@@ -317,12 +317,12 @@ func TestMoneyGteCurrencyMismatchFails(t *testing.T) {
 }
 `
 
-// parseWalletVOs parseia o domain.ds real do wallet (docs/examples/wallet) e
+// parseWalletVOs parseia o domain.ds real do wallet (testdata/projects/wallet) e
 // indexa seus ValueObjectDecl por nome — as fixtures desta task são o
 // programa de verdade, não ASTs sintéticas.
 func parseWalletVOs(t *testing.T) map[string]*ast.ValueObjectDecl {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("..", "docs", "examples", "wallet", "domain.ds"))
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "projects", "wallet", "domain.ds"))
 	if err != nil {
 		t.Fatalf("não consegui ler o domain.ds do wallet: %v", err)
 	}

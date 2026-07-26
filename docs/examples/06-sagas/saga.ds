@@ -1,0 +1,139 @@
+// Transações e Sagas (§19).
+//
+// --- Inferência transacional (§19.1) ------------------------------------
+// O compilador decide o modo pela topologia declarada, e RECUSA o que não é
+// seguro:
+//
+//   Mesmo Database                    → commit local
+//   Databases distintos, ambos XA     → 2PC automático
+//   Databases distintos, sem XA       → ❌ erro: exige Saga
+//   Cross-service sem Saga            → ❌ erro
+//
+// Ou seja: não dá para escrever acidentalmente uma "transação" distribuída
+// que não é transação. Ou o compilador prova a atomicidade, ou te obriga a
+// modelar a compensação explicitamente.
+
+ValueObject EventId(string)   { Valid { self.length > 0 } }
+ValueObject Quantity(integer) { Valid { self > 0 } }
+
+Error InsufficientTickets { message "Ingressos insuficientes para o pedido." }
+
+Command PurchaseTicketsCmd {
+    eventId ref Event
+    userId ref User
+    quantity Quantity
+    paymentMethod PaymentMethod
+}
+
+// --- Saga (§19.2) -------------------------------------------------------
+// State-machine distribuída. Dois modos:
+//
+//   `async`            devolve um sagaId na hora; o compilador gera o
+//                      SagaStatus para consultar o andamento
+//   `await timeout Ns` bloqueia até terminar ou estourar o prazo
+//
+// Cada step tem `up` (avançar), `down` (compensar) e `onInfraError` (o que
+// fazer quando a falha é de infraestrutura, não de negócio). Numa falha, os
+// steps já completados compensam em ordem REVERSA.
+
+Saga PurchaseTickets handles PurchaseTicketsCmd {
+    mode await timeout 60s
+
+    state {
+        orderId OrderId
+        ticketIds List<TicketId>
+        paymentId PaymentId
+        total Money
+    }
+
+    step ReserveTickets {
+        up {
+            availableTickets = list Ticket t
+                where t.eventId == cmd.eventId
+                  and t.status == TicketStatus.Available
+                take cmd.quantity
+
+            ensure availableTickets.count() == cmd.quantity else InsufficientTickets
+
+            for ticket in availableTickets {
+                ticket.Reserve(state.orderId, cmd.userId)
+                state.ticketIds.add(ticket.id)
+            }
+        }
+        down {
+            for ticketId in state.ticketIds {
+                ticket = load Ticket(ticketId)
+                ticket.Release("Compensação")
+            }
+        }
+        onInfraError { RetryWithBackoff(3) }
+    }
+
+    step ProcessPayment {
+        up {
+            result = call PaymentRequest(
+                paymentId: state.paymentId,
+                amount: state.total,
+                method: cmd.paymentMethod
+            )
+        }
+        down {
+            call RefundRequest(paymentId: state.paymentId, amount: state.total)
+        }
+        onInfraError { RetryWithBackoff(3) }
+    }
+
+    step ConfirmPurchase {
+        up {
+            order = load Order(state.orderId)
+            order.Confirm(state.ticketIds)
+        }
+        down {
+            // `unrecoverable`: esta compensação NÃO É POSSÍVEL. Declarar isso
+            // é melhor que fingir que dá — o runtime gera um alerta para
+            // intervenção humana em vez de deixar o sistema num estado
+            // inconsistente que ninguém percebeu.
+            unrecoverable
+        }
+    }
+}
+
+// --- Modo async ---------------------------------------------------------
+// Para fluxos longos demais para segurar uma conexão HTTP aberta. O chamador
+// recebe o sagaId e consulta depois.
+
+Saga BulkRefund handles BulkRefundCmd {
+    mode async
+
+    state {
+        eventId EventId
+        refunded List<OrderId>
+    }
+
+    step LoadOrders {
+        up {
+            orders = list Order o where o.eventId == state.eventId
+            for order in orders {
+                state.refunded.add(order.id)
+            }
+        }
+        down { }
+    }
+
+    step IssueRefunds {
+        up {
+            for orderId in state.refunded {
+                emit RefundRequested(
+                    orderId: orderId,
+                    reason: RefundReason("Cancelamento em lote")
+                )
+            }
+        }
+        down { unrecoverable }
+        onInfraError { RetryWithBackoff(5) }
+    }
+}
+
+Command BulkRefundCmd {
+    eventId ref Event
+}

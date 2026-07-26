@@ -26,7 +26,7 @@ import (
 // Investigação registrada em tasks.md (H4, "Policy/Query investigado e
 // adiado"): nem o wallet nem o shop têm uma Policy real que exercite list/
 // count/emit — a ÚNICA Policy real de hoje (shop, NotifyShipping) tem corpo
-// "execute { return }" (docs/examples/shop/shipping/policy.ds). Mesmo
+// "execute { return }" (testdata/projects/shop/shipping/policy.ds). Mesmo
 // precedente já usado por CADA fatia anterior de H4 que precisou de um corpo
 // real e não tinha um: Saga sintetizou "Booking/PurchaseTickets"
 // (gentest_saga_test.go), property dropou o "Transfer" ilustrativo do spec

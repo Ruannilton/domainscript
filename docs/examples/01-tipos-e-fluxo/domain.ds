@@ -1,0 +1,98 @@
+// 01-tipos-e-fluxo — o sistema de tipos (§2) e o controle de fluxo (§3).
+//
+// A Regra de Ouro (§2.1): primitivos (integer, decimal, string, boolean,
+// datetime, bytes) são PROIBIDOS no Write Side. Eles só aparecem dentro de
+// ValueObjects e Enums — que é exatamente o que este arquivo declara.
+
+// --- ValueObjects wrapper (§2.2) ---------------------------------------
+// Um tipo primitivo embrulhado, com validação. Dentro do bloco Valid, `self`
+// É o valor embrulhado: `self.length`, `self.contains(...)`.
+
+ValueObject WalletId(string) {
+    Valid { self.length > 0 }
+}
+
+ValueObject Email(string) {
+    Valid { self.contains("@") }
+}
+
+ValueObject HolderName(string) {
+    Valid { self.length >= 2 and self.length <= 120 }
+}
+
+ValueObject TransactionDescription(string) {
+    Valid { self.length <= 256 }
+}
+
+ValueObject ActiveStatus(boolean) {
+    Valid { true }
+}
+
+// --- ValueObject composto, com operadores (§2.2) ------------------------
+// Vários campos sob uma invariante única. Operadores dão COMPORTAMENTO ao
+// tipo: somar dinheiro é uma operação do domínio, não do código que o usa.
+// Um operador pode falhar — e falha com um Error de negócio (§4.1).
+
+ValueObject Money {
+    amount decimal
+    currency string
+
+    Valid { amount >= 0 }
+
+    Operator +(other Money) -> Money {
+        ensure self.currency == other.currency else CurrencyMismatchError
+        return Money(amount: self.amount + other.amount, currency: self.currency)
+    }
+
+    Operator -(other Money) -> Money {
+        ensure self.currency == other.currency else CurrencyMismatchError
+        ensure self.amount >= other.amount else NegativeResultError
+        return Money(amount: self.amount - other.amount, currency: self.currency)
+    }
+
+    Operator >=(other Money) -> boolean {
+        ensure self.currency == other.currency else CurrencyMismatchError
+        return self.amount >= other.amount
+    }
+}
+
+ValueObject StatementEntry {
+    type TransactionType
+    amount Money
+    description TransactionDescription
+    date datetime
+}
+
+Error CurrencyMismatchError { message "As moedas da operação não coincidem." }
+Error NegativeResultError   { message "O resultado da operação seria negativo." }
+
+// --- Enums (§2.3) -------------------------------------------------------
+// Conjunto fechado de valores nomeados. Permitidos no Write Side: são
+// syntactic sugar para um VO com validação de pertencimento.
+
+Enum TransactionType : string {
+    Deposit     = "DEPOSIT"
+    Withdrawal  = "WITHDRAWAL"
+    TransferIn  = "TRANSFER_IN"
+    TransferOut = "TRANSFER_OUT"
+}
+
+// Coerção EXPLÍCITA (§2.3): só é necessária para aliases, legado ou
+// case-insensitive. Sem o bloco `coerce`, a coerção é implícita e
+// bidirecional na borda, e um valor desconhecido vira 422 automaticamente.
+Enum PaymentMethod : string {
+    CreditCard = "CREDIT_CARD"
+    DebitCard  = "DEBIT_CARD"
+    Pix        = "PIX"
+
+    coerce from string {
+        match self.uppercase() {
+            "CREDIT_CARD", "CC" => CreditCard
+            "DEBIT_CARD", "DC"  => DebitCard
+            "PIX"               => Pix
+            _ => InvalidPaymentMethodError
+        }
+    }
+}
+
+Error InvalidPaymentMethodError { message "Forma de pagamento desconhecida." }

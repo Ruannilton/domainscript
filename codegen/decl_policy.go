@@ -46,7 +46,7 @@ import (
 // constructPolicyExecute; lower/env.go.SeedPolicyExecute já existe desde
 // E5.0, escrito ANTES de Policy ganhar emissor de propósito). Como o corpo
 // real do shop ("execute { return }",
-// docs/examples/shop/shipping/policy.ds) nunca referencia nem "event" nem
+// testdata/projects/shop/shipping/policy.ds) nunca referencia nem "event" nem
 // "caller", os dois levam uma linha "_ = X" logo após a extração — sem isso,
 // um corpo trivial deixaria uma variável local Go declarada e não usada,
 // erro de compilação. Esse problema NÃO existe em UseCase: o dispatch de
@@ -440,7 +440,7 @@ func emitPolicyDecl(e *emit.Emitter, decl *ast.PolicyDecl, model *types.Model, t
 
 	// lastIsReturn: se o ÚLTIMO statement de nível superior do execute já é
 	// um "return" (ex. o corpo real do shop, "execute { return }" —
-	// docs/examples/shop/shipping/policy.ds), a lowering desse ReturnStmt já
+	// testdata/projects/shop/shipping/policy.ds), a lowering desse ReturnStmt já
 	// emite "return nil" (via StmtContext.SuccessReturn abaixo, ver a doc de
 	// lower/stmt.go:returnStmt) — um "return nil" INCONDICIONAL depois do
 	// bloco duplicaria a linha (código morto, "unreachable code" de go vet).

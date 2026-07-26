@@ -12,7 +12,7 @@ import (
 )
 
 // expr_test.go prova os critérios de conclusão da task E5.1 (§design codegen
-// 3.6/4.2) sobre o domain.ds real do wallet (docs/examples/wallet), na mesma
+// 3.6/4.2) sobre o domain.ds real do wallet (testdata/projects/wallet), na mesma
 // convenção de env_test.go: a fixture é o programa de verdade, não uma AST
 // puramente sintética, exceto onde o próprio wallet não exercita a forma
 // (RangeExpr/LambdaExpr/IndexExpr — comentado em cada teste).

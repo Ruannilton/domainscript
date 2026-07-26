@@ -1,0 +1,91 @@
+// Coleções (§2.4) e o tipo File (§2.5).
+
+// --- As quatro coleções (§2.4) ------------------------------------------
+//
+//   List<T>       lista mutável ordenada — add(), remove(), clear(), indexação
+//   AppendList<T> append-only — só add(); o compilador otimiza storage e
+//                 paginação. remove()/clear()/reatribuição são ERRO (§25).
+//   Set<T>        sem duplicatas — add(), remove(), contains(), clear()
+//   Map<K, V>     chave-valor — put(), get(), remove(), containsKey(),
+//                 keys(), values()
+
+ValueObject IngredientName(string) {
+    Valid { self.length > 0 }
+}
+
+ValueObject Recipe {
+    // Set: a mesma etiqueta não entra duas vezes.
+    tags Set<IngredientName>
+    // Map: metadados livres, chave e valor tipados.
+    metadata Map<string, string>
+    // List: pode reordenar, remover, limpar.
+    steps List<string>
+}
+
+// --- O tipo File (§2.5) -------------------------------------------------
+//
+//   File       VO com os bytes em memória. Commands e operações transitórias.
+//   FileStream streaming chunk-a-chunk, para arquivos grandes.
+//   FileRef    referência leve com metadata. É o que vive no state do
+//              Aggregate — nunca carrega bytes implicitamente.
+//
+// Operações: `store` (sobe e devolve FileRef), `load File(ref)` (carrega os
+// bytes explicitamente), `signed_url(ref, expires:)`, `delete file(ref)`.
+// A remoção NUNCA é automática: em domínio auditado/EventSourced o arquivo
+// pode viver além do Aggregate, então o ciclo de vida é do desenvolvedor.
+
+ValueObject PersonId(string) {
+    Valid { self.length > 0 }
+}
+
+Error PersonNotFound { message "Pessoa não encontrada." }
+
+Event DocumentAttached { id PersonId, document FileRef }
+
+Aggregate Person {
+    // O bloco storage mapeia o state e cada campo FileRef para o seu destino
+    // — o state vai para um Database, o FileRef para uma FileStorage (§13).
+    storage {
+        state: PersonDb
+        document: DocumentStorage
+    }
+
+    state {
+        name HolderName
+        document FileRef
+    }
+
+    access {
+        AttachDocument requires caller.id == self.id
+    }
+
+    Handle AttachDocument(document FileRef) {
+        emit DocumentAttached(self.id, document)
+    }
+
+    Apply DocumentAttached {
+        state.document = event.document
+    }
+}
+
+// O Command carrega o File (bytes em memória); o Aggregate guarda só a
+// FileRef que o `store` devolveu.
+Command UploadDocumentCmd {
+    personId ref Person
+    document File
+}
+
+UseCase UploadDocument handles UploadDocumentCmd {
+    execute {
+        person = load Person(cmd.personId)
+        ensure person exists else PersonNotFound
+        stored = store cmd.document
+        person.AttachDocument(stored)
+    }
+}
+
+Query GetDocumentUrl(personId PersonId) -> string {
+    person = load Person(personId)
+    ensure person exists else PersonNotFound
+    return signed_url(person.state.document, expires: 15min)
+}

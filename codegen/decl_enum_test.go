@@ -20,7 +20,7 @@ import (
 // EnumDecl por nome — TransactionType é o Enum real do exemplo (sem coerce).
 func parseWalletEnums(t *testing.T) map[string]*ast.EnumDecl {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("..", "docs", "examples", "wallet", "domain.ds"))
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "projects", "wallet", "domain.ds"))
 	if err != nil {
 		t.Fatalf("não consegui ler o domain.ds do wallet: %v", err)
 	}

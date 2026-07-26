@@ -168,7 +168,7 @@ Back-end (`.claude/specs/codegen/requirements.md` §5):
    (exceções documentadas em §1.3: exposição TCP/UDP, o receptor `tenant` em
    corpos, `provision tenant(id)`, acesso nativo `events()` — nenhuma modelada
    pelo front-end, então fora de escopo também no gerador).
-2. O gerado a partir de `docs/examples/wallet` e `docs/examples/shop` compila
+2. O gerado a partir de `testdata/projects/wallet` e `testdata/projects/shop` compila
    (`go build ./...`) e passa os testes de fumaça.
 3. Saída determinística: dois runs produzem bytes idênticos.
 4. O núcleo transacional compila e roda sem nenhuma dependência externa.

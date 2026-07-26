@@ -70,7 +70,7 @@ Event CounterIncremented {
 
 // O "when" de um cenário §22.1 nomeia um Handle, mas o front-end (REQ-5.14)
 // exige que o nome resolva a um símbolo declarado — a convenção dos exemplos
-// reais é um Command homônimo do Handle (ver docs/examples/wallet/
+// reais é um Command homônimo do Handle (ver testdata/projects/wallet/
 // application.ds).
 Command Increment {
     amount Count

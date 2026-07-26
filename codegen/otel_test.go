@@ -17,9 +17,9 @@ import (
 // decl_io_test.go/http_test.go, que já exercitam "trace_id" nos logs de
 // UseCase/Policy/Worker/Saga e o trace id mintado na borda HTTP/gRPC) e o
 // adapter OTel opt-in atrás de runtime.Observer quando "Telemetry" é
-// declarado (REQ-30.2, o foco deste arquivo). Nem docs/examples/wallet nem
-// docs/examples/shop declaram "Telemetry" (confirmado antes de escrever esta
-// task, grep em docs/examples/*/mod.ds) — a fixture é sintética, no mesmo
+// declarado (REQ-30.2, o foco deste arquivo). Nem testdata/projects/wallet nem
+// testdata/projects/shop declaram "Telemetry" (confirmado antes de escrever esta
+// task, grep em testdata/projects/*/mod.ds) — a fixture é sintética, no mesmo
 // espírito de GrpcDemo (grpc_test.go, H1)/Notes (tenancy_test.go, G5)/
 // Billing (versioning_test.go, G6): um módulo "TelemetryDemo" mínimo com um
 // Aggregate (Item), um UseCase (TouchItemUseCase, escrita) e uma Query

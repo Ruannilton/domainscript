@@ -26,7 +26,7 @@ import (
 // types.Model + symbols.SymbolTable resolvidos).
 
 // workerFixtureModDs é o mínimo de mod.ds exigido pelo programa (mesma forma
-// mínima de docs/examples/shop/shipping/mod.ds: "Module Nome { }" — este
+// mínima de testdata/projects/shop/shipping/mod.ds: "Module Nome { }" — este
 // módulo não declara nenhum Aggregate/Database, Worker não precisa de
 // nenhum).
 const workerFixtureModDs = `Module Reservations { }

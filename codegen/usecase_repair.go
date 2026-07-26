@@ -11,7 +11,7 @@ import "domainscript/ast"
 //	wallet = load Wallet(cmd.walletId)
 //	wallet.Deposit(cmd.amount, cmd.description)
 //
-// (o corpo real de docs/examples/wallet/application.ds), o parser consome o
+// (o corpo real de testdata/projects/wallet/application.ds), o parser consome o
 // "wallet" da 2ª linha como o BINDING da QueryExpr da 1ª (a gramática não
 // fecha statement por quebra de linha), e a chamada ".Deposit(...)" encadeia
 // como postfix sobre a própria QueryExpr — o Execute inteiro vira UM ÚNICO

@@ -1,0 +1,144 @@
+// Controle de fluxo (§3).
+//
+// Duas formas canônicas, e só elas: `ensure` (validação) e `match`
+// (ramificação). NÃO existe if/else, while, do-while nem switch. O único
+// construto de iteração é `for`. Isso não é minimalismo por estética: é o que
+// torna toda ramificação de valor exaustiva em tempo de compilação (§1.1).
+
+ValueObject TicketId(string) { Valid { self.length > 0 } }
+ValueObject OrderId(string)  { Valid { self.length > 0 } }
+ValueObject UserId(string)   { Valid { self.length > 0 } }
+ValueObject BatchSize(integer) { Valid { self > 0 } }
+
+Enum TicketStatus : string {
+    Available = "AVAILABLE"
+    Reserved  = "RESERVED"
+    Sold      = "SOLD"
+    Cancelled = "CANCELLED"
+    Used      = "USED"
+}
+
+Error TicketUnavailable { message "Ingresso indisponível." }
+Error EventCancelled    { message "Evento cancelado." }
+
+Event TicketReserved { id TicketId, orderId OrderId, userId UserId }
+Event TicketSold     { id TicketId, holder HolderName }
+
+Aggregate Ticket {
+    state {
+        status TicketStatus
+        orderId OrderId
+        holder HolderName
+    }
+
+    access {
+        Reserve     requires caller.authenticated
+        ConfirmSale requires caller.authenticated
+    }
+
+    // --- `ensure`: guard clause (§3.1) ----------------------------------
+    // A ação do `else` depende do contexto:
+    //   Handle / UseCase       → um Error
+    //   Policy / Worker        → um Error, ou Nop (ignorar em silêncio)
+    //   dentro de um `for`     → Error, Nop, break, break all, continue
+    //
+    // `Nop` em Handle ou UseCase é ERRO de compilação (§25): um comando que
+    // "não faz nada silenciosamente" esconde bug.
+    Handle Reserve(orderId OrderId, userId UserId) {
+        ensure state.status == TicketStatus.Available else TicketUnavailable
+        emit TicketReserved(self.id, orderId, userId)
+    }
+
+    Apply TicketReserved {
+        state.status = TicketStatus.Reserved
+        state.orderId = event.orderId
+    }
+
+    Handle ConfirmSale(holder HolderName) {
+        ensure state.status == TicketStatus.Reserved else TicketUnavailable
+        emit TicketSold(self.id, holder)
+    }
+
+    Apply TicketSold {
+        state.status = TicketStatus.Sold
+        state.holder = event.holder
+    }
+}
+
+// --- `match`: pattern matching (§3.2) -----------------------------------
+// Sempre exaustivo. Sobre um conjunto fechado (enum), o wildcard `_` é
+// PROIBIDO — cobrir todos os casos explicitamente é o que faz o compilador
+// avisar quando alguém adiciona um valor novo ao enum. Com guards (`when`),
+// o wildcard passa a ser OBRIGATÓRIO, porque o compilador não consegue provar
+// exaustividade sobre condições arbitrárias.
+
+Policy AdvanceTicket on TicketReserved {
+    delivery AtLeastOnce
+    execute {
+        ticket = load Ticket(event.id)
+
+        // Statement — um braço por valor do enum, sem wildcard.
+        match ticket.state.status {
+            TicketStatus.Available => ticket.Reserve(event.orderId, event.userId)
+            TicketStatus.Reserved  => ticket.ConfirmSale(ticket.state.holder)
+            TicketStatus.Sold      => Nop
+            TicketStatus.Cancelled => Nop
+            TicketStatus.Used      => Nop
+        }
+    }
+}
+
+Query DescribeEntry(entryType TransactionType) -> string {
+    // Expressão — cada braço PRODUZ um valor.
+    return match entryType {
+        TransactionType.Deposit     => "Depósito recebido"
+        TransactionType.Withdrawal  => "Saque realizado"
+        TransactionType.TransferIn  => "Transferência recebida"
+        TransactionType.TransferOut => "Transferência enviada"
+    }
+}
+
+Query DiscountTier(total Money) -> string {
+    // Com guards (`when`), o wildcard é obrigatório.
+    return match total {
+        amount when amount >= Money(amount: 1000, currency: "BRL") => "premium"
+        amount when amount >= Money(amount: 500, currency: "BRL")  => "plus"
+        _ => "padrão"
+    }
+}
+
+// --- `for` e `log` (§3.3, §3.4) -----------------------------------------
+
+Worker ReleaseExpiredTickets {
+    schedule every 1min
+    concurrency: 1
+    timeout 5min
+    execute {
+        expired = list Ticket t where t.status == TicketStatus.Reserved take 100
+
+        // Itera uma coleção...
+        for ticket in expired {
+            // ...e `ensure` dentro de `for` habilita as ações de laço.
+            ensure ticket.state.status == TicketStatus.Reserved else continue
+
+            // `log` está disponível em QUALQUER contexto. O compilador anexa
+            // trace context, timestamp e metadata sozinho (§20).
+            log info "Liberando ingresso expirado" {
+                ticketId = ticket.id
+                orderId  = ticket.state.orderId
+            }
+        }
+    }
+}
+
+Worker SeedBatch {
+    schedule cron "0 3 * * *"
+    timeout 10min
+    execute {
+        batch = BatchSize(50)
+        // Itera um range.
+        for i in 1..batch {
+            log debug "Semeando lote" { indice = i }
+        }
+    }
+}

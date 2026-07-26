@@ -10,7 +10,7 @@ import (
 )
 
 // builtins_test.go prova os critérios de conclusão da task E5.3 (§design
-// codegen 3.6, REQ-22.7(a)) sobre o wallet real (docs/examples/wallet) onde
+// codegen 3.6, REQ-22.7(a)) sobre o wallet real (testdata/projects/wallet) onde
 // possível, e fixtures sintéticas onde o wallet não exercita a forma (random/
 // random_str, list com "where", count — nenhum construto do wallet os usa).
 //

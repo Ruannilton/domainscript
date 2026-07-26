@@ -17,7 +17,7 @@ import (
 // era o ÚNICO emissor de corpo executável sem WithBuiltins, e qualquer
 // built-in num Apply falhava com "CallExpr sobre \"now\" não é construção de
 // VO/Event/Command conhecida". Fixtures SINTÉTICAS mínimas e dedicadas,
-// análogas em espírito a docs/examples/pizzeria/kitchen/domain.ds:104
+// análogas em espírito a testdata/projects/pizzeria/kitchen/domain.ds:104
 // ("Apply TicketCreated { state.createdAt = CreatedAt(now()) }"), sem tocar
 // o fixture do pizzeria em si (fora de escopo desta task).
 

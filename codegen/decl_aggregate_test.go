@@ -18,7 +18,7 @@ import (
 
 // decl_aggregate_test.go prova os critérios de conclusão da task E6.1
 // (§design codegen 3.7, REQ-19.1/2/3/6) sobre o Aggregate Wallet real
-// (docs/examples/wallet): golden, determinismo, smoke compile e um teste
+// (testdata/projects/wallet): golden, determinismo, smoke compile e um teste
 // comportamental que exercita Handle/access/Apply sobre o Go de fato gerado.
 
 // walletProjectDir é o exemplo de referência (projeto multi-arquivo), usado
@@ -26,7 +26,7 @@ import (
 // outras *_test.go deste pacote) porque EmitAggregate precisa de um
 // types.Model + symbols.SymbolTable RESOLVIDOS sobre o programa — a mesma
 // necessidade de codegen/lower (env_test.go:buildWalletEnv).
-var walletProjectDir = filepath.Join("..", "docs", "examples", "wallet")
+var walletProjectDir = filepath.Join("..", "testdata", "projects", "wallet")
 
 // parseWalletProgram carrega o projeto wallet completo via driver.CheckProject.
 func parseWalletProgram(t *testing.T) *program.Program {
