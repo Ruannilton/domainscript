@@ -14,7 +14,7 @@
   Sem essa definição a regra não é implementável: hoje `Model.Members` de um
   Aggregate são exatamente os campos de `state` (`types/model.go:166`), e o
   exemplo da §4.5 rodado verbatim dá `error[E102]: membro inexistente: "id" em
-  Wallet` (verificado com o `dsc` do HEAD). `docs/examples/wallet/domain.ds:84`
+  Wallet` (verificado com o `dsc` do HEAD). `testdata/projects/wallet/domain.ds:84`
   contorna declarando `id WalletId` no `state` e semeando-o num `Apply` — o que
   funciona, mas é a forma que a spec **não** usa.
   **A spec precisa definir**: (a) que `id` é membro implícito de todo Aggregate,

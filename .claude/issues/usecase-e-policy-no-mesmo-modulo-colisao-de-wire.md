@@ -1,6 +1,6 @@
 # UseCase e Policy no mesmo módulo não geram (colisão de Wire) (ex-ISSUE-7)
 - SPEC: codegen
-- TASK: descoberto em `docs/examples/pizzeria` (não estava no `gaps.md`)
+- TASK: descoberto em `testdata/projects/pizzeria` (não estava no `gaps.md`)
 - DESCRIPTION: Um módulo que combina **`UseCase` E `Policy` no mesmo módulo**
   ainda não gera — `dsc gen` falha com "UseCase e Policy no mesmo módulo ainda
   não têm wiring combinado suportado (cada um gera seu próprio Wire —
