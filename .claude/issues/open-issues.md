@@ -12,6 +12,7 @@ que as originou está em `.claude/steerings/review-v7.md`.
 - [Metadata implícito de Event sem tipos nem isenção da Regra de Ouro](spec-v7-metadata-implicito-de-event.md)
 - [Sem catálogo normativo de métodos embutidos por tipo](spec-v7-catalogo-de-metodos-embutidos.md)
 - [`RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum](spec-v7-retrywithbackoff-sem-definicao.md)
+- [Nenhuma seção define o contrato de resposta de `Adapter`/`Notification` (`result = call ...`, `mock ... returns X`)](spec-v7-adapter-sem-contrato-de-resposta.md)
 
 ## Implementação
 
@@ -26,3 +27,7 @@ que as originou está em `.claude/steerings/review-v7.md`.
 - [Divergências menores do spec (§25, "em evolução")](divergencias-menores-do-spec-em-evolucao.md)
 - [Pizzeria bloqueado por múltiplos defeitos independentes de codegen](pizzeria-bloqueado-por-multiplos-defeitos-de-codegen.md)
 - [UseCase com `idempotency { required: true }` é intestável via `*.test.ds`](usecase-idempotency-required-intestavel-test-ds.md)
+- [M1.4: produtor durável escreve no banco real, mas toda Query do service lê da `store` em memória](m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md)
+- [M1.1: uma `Tx.Run()` pode gravar eventos de mais de um `aggregateType` — a rota "thread via `ctx`" não serve](m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md)
+- [M2.3: mecanismo normativo de `emit` em passo de Saga (design.md §4.4, rota i) exige `decl_policy.go`/`codegen.go`, fora de `target_files`](m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md)
+- [M4.1: shrinking do contra-exemplo de `property` muda `tests_wallet.go.golden`/`gentest_test.go`, ambos fora de `target_files`](m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md)
