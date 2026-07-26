@@ -24,9 +24,8 @@
 - M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as) —
   mesma dependência transitiva de M1.1 via M1.2.
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
-- M2.3 — Implementar o caminho de `emit` escolhido em M2.2 (rota (i)
-  Dispatcher publish-only, `design.md` §4.4)
-- M2.4 — Asserção `emitted` no `then` de um Test de Saga
+- M2.4 — Asserção `emitted` no `then` de um Test de Saga (depende de M2.3,
+  agora `blocked` — não iniciar até M2.3 ser desbloqueada de novo)
 - M3.1 — (design) Contrato de resposta de Adapter
 - M3.2 — Implementar `result = call Adapter(...)` (§18.2)
 - M3.3 — `mock ... returns X` injeta X como retorno do stub
@@ -49,3 +48,13 @@
   no mesmo `Run`). Issue nova (a original já está `SOLVED`):
   `.claude/issues/m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md`.
   `design.md` §5.1/§7.2 precisa decidir de novo antes de reabrir.
+- M2.3 — Implementar o caminho de `emit` escolhido em M2.2 (rota (i)
+  Dispatcher publish-only, `design.md` §4.4). Bloqueada: o mecanismo
+  normativo nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
+  (`codegen/decl_policy.go`) como quem atribui `sagaDispatcher = d`, e não
+  decide o caso de um módulo só-Saga (sem Policy/UseCase, sem `func Wire`
+  nenhum para estender) — nenhum dos arquivos necessários
+  (`codegen/decl_policy.go`, `codegen/codegen.go`) está em `target_files`.
+  `.claude/issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md`.
+  `design.md` §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
+  desta task precisa ganhar os arquivos necessários antes de reabrir.
