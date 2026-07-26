@@ -8,9 +8,15 @@ tabela por spec, nada de histórico — isso já mora em cada
 
 ## Próxima spec-task
 
-`.claude/specs/correcoes-issues-6-8-12/tasks/M4.1.md` → **M4.1** — Shrinking
-determinístico do contra-exemplo de `property` (§22.5, REQ-58, sem
-dependências). M3.1 concluída: decidiu delimitar o contrato de resposta de
+`.claude/specs/correcoes-issues-6-8-12/tasks/M4.2.md` → **M4.2** — Staging na
+memory UoW: `rolledback` prova reversão real (§22.2, REQ-59, sem
+dependências). M4.1 (shrinking de `property`, REQ-58) ficou `blocked`:
+qualquer implementação fiel muda o texto Go estático da `property` que
+`wallet.test.ds` já declara, quebrando `codegen/testdata/tests_wallet.go.golden`
+via `codegen/gentest_test.go:TestEmitTestsWalletGolden` — nenhum dos dois
+arquivos está em `target_files` de M4.1. Issue:
+`.claude/issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md`.
+M3.1 concluída: decidiu delimitar o contrato de resposta de
 `Adapter`/`Notification` (`design.md` §4.5/§7.2) — nenhuma declaração hoje
 carrega a forma de uma resposta de `call`, e a única rota que resolveria
 (`Adapter X returns <Tipo>`) exige gramática nova fora do escopo deste ciclo.

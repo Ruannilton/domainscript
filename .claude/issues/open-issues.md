@@ -30,3 +30,4 @@ que as originou está em `.claude/steerings/review-v7.md`.
 - [M1.4: produtor durável escreve no banco real, mas toda Query do service lê da `store` em memória](m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md)
 - [M1.1: uma `Tx.Run()` pode gravar eventos de mais de um `aggregateType` — a rota "thread via `ctx`" não serve](m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md)
 - [M2.3: mecanismo normativo de `emit` em passo de Saga (design.md §4.4, rota i) exige `decl_policy.go`/`codegen.go`, fora de `target_files`](m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md)
+- [M4.1: shrinking do contra-exemplo de `property` muda `tests_wallet.go.golden`/`gentest_test.go`, ambos fora de `target_files`](m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md)

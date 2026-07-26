@@ -26,7 +26,6 @@
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
 - M2.4 — Asserção `emitted` no `then` de um Test de Saga (depende de M2.3,
   agora `blocked` — não iniciar até M2.3 ser desbloqueada de novo)
-- M4.1 — Shrinking determinístico do contra-exemplo de `property` (§22.5)
 - M4.2 — Staging na memory UoW: `rolledback` prova reversão real (§22.2)
 - M5.1 — Cobertura §22.7 por ramo de `Error` em `sema`
 - M5.2 — Delimitações e reclassificações em `gaps.md` e nas issues
@@ -55,6 +54,21 @@
   `.claude/issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md`.
   `design.md` §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
   desta task precisa ganhar os arquivos necessários antes de reabrir.
+- M4.1 — Shrinking determinístico do contra-exemplo de `property` (§22.5).
+  Bloqueada: qualquer implementação fiel de REQ-58 muda o texto Go estático
+  emitido para a `property` que `testdata/projects/wallet/wallet.test.ds` já
+  declara (`Test Wallet`, "saldo nunca fica negativo") — struct `dsPropStep`
+  estendida, clausura de replay, mensagem de `t.Fatalf` — quebrando
+  `codegen/testdata/tests_wallet.go.golden` via a comparação byte a byte de
+  `codegen/gentest_test.go:TestEmitTestsWalletGolden`. Nenhum dos dois
+  arquivos está em `target_files` de M4.1 (só `codegen/gentest_property.go`
+  e `codegen/gentest_property_test.go`), e o agente não pode nem tocá-los
+  fora da lista nem rodar `go test`/`UPDATE_GOLDEN=1` para regenerar o
+  golden. Issue:
+  `.claude/issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md`.
+  `tasks/M4.1.md` precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
+  `codegen/gentest_test.go` em `target_files` (ou uma decisão de design que
+  isole a mudança) antes de reabrir.
 
 ## CANCELLED TASKS:
 
