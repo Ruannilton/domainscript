@@ -8,10 +8,16 @@ tabela por spec, nada de histórico — isso já mora em cada
 
 ## Próxima spec-task
 
-`.claude/specs/correcoes-issues-6-8-12/tasks/M3.1.md` → **M3.1** — (design,
-sem código) Contrato de resposta de Adapter (`design.md` §4.5, REQ-57.1/57.4).
-M2.3 (`emit` em passo de Saga) voltou a `blocked`: o mecanismo normativo de
-`design.md` §4.4 (rota i) nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
+`.claude/specs/correcoes-issues-6-8-12/tasks/M4.1.md` → **M4.1** — Shrinking
+determinístico do contra-exemplo de `property` (§22.5, REQ-58, sem
+dependências). M3.1 concluída: decidiu delimitar o contrato de resposta de
+`Adapter`/`Notification` (`design.md` §4.5/§7.2) — nenhuma declaração hoje
+carrega a forma de uma resposta de `call`, e a única rota que resolveria
+(`Adapter X returns <Tipo>`) exige gramática nova fora do escopo deste ciclo.
+M3.2/M3.3 CANCELADAS em consequência (REQ-57.4); issue de revisão de spec:
+`.claude/issues/spec-v7-adapter-sem-contrato-de-resposta.md`. M2.3 (`emit` em
+passo de Saga) segue `blocked`: o mecanismo normativo de `design.md` §4.4
+(rota i) nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
 (`codegen/decl_policy.go`) como quem atribui `sagaDispatcher = d`, e não
 decide o caso de um módulo só-Saga (sem Policy/UseCase, sem `func Wire` para
 estender) — nenhum dos arquivos necessários está em `target_files` de M2.3.

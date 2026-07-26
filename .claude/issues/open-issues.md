@@ -12,6 +12,7 @@ que as originou está em `.claude/steerings/review-v7.md`.
 - [Metadata implícito de Event sem tipos nem isenção da Regra de Ouro](spec-v7-metadata-implicito-de-event.md)
 - [Sem catálogo normativo de métodos embutidos por tipo](spec-v7-catalogo-de-metodos-embutidos.md)
 - [`RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum](spec-v7-retrywithbackoff-sem-definicao.md)
+- [Nenhuma seção define o contrato de resposta de `Adapter`/`Notification` (`result = call ...`, `mock ... returns X`)](spec-v7-adapter-sem-contrato-de-resposta.md)
 
 ## Implementação
 

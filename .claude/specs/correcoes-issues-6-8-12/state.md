@@ -26,9 +26,6 @@
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
 - M2.4 — Asserção `emitted` no `then` de um Test de Saga (depende de M2.3,
   agora `blocked` — não iniciar até M2.3 ser desbloqueada de novo)
-- M3.1 — (design) Contrato de resposta de Adapter
-- M3.2 — Implementar `result = call Adapter(...)` (§18.2)
-- M3.3 — `mock ... returns X` injeta X como retorno do stub
 - M4.1 — Shrinking determinístico do contra-exemplo de `property` (§22.5)
 - M4.2 — Staging na memory UoW: `rolledback` prova reversão real (§22.2)
 - M5.1 — Cobertura §22.7 por ramo de `Error` em `sema`
@@ -58,3 +55,17 @@
   `.claude/issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md`.
   `design.md` §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
   desta task precisa ganhar os arquivos necessários antes de reabrir.
+
+## CANCELLED TASKS:
+
+- M3.2 (`Implementar 'result = call Adapter(...)' (§18.2)`) e M3.3 (`mock ...
+  returns X injeta X como retorno do stub`) — canceladas por M3.1
+  (`design.md` §4.5/§7.2, REQ-57.4). M3.1 verificou as três opções de
+  contrato de resposta de `Adapter`/`Notification`: (a) "resposta tipada pela
+  própria `Notification`" foi **refutada** por leitura (nenhuma declaração
+  hoje carrega a forma de uma resposta); (b) `Adapter X returns <Tipo>`
+  exigiria gramática nova em léxico→parser→resolver→sema, fora do que uma
+  task de codegen decide sozinha; (c) delimitar foi a única opção
+  implementável neste ciclo. Issue de revisão de spec registrada:
+  `.claude/issues/spec-v7-adapter-sem-contrato-de-resposta.md`. M3.2/M3.3 só
+  reabrem depois de a spec da linguagem decidir o contrato.

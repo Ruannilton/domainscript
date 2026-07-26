@@ -467,6 +467,52 @@ tipo que `X` possa assumir. Só depois vêm `result = call …` (M3.2) e o mock 
 valor efetivo (M3.3) — e o sintoma original (`emitSagaMock` faz `_ = goExpr`) é
 a **última** camada, não a primeira.
 
+**Decisão M3.1: (c) Delimitar — nenhum contrato de resposta neste ciclo.**
+Reverificadas as três opções contra `09-notifications-adapters.md`,
+`19-transactions-sagas.md` e `24-testing.md` (v7, resolvidas por título, não
+por número):
+
+- **(a) Resposta tipada pela própria `Notification` — REFUTADA.** A premissa
+  era "o tipo de retorno sai da declaração que já existe, sem gramática nova".
+  Não existe essa declaração. Uma `Notification` só declara os campos de
+  ENTRADA (`Notification PaymentRequest { paymentId PaymentId, amount Money,
+  method PaymentMethod }`, §9.1) — nada nela descreve a forma da resposta de
+  `call`. `Adapter` também não ajuda: o Nível 1 (HTTP declarativo, §9.3) só tem
+  `body { }`, o mapeamento de SAÍDA da notificação para a requisição HTTP, sem
+  bloco simétrico para a resposta; o Nível 2 (FFI vinculado, §9.3) referencia
+  `function "ProcessPayment"` por string solta, sem a assinatura `-> Tipo` que
+  o `Foreign` genérico do §10.2 tem (`pure function ComputeMerkleRoot(...) ->
+  bytes`). E o próprio exemplo que motiva REQ-57 usa `PaymentResult(status:
+  PaymentStatus.Declined)` (§24.3) — tipo que não aparece declarado em nenhuma
+  seção da spec (`grep -rn "PaymentResult" .claude/steerings/domainscript-spec-v7/`
+  só acha as duas linhas do próprio exemplo, em §19.2 e §24.3). Não há
+  declaração já existente da qual (a) possa nascer.
+- **(b) `Adapter X returns <Tipo>` declarado — fora de escopo, e subespecificada
+  mesmo se não estivesse.** Resolveria o problema, mas abre perguntas que só o
+  spec da linguagem decide: um `Adapter` Nível 1 precisaria de um bloco de
+  mapeamento de resposta simétrico a `body { }` (o corpo HTTP vira o `Tipo`
+  como?); um Nível 2 precisaria que `function "Nome"` ganhasse `-> Tipo`, igual
+  ao `Foreign` genérico. As duas mudanças exigem gramática nova em
+  léxico→parser→resolver→sema — mesma natureza de ISSUE-2
+  (`.claude/issues/features-spec-v6-nao-modeladas-pelo-frontend.md`), fora do
+  que uma task de codegen decide sozinha.
+- **(c) Delimitar — ESCOLHIDA.** Sem (a) e com (b) fora de escopo, não sobra
+  opção implementável neste ciclo. `Call<Nome>` continua **exatamente** como
+  hoje — `func Call<Nome>(ctx context.Context, n <Notif>) error`
+  (`codegen/decl_io.go`), sem canal de valor de retorno.
+
+**Consequência (REQ-57.4): M3.2 e M3.3 ficam canceladas.** `result = call
+<Adapter>(...)` (§19.2, a forma literal do exemplo de Saga do spec) e `mock
+<Target> returns X` como retorno efetivo do alvo mockado (REQ-57.2/57.3) não
+têm um tipo para se apoiar — implementá-los adivinhando um formato (por
+exemplo, assumir que `X` é sempre o próprio tipo da `Notification`, ou
+carregar o valor como `any`) seria exatamente a espécie de invenção que a
+diretriz de spec deste repositório proíbe (`CLAUDE.md`, "A spec é a fonte de
+verdade"). Fica registrada uma issue de revisão de spec pedindo que a
+linguagem defina o contrato de resposta de `Adapter`/`Notification`; sem essa
+definição, nenhum ciclo futuro consegue retomar REQ-57.2/57.3 sem repetir o
+mesmo salto que subdimensionou a task original do Marco L.
+
 **Shrinking (REQ-58).** `gentest_property.go` já é determinístico por
 construção: `rand.New(rand.NewSource(propertySeed(t.Name, pr.Name)))`, semente
 derivada do par de nomes, nunca de `time.Now`. O contra-exemplo hoje é a
@@ -671,6 +717,7 @@ graph TD
 | `pizzeria` bate em **uma** guarda de wiring | leitura de `generateCmdMainFile` + `topology.ds` | **REFUTADO** — bate em **duas** (múltiplos produtores E produtor+Dispatcher); o Marco L só mapeou a segunda |
 | `emit` em passo de Saga dá "erro claro" | leitura de `emitSagaStepPhaseFunc` + `emitStmt` | **REFUTADO** — é miscompilação silenciosa (`undefined: events`) |
 | `mock returns X` é "trocar o retorno do stub" | leitura de `emitSagaMock`/`decl_io.go`/`builtins.go` | **REFUTADO** — faltam 3 camadas: contrato de resposta, `result = call …`, e só então o stub |
+| (M3.1) Contrato de resposta "sai da declaração que já existe" (opção a) | leitura de `09-notifications-adapters.md`/`10-ffi.md`/`19-transactions-sagas.md`/`24-testing.md` | **REFUTADO** — `Notification` só declara campos de entrada; nem `Adapter` Nível 1 (`body {}`) nem Nível 2 (`function "Nome"` sem `-> Tipo`) carregam forma de resposta; `PaymentResult` do exemplo não é declarado em lugar nenhum |
 | §22.7 por ramo exige re-arquitetura de `sema` | leitura de `handleRaisesError`/`testedErrorHandles`/`ast.ThenClause` | **REFUTADO** — os nomes de `Error` já estão nos dois lados; é trocar `bool` por conjunto |
 | `property` já é determinístico | leitura de `propertySeed` | **Confirmado** — semente derivada de `(Test, Property)`, nunca `time.Now` |
 | `memoryTx` não tem staging | leitura de `rtsrc/uow.go.txt` | **Confirmado** — `Append` grava direto; commit/rollback são no-op documentado |
@@ -686,6 +733,7 @@ graph TD
 | `emit` em Saga: **erro claro primeiro** (M2.1), semântica depois (M2.2+) | Implementar a semântica direto | M2.1 tem valor imediato e independe de qualquer decisão de design; deixar a miscompilação de pé enquanto se discute a rota é o pior dos mundos |
 | `emit` em passo de Saga (M2.2): rota **(i) Dispatcher publish-only** — var de pacote `sagaDispatcher` reatribuível pelo `Wire`, mesmo mecanismo de `policyDispatcher` | (ii) dar `Tx`/`UnitOfWork` ao passo, mudando `Step[S]`/`RunSaga`; (iii) delimitar por completo, sem implementar nada além de M2.1 | (ii) mexe no núcleo transacional reusado por toda Saga (`rtsrc/saga.go.txt`) sem fixture nenhuma exercitando o caminho (NFR-30) e reabre a questão de granularidade de commit por passo, fora do espaço deste ciclo; (iii) descartaria valor real e de baixo custo que (i) entrega de graça, reusando infraestrutura já provada. **Trade-off aceito:** (i) não cobre `<Subject> emitted <Evento>(...)` (o exemplo literal `Order emitted OrderCancelled`, §24.3) — só `emitted <Evento>(...)`/`emitted count N` sem `Subject`, que M2.4 implementa; um `then` com `Subject` em Test de Saga produz erro de geração claro |
 | M3 começa pelo **contrato de resposta** (M3.1) | Começar por `emitSagaMock` (o sintoma) | Sem contrato não há tipo que `X` possa assumir — foi exatamente esse salto que fez a task original do Marco L nascer subdimensionada |
+| M3.1 — contrato de resposta de `Adapter`/`Notification`: **(c) delimitar, neste ciclo** | (a) resposta tipada pela própria `Notification`; (b) `Adapter X returns <Tipo>` declarado | (a) refutada por leitura — nenhuma declaração hoje carrega a forma da resposta (`Notification` só tem campos de entrada; `Adapter` Nível 1/2 não mapeiam resposta nenhuma); (b) resolveria, mas exige gramática nova em léxico→parser→resolver→sema e decisões que só o spec da linguagem pode tomar (que bloco de mapeamento, que sintaxe de tipo) — mesma natureza de ISSUE-2, fora do que uma task de codegen decide sozinha. **Consequência (REQ-57.4):** M3.2 e M3.3 cancelados; issue de revisão de spec registrada pedindo a definição do contrato |
 | §22.7 **fecha em `sema`** neste ciclo | Reclassificar para um ciclo de `sema` dedicado | A análise de raiz (§4.6) mostrou que a informação já existe nos dois lados; a reclassificação era uma saída condicional que a verificação tornou desnecessária |
 | `released` e acesso NEGADO: **delimitar** | Implementar por analogia | `released` aparece 1× no spec inteiro, sem definição operacional, e `grep` no código dá zero; acesso NEGADO exige gramática nova. Implementar seria adivinhar semântica |
 | `sqlrt` **não** ganha `StreamLister` agora | Implementar nos dois de uma vez | Fora do escopo declarado; sem provider real exercitando, seria código não testado. O erro de REQ-55.5 cobre o caso |
