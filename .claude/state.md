@@ -8,13 +8,14 @@ tabela por spec, nada de histórico — isso já mora em cada
 
 ## Próxima spec-task
 
-`.claude/specs/correcoes-issues-6-8-12/tasks/M2.1.md` → **M2.1** — `emit` em
-passo de Saga vira erro de geração claro (sem `depends_on`). M1.1 bloqueou DE
-NOVO: a rota decidida (thread de `aggregateType` via `ctx`, `design.md`
-§5.1/§7.2) partia da premissa de que uma única `Tx.Run()` nunca grava eventos
-de mais de um `aggregateType` — verificado por leitura e refutado
-(`sema/rules_crossfile.go:checkTransactions` só restringe por `Database`,
-nunca por tipo de Aggregate). Issue nova:
+`.claude/specs/correcoes-issues-6-8-12/tasks/M2.2.md` → **M2.2** (design, sem
+código) — Decidir como um passo de Saga emite, agora liberada (M2.1
+completou: `emit` em passo de Saga já falha a geração com erro claro em vez
+de miscompilar). M1.1 segue `blocked` DE NOVO: a rota decidida (thread de
+`aggregateType` via `ctx`, `design.md` §5.1/§7.2) partia da premissa de que
+uma única `Tx.Run()` nunca grava eventos de mais de um `aggregateType` —
+verificado por leitura e refutado (`sema/rules_crossfile.go:checkTransactions`
+só restringe por `Database`, nunca por tipo de Aggregate). Issue nova:
 `.claude/issues/m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md`;
 `design.md` precisa decidir de novo. M1.2/M1.3/M1.6 continuam bloqueadas
 transitivamente (dependem de M1.1). M1.6 também precisa considerar

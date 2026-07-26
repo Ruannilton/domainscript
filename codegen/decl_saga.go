@@ -207,6 +207,32 @@ func sagaBase(name string) string {
 	return strings.ToLower(name[:1]) + name[1:]
 }
 
+// checkNoEmitInSagaStepBlock detecta um "emit" em QUALQUER ponto de block
+// (astutil.ForEachStmt desce em statements aninhados — for/ensure/match,
+// mesma travessia que o resto do repo usa; ver a doc do arquivo) e falha com
+// mensagem clara (REQ-56.1/design.md §4.4) em vez de deixar o corpo chegar a
+// StmtLowerer. Sem isso: emitSagaStepPhaseFunc NUNCA anexa
+// .WithEmitDispatch(...) (não há Dispatcher no escopo de um passo — só
+// "state", ver a doc do arquivo), então StmtLowerer.emitStmt (lower/stmt.go)
+// cairia no ramo "events = append(events, ...)" — mas a assinatura do passo é
+// "func(ctx, state *S) error", SEM "events" no escopo: Go que não compila,
+// miscompilação silenciosa (a raiz de ISSUE-6). Esta função só FECHA a
+// lacuna de segurança; a semântica de um passo emitir (Dispatcher
+// publish-only, Tx no passo, ou delimitação) é decisão de design (M2.2,
+// design.md §4.4) — nenhuma delas está implementada ainda.
+func checkNoEmitInSagaStepBlock(block *ast.Block) error {
+	var found bool
+	astutil.ForEachStmt(block, func(s ast.Stmt) {
+		if _, ok := s.(*ast.EmitStmt); ok {
+			found = true
+		}
+	})
+	if !found {
+		return nil
+	}
+	return fmt.Errorf("emit não é suportado no corpo de um passo de Saga: Step[S] só recebe \"state\" (nem Tx nem Dispatcher, ver design.md §4.4) — a semântica de um passo emitir ainda está em avaliação (M2.2)")
+}
+
 // emitSagaStepPhaseFunc emite "func <funcName>(ctx context.Context, state
 // *<stateType>) error" lowerizando block com l — mesmo padrão de
 // emitBodyFunc (decl_worker.go)/emitPolicyDecl, reusando a MESMA
@@ -222,7 +248,15 @@ func sagaBase(name string) string {
 // nenhuma fixture de Saga anterior a esta task chamava um Adapter, então essa
 // lacuna nunca tinha sido exercitada. nil preserva o comportamento anterior
 // (nenhuma mudança para Sagas que não chamam Adapter, o caso comum).
+//
+// checkNoEmitInSagaStepBlock roda ANTES de qualquer lowering (REQ-56.1): ver
+// a doc dela sobre por que "emit" precisa ser barrado aqui, não deixado
+// cair no ramo "events = append(...)" de StmtLowerer.
 func emitSagaStepPhaseFunc(e *emit.Emitter, funcName string, block *ast.Block, l *lower.Lowerer, ctxAlias, stateType string, adapterByName map[string]*ast.AdapterDecl) error {
+	if err := checkNoEmitInSagaStepBlock(block); err != nil {
+		return err
+	}
+
 	e.Line("")
 	sig := fmt.Sprintf("func %s(ctx %s.Context, state *%s) error", funcName, ctxAlias, stateType)
 

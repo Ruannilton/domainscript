@@ -1,6 +1,7 @@
 package codegen_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -493,3 +494,213 @@ func TestEmitSagaBehavior(t *testing.T) {
 		t.Fatalf("`go test ./...` falhou em %q: %v\n%s", dir, err, out)
 	}
 }
+
+// --- "emit" em passo de Saga: erro de geração claro (TASK-M2.1, REQ-56.1) ---
+//
+// A fixture abaixo isola o defeito descrito em design.md §4.4/ISSUE-6:
+// emitSagaStepPhaseFunc nunca anexou .WithEmitDispatch (nenhum
+// Dispatcher/Tx existe no escopo de um passo, só "state" — ver a doc de
+// decl_saga.go), então um "emit" ali caía no ramo "events = append(events,
+// ...)" de StmtLowerer.emitStmt (lower/stmt.go) sem "events" no escopo: Go
+// que NÃO compila ("undefined: events"), gerado com exit 0. checkNoEmitInSaga-
+// StepBlock (decl_saga.go) fecha essa lacuna ANTES de qualquer lowering —
+// os testes abaixo prova que a geração agora FALHA (nunca sai 0/Go quebrado)
+// e que a mensagem cumpre o Passo 3 da task (nomeia a Saga/o passo/a fase via
+// os wraps já existentes em decl_saga.go, e diz o porquê).
+//
+// O front-end (parser/resolver/sema) não restringe "emit" por construto —
+// NFR-6 (nenhuma regra de §23 no parser) e a ausência confirmada de qualquer
+// rule sobre *ast.EmitStmt em sema/ — então esta fixture RESOLVE sem
+// diagnóstico algum: a checagem é, deliberadamente, só de codegen.
+
+const sagaEmitFixtureModDs = `Module Tickets { }
+`
+
+// sagaEmitFixtureSrc monta uma Saga mínima de 1 passo (Reserve) cujas 3
+// fases (up/down/onInfraError) recebem, por padrão, um corpo lowerizável
+// trivial — e a fase nomeada por phase ("up"/"down"/"onInfraError") recebe
+// "emit TicketReserved(...)" no lugar. Mantém as OUTRAS fases válidas de
+// propósito: prova (Passo 4 da task) que a detecção fica estritamente
+// escopada à fase que de fato contém o emit, nunca vazando para as vizinhas.
+func sagaEmitFixtureSrc(phase string) string {
+	up, down, onInfraError := `state.ticketId = TicketId("T1")`, `state.ticketId = TicketId("T1")`, `log Warn "infra ao reservar"`
+	switch phase {
+	case "up":
+		up = `emit TicketReserved(TicketId("T1"))`
+	case "down":
+		down = `emit TicketReserved(TicketId("T1"))`
+	case "onInfraError":
+		onInfraError = `emit TicketReserved(TicketId("T1"))`
+	case "":
+		// nenhuma fase recebe emit — fixture "limpa" (o par positivo do
+		// TEST-1, ver TestEmitSagaStepWithoutEmitStillGenerates).
+	default:
+		panic(fmt.Sprintf("sagaEmitFixtureSrc: fase desconhecida %q", phase))
+	}
+	return fmt.Sprintf(`
+ValueObject TicketId(string) {
+    Valid { value.length() > 0 }
+}
+
+Event TicketReserved { ticketId TicketId }
+
+Command ReserveCmd {
+    ticketId TicketId
+}
+
+Saga ReserveSaga handles ReserveCmd {
+    mode await
+    state { ticketId TicketId }
+
+    step Reserve {
+        up {
+            %s
+        }
+        down {
+            %s
+        }
+        onInfraError {
+            %s
+        }
+    }
+}
+`, up, down, onInfraError)
+}
+
+// parseSagaEmitFixture monta e resolve sagaEmitFixtureSrc(phase) — mesmo
+// padrão de parseSagaFixture. bag.HasErrors() falhando aqui indicaria que o
+// FRONT-END passou a rejeitar "emit" num passo de Saga, o que contradiria a
+// premissa desta task (REQ-56.1 é uma checagem de codegen — o front-end
+// aceita a forma livremente, NFR-6).
+func parseSagaEmitFixture(t *testing.T, phase string) (prog *program.Program, saga *ast.SagaDecl) {
+	t.Helper()
+	dir := writeProjectDir(t, map[string]string{
+		"mod.ds":    sagaEmitFixtureModDs,
+		"domain.ds": sagaEmitFixtureSrc(phase),
+	})
+	prog, bag := driver.CheckProject(dir)
+	if bag.HasErrors() {
+		t.Fatalf("fixture sintética de \"emit em passo de Saga\" (fase %s) tem diagnósticos de erro do FRONT-END — inesperado, REQ-56.1 é uma checagem de codegen:\n%s", phase, bag.Render())
+	}
+	saga = findSagaDecl(t, prog, "ReserveSaga")
+	return
+}
+
+// TestEmitSagaStepWithEmitFailsGenerationInsteadOfMiscompiling é o TEST-1
+// (negativo) da task: "emit" em cada uma das 3 fases de um passo produz erro
+// de geração, com a mensagem esperada — nomeando a Saga/o passo/a fase
+// (pelos wraps que emitSagaStepFuncs/EmitSagas já aplicam) e o porquê (Step[S]
+// só recebe "state") — nunca Go que não compila.
+func TestEmitSagaStepWithEmitFailsGenerationInsteadOfMiscompiling(t *testing.T) {
+	for _, tc := range []struct {
+		phase    string
+		wantWrap string // o wrap "passo <Name>: <fase>:" que decl_saga.go já produz por fase
+	}{
+		{phase: "up", wantWrap: "passo Reserve: up:"},
+		{phase: "down", wantWrap: "passo Reserve: down:"},
+		{phase: "onInfraError", wantWrap: "passo Reserve: onInfraError:"},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			prog, saga := parseSagaEmitFixture(t, tc.phase)
+			model := types.NewModel(prog.Symbols)
+			reg := walletVOOperatorRegistryFromProgram(prog)
+
+			got, err := codegen.EmitSaga("tickets", saga, model, prog.Symbols, "Tickets", reg, nil, nil)
+			if err == nil {
+				t.Fatalf("EmitSaga(fase %s): esperava erro de geração — NÃO esperava sucesso (isso reproduziria a miscompilação silenciosa de ISSUE-6/design.md §4.4); Go gerado:\n%s", tc.phase, got)
+			}
+			for _, want := range []string{
+				"codegen: Saga ReserveSaga:",
+				tc.wantWrap,
+				"emit não é suportado no corpo de um passo de Saga",
+				"Step[S]",
+				"M2.2",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("erro de EmitSaga(fase %s) = %q, esperava conter %q", tc.phase, err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+// TestEmitSagaStepWithoutEmitStillGenerates é o par positivo do TEST-1: a
+// MESMA fixture, sem nenhum "emit" em fase alguma (as 3 fases usam os
+// corpos-padrão válidos de sagaEmitFixtureSrc), continua gerando com
+// sucesso — o guard novo (checkNoEmitInSagaStepBlock) não introduz nenhum
+// falso positivo sobre as formas vizinhas que um passo aceita (atribuição a
+// "state", "log").
+func TestEmitSagaStepWithoutEmitStillGenerates(t *testing.T) {
+	prog, saga := parseSagaEmitFixture(t, "" /* nenhuma fase recebe emit */)
+	model := types.NewModel(prog.Symbols)
+	reg := walletVOOperatorRegistryFromProgram(prog)
+
+	got, err := codegen.EmitSaga("tickets", saga, model, prog.Symbols, "Tickets", reg, nil, nil)
+	if err != nil {
+		t.Fatalf("EmitSaga: erro inesperado sobre a fixture SEM emit em passo algum: %v", err)
+	}
+	for _, want := range []string{
+		"func reserveSagaReserveUp(ctx context.Context, state *ReserveSagaState) error",
+		`state.TicketId = TicketId("T1")`,
+		"func reserveSagaReserveDown(ctx context.Context, state *ReserveSagaState) error",
+		"func reserveSagaReserveOnInfraError(ctx context.Context, state *ReserveSagaState) error",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("esperava %q no Go gerado, não achei:\n%s", want, got)
+		}
+	}
+}
+
+// TestEmitSagaStepScopesEmitDetectionToTheOffendingPhase é o Passo 4 da
+// task: injetar "emit" numa fase não derruba as OUTRAS fases do MESMO passo
+// — cada fase é checada (e lowerizada) independentemente
+// (emitSagaStepPhaseFunc roda uma vez por fase). Prova isso indiretamente:
+// quando só "up" tem emit, o erro devolvido referencia EXCLUSIVAMENTE "up"
+// (nunca "down"/"onInfraError", que nesta fixture são válidos) — se a
+// detecção vazasse para as fases vizinhas o teste acima
+// (TestEmitSagaStepWithoutEmitStillGenerates) já teria falhado, já que elas
+// não contêm emit algum; este teste reforça o caso oposto, confirmando que o
+// erro de "up" não é mascarado nem duplicado pelas fases vizinhas.
+func TestEmitSagaStepScopesEmitDetectionToTheOffendingPhase(t *testing.T) {
+	prog, saga := parseSagaEmitFixture(t, "up")
+	model := types.NewModel(prog.Symbols)
+	reg := walletVOOperatorRegistryFromProgram(prog)
+
+	_, err := codegen.EmitSaga("tickets", saga, model, prog.Symbols, "Tickets", reg, nil, nil)
+	if err == nil {
+		t.Fatal("esperava erro de geração (emit em \"up\")")
+	}
+	if strings.Contains(err.Error(), "passo Reserve: down:") || strings.Contains(err.Error(), "passo Reserve: onInfraError:") {
+		t.Errorf("erro vazou para uma fase sem emit: %v", err)
+	}
+	if !strings.Contains(err.Error(), "passo Reserve: up:") {
+		t.Errorf("esperava o erro escopado a \"up\": %v", err)
+	}
+}
+
+// --- TEST-2/TEST-3 (byte-identidade — REQ-56.5/NFR-31): já cobertas em ---
+// outros golden tests fora de target_files desta task -----------------------
+//
+// TEST-2 pede que a fixture de Saga de gentest_saga_test.go (sagaTestFixtureSrc
+// — nenhum passo usa emit) gere Go byte-idêntico ao de hoje. Essa prova já
+// existe: TestEmitSagaTestsGolden (gentest.Golden contra
+// testdata/tests_saga_purchasetickets.go.golden) e TestEmitSagaTestsDeterministic
+// no MESMO pacote codegen_test, em gentest_saga_test.go — arquivo fora de
+// target_files desta task (não tocado aqui). Como checkNoEmitInSagaStepBlock
+// só altera o comportamento de um Block que CONTÉM um *ast.EmitStmt (ver a
+// doc dela em decl_saga.go), e nenhum passo dessa fixture usa "emit", os
+// goldens existentes continuam batendo byte a byte sem qualquer mudança —
+// provado pelo CI desta PR ao rodar a suíte completa sobre este commit.
+//
+// TEST-3 (wallet/shop byte-idênticos + formas vizinhas de passo continuam
+// gerando): wallet/shop não declaram Saga alguma (grep confirmou — só
+// docs/examples/06-sagas/saga.ds usa "Saga", e nenhum teste Go referencia
+// esse exemplo), então o caminho tocado por esta task (emitSagaStepPhaseFunc)
+// nunca é exercitado pela geração de wallet/shop: seus goldens (wallet_test.go/
+// shop_test.go) são, por construção, imunes a esta mudança. As "formas
+// vizinhas que o passo aceita" (atribuição a state, "log", "call"/"notify" de
+// Adapter) seguem provadas por TestEmitSagaGolden (acima, neste arquivo —
+// state.<Campo> = / .add(...)/ensure) e por TestEmitSagaTestsGolden
+// (PaymentRequest(orderId: ...) — chamada de Adapter dentro de um passo, em
+// gentest_saga_test.go) — nenhuma delas usa emit, então nenhuma delas passa
+// por checkNoEmitInSagaStepBlock com found=true.

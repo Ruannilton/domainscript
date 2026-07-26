@@ -24,7 +24,6 @@
 - M1.3 — `list <Aggregate>` com cláusulas (where/orderBy/skip/take/as) —
   mesma dependência transitiva de M1.1 via M1.2.
 - M1.6 — Prova e2e do `pizzeria` e limpeza do CI
-- M2.1 — `emit` em passo de Saga vira erro de geração claro
 - M2.2 — (design) Decidir como um passo de Saga emite
 - M2.3 — Implementar o caminho de `emit` escolhido em M2.2
 - M2.4 — Asserção `emitted` no `then` de um Test de Saga
