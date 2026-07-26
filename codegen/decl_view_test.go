@@ -15,7 +15,7 @@ import (
 
 // decl_view_test.go prova os critérios de conclusão da task E8.1 para View
 // (§design codegen 3.9, REQ-21.1) sobre a View WalletView real
-// (docs/examples/wallet/read.ds): golden, determinismo e smoke compile.
+// (testdata/projects/wallet/read.ds): golden, determinismo e smoke compile.
 
 // findViewDecl acha o *ast.ViewDecl de nome name em qualquer arquivo do
 // programa — espelha findAggregateDecl (decl_aggregate_test.go).

@@ -1,0 +1,105 @@
+// Multi-tenancy (§14), idempotência (§15), rate limiting (§17) e métricas
+// de negócio (§20).
+
+// --- Multi-tenancy (§14) ------------------------------------------------
+// Tenant é AMBIENT CONTEXT, como `caller`. Nunca vira parâmetro explícito —
+// e é por isso que não dá para esquecer de filtrar por ele.
+//
+// Estratégias de isolamento (declaradas no mod.ds, §13):
+//   row_level           coluna tenant_id      alta escala, muitos tenants
+//   schema_per_tenant   schema dedicado       escala média
+//   database_per_tenant banco separado        regulados, tenants grandes
+//
+// O filtro é AUTOMÁTICO em toda query e todo load. Aggregate de outro tenant
+// devolve 404 — não 403, para não vazar a existência do recurso.
+
+Query MyOrders(userId UserId) -> List<OrderVW> {
+    // Nenhum `where tenantId == ...` aqui. O compilador insere.
+    return list Order o where o.userId == userId as OrderVW
+}
+
+Query TenantPlan() -> string {
+    // O contexto expõe `tenant.id`, `tenant.tier` e `tenant.exists`.
+    return tenant.tier
+}
+
+// --- Cross-tenant é opt-in, e barulhento ---------------------------------
+// Acesso cross-tenant sem opt-in é ERRO de compilação. Com opt-in, exige role
+// privilegiada, gera auditoria automática — e ainda assim emite WARNING, para
+// que a decisão apareça na revisão.
+
+Command GlobalReportCmd {
+    period string
+}
+
+UseCase GenerateGlobalReport handles GlobalReportCmd {
+    tenancy: cross_tenant
+    access { requires caller.hasRole("super_admin") }
+    execute {
+        allWallets = list Wallet take 10000
+        log info "Relatório global gerado" { total = allWallets.count() }
+    }
+}
+
+// --- Provisionamento de tenant ------------------------------------------
+// O Aggregate Tenant vive num módulo Platform, que NÃO tem tenancy — é ele
+// que cria os outros.
+
+PublicEvent TenantSignedUp { id TenantId, plan PlanName }
+
+ValueObject TenantId(string) { Valid { self.length > 0 } }
+ValueObject PlanName(string) { Valid { self.length > 0 } }
+
+Policy ProvisionOnSignup on TenantSignedUp {
+    delivery AtLeastOnce
+    execute {
+        provision tenant(event.id)
+    }
+}
+
+// --- Idempotência de Commands (§15) -------------------------------------
+// A chave vem do CLIENTE, sem fallback — header `Idempotency-Key` em HTTP,
+// metadata em gRPC. Não há "geramos uma para você": uma chave inventada pelo
+// servidor não protegeria contra o retry do cliente, que é o caso real.
+//
+// Cache de resultado: sucesso ✅, erro de negócio ✅, erro de infra ❌ — este
+// último precisa permitir retry, senão uma falha transitória viraria
+// permanente.
+//
+// Mesma chave em paralelo → `wait` ou `reject`. Mesma chave com command
+// DIFERENTE → 422 IdempotencyKeyConflict.
+
+UseCase PerformDeposit handles DepositCmd {
+    idempotency { required: true, window: 48h }
+    execute {
+        wallet = load Wallet(cmd.walletId)
+        ensure wallet exists else WalletNotFound
+        wallet.Deposit(cmd.amount, cmd.description)
+    }
+}
+
+// --- Rate limiting por tier (§17) ---------------------------------------
+// Dimensões: perIp, perUser, perTenant, perApiKey, global — TODAS precisam
+// passar. Tier resolve de `tenant.tier`, ligando o limite ao plano do SaaS
+// sem espalhar `if plano == "pro"` pelo código.
+
+RateLimitTier Free { perUser: 100/min, perTenant: 1000/min }
+RateLimitTier Pro  { perUser: 1000/min, perTenant: 20000/min }
+
+// --- Métricas de negócio (§20) ------------------------------------------
+// Traces, métricas técnicas e logs são automáticos para todo construto. O que
+// se declara aqui é o que só o domínio sabe: quanto dinheiro entrou, e quão
+// rápido a compra terminou.
+
+Metric DepositVolume {
+    type counter
+    value event.amount.amount
+    on DepositPerformed
+    labels { currency = event.amount.currency }
+}
+
+Metric PurchaseLatency {
+    type histogram
+    buckets [100ms, 250ms, 500ms, 1s, 2s, 5s]
+    on PurchaseTickets.completed
+}

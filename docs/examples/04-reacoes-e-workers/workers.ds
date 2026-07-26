@@ -1,0 +1,60 @@
+// Workers (§8) — processamento de fundo.
+//
+// Um conceito, três modos: `every` (intervalo), `cron` (agenda) e
+// `continuous` (loop sobre uma fonte). `scope` decide se o worker roda uma
+// vez por tenant ou uma vez global (§14).
+
+// --- every: intervalo fixo ----------------------------------------------
+
+Worker ProcessExpiredReservations {
+    schedule every 1min
+    concurrency: 1
+    timeout 5min
+    onError { retry: { attempts: 3, backoff: "exponential" } }
+    execute {
+        expiredOrders = list Order o
+            where o.status == OrderStatus.Pending and o.expiresAt < now()
+            take 100
+
+        for order in expiredOrders {
+            order.Cancel("Reserva expirada")
+        }
+    }
+}
+
+// --- cron: agenda ----------------------------------------------------
+
+Worker DailySettlement {
+    schedule cron "0 2 * * *"
+    timeout 10min
+    scope: global
+    execute {
+        log info "Iniciando fechamento diário" { }
+    }
+}
+
+// --- continuous: loop sobre uma fonte -----------------------------------
+// O bloco `source` define o que consumir; o `execute` recebe UM item por vez.
+// `batchSize` e `maxRate` controlam vazão sem que ninguém escreva um pool de
+// goroutines à mão.
+
+Enum NotificationStatus : string {
+    Pending = "PENDING"
+    Sent    = "SENT"
+    Failed  = "FAILED"
+}
+
+Worker ProcessOutboundNotifications {
+    schedule continuous
+    concurrency: 3
+    batchSize: 50
+    maxRate: 200
+    scope: per_tenant
+    source { list Notification n where n.status == NotificationStatus.Pending }
+    execute(notification) {
+        notify DepositNotification(
+            to: notification.to,
+            amount: notification.amount
+        )
+    }
+}

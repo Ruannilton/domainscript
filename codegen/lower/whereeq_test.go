@@ -13,7 +13,7 @@ import (
 // read-side 3.9) do lado da LOWERING: hoistWhereEq reconhece a forma
 // declarativa (positivo) e degrada com segurança para "" em toda forma que
 // não se encaixa (negativo) — cada teste usa StatementEntry (wallet real,
-// docs/examples/wallet/domain.ds): "type TransactionType" (Enum, comparável),
+// testdata/projects/wallet/domain.ds): "type TransactionType" (Enum, comparável),
 // "description TransactionDescription" (VO wrapper sobre string, comparável),
 // "amount Money" (VO COMPOSTO, não-comparável — a mesma régua de "in").
 func newStatementEntryQueryExpr(clauses ...ast.QueryClause) *ast.QueryExpr {

@@ -19,7 +19,7 @@ import (
 // task são o programa de verdade, não ASTs sintéticas.
 func parseWalletErrors(t *testing.T) []*ast.ErrorTypeDecl {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("..", "docs", "examples", "wallet", "domain.ds"))
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "projects", "wallet", "domain.ds"))
 	if err != nil {
 		t.Fatalf("não consegui ler o domain.ds do wallet: %v", err)
 	}

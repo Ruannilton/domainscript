@@ -18,7 +18,7 @@ import (
 
 // decl_projection_test.go prova os critérios de conclusão da task E8.2
 // (§design codegen 3.9, REQ-21.4) — EmitProjection não tem exemplo real no
-// wallet (docs/examples/wallet não declara nenhuma Projection), então esta
+// wallet (testdata/projects/wallet não declara nenhuma Projection), então esta
 // task é coberta por uma fixture SINTÉTICA: o exemplo canônico do spec §6.4
 // (InvoiceWithHolderVW), com os dois Aggregates mínimos (Invoice/Wallet) que
 // ela referencia — parseada e validada como qualquer programa real
@@ -29,7 +29,7 @@ import (
 
 // projectionFixtureModDs declara o módulo e o banco que "gerencia" os dois
 // Aggregates da fixture — mesma forma mínima de
-// aggregateLoadFixtureModDs/docs/examples/wallet/mod.ds.
+// aggregateLoadFixtureModDs/testdata/projects/wallet/mod.ds.
 const projectionFixtureModDs = `Module Invoicing {
     Database InvoicingDb {
         provider: "postgres"

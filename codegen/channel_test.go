@@ -17,7 +17,7 @@ import (
 
 // channel_test.go prova os critérios de conclusão da task F5 (§design
 // codegen 3.11, REQ-25.3, REQ-26.1/26.5) que o shop real (decl_policy_test.go)
-// não exercita: docs/examples/shop/topology.ds só declara "via: queue
+// não exercita: testdata/projects/shop/topology.ds só declara "via: queue
 // orderBy: id" — sem workers{}/timeout/circuitBreaker. Esta fixture SINTÉTICA
 // (mesmo padrão de decl_worker_test.go/decl_io_test.go: shop não tem o
 // suficiente, uma fixture cobre) declara um canal "queue" com TODOS os
@@ -47,7 +47,7 @@ const channelFixtureTopologyDs = `Topology {
 
 // channelFixtureAlphaModDs/DomainDs declaram o módulo produtor: um Aggregate
 // mínimo cujo Handle emite o PublicEvent que atravessa o canal — mesma forma
-// de Orders/OrderPlaced no shop real (docs/examples/shop/orders/domain.ds).
+// de Orders/OrderPlaced no shop real (testdata/projects/shop/orders/domain.ds).
 const channelFixtureAlphaModDs = `Module Alpha {
     Database MainDb {
         provider: "postgres"

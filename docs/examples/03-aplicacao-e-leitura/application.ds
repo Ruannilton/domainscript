@@ -1,0 +1,54 @@
+// 03-aplicacao-e-leitura — camada de aplicação (§5).
+
+// --- Commands (§5.1) ----------------------------------------------------
+// DTO de entrada. ValueObjects e Enums obrigatórios — a Regra de Ouro vale
+// aqui como em todo o Write Side. `ref` dá type-safety às referências: o
+// campo carrega o id de um Aggregate específico, não uma string qualquer.
+//
+// Todo Command que muta estado tem chave de idempotência IMPLÍCITA (§15).
+
+Command DepositCmd {
+    walletId ref Wallet
+    amount Money
+    description TransactionDescription
+}
+
+Command TransferCmd {
+    fromWalletId ref Wallet
+    toWalletId ref Wallet
+    amount Money
+    description TransactionDescription
+}
+
+// --- UseCases (§5.2) ----------------------------------------------------
+// Unit of Work IMPLÍCITO: tudo o que o `execute` toca commita junto, ou nada
+// commita. Não há `begin`/`commit`/`rollback` para escrever — nem para
+// esquecer.
+//
+// `timeout` herda do módulo (§13) e pode ser sobrescrito por UseCase.
+
+UseCase PerformDeposit handles DepositCmd {
+    timeout 5s
+    execute {
+        wallet = load Wallet(cmd.walletId)
+        ensure wallet exists else WalletNotFound
+        wallet.Deposit(cmd.amount, cmd.description)
+    }
+}
+
+UseCase PerformTransfer handles TransferCmd {
+    execute {
+        from = load Wallet(cmd.fromWalletId)
+        ensure from exists else WalletNotFound
+        to = load Wallet(cmd.toWalletId)
+        ensure to exists else WalletNotFound
+
+        from.SendTransfer(cmd.toWalletId, cmd.amount, cmd.description)
+        to.ReceiveTransfer(cmd.fromWalletId, cmd.amount, cmd.description)
+
+        // Os dois Aggregates estão no MESMO Database, então o compilador
+        // infere um commit local atômico (§19.1). Se estivessem em bancos
+        // diferentes sem XA, isto seria ERRO de compilação e exigiria uma
+        // Saga — ver o exemplo 06.
+    }
+}

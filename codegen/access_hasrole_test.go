@@ -19,7 +19,7 @@ import (
 // suportado") quanto COMPOSTA com && (a forma que já era parcialmente
 // suportada via o caso BinaryExpr/AND, mas cujo lado direito -- o próprio
 // hasRole -- também caía no mesmo fallback rejeitado). Fixture SINTÉTICA
-// mínima e dedicada, análoga em espírito a docs/examples/pizzeria/
+// mínima e dedicada, análoga em espírito a testdata/projects/pizzeria/
 // kitchen/domain.ds:90-93 ("access { Create requires
 // caller.hasRole(\"system_sales\") }"), sem tocar o fixture do pizzeria em
 // si (fora de escopo desta task).

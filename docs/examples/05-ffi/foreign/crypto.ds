@@ -1,0 +1,39 @@
+// FFI geral (§10) — o único buraco controlado na pureza do domínio.
+//
+// É explícito, tipado e restrito por contexto de propósito: um escape hatch
+// que não fosse nenhuma dessas três coisas dissolveria a garantia central da
+// linguagem ("se compila, a arquitetura está correta").
+//
+// Declarações de assinatura moram em foreign/*.ds; a implementação vive na
+// linguagem alvo, no caminho indicado por `from`.
+
+// --- pure (§10.1) -------------------------------------------------------
+// Determinística e sem efeito colateral: mesmo input, mesmo output, sempre.
+// Hash, verificação de assinatura, parsing, compressão.
+
+Foreign "go" from "foreign/crypto" {
+    pure function ComputeMerkleRoot(items List<bytes>) -> bytes
+    pure function VerifySignature(message bytes, signature bytes, publicKey string) -> boolean
+
+    // `throws` declara ERRO DE NEGÓCIO (§10.5): vira 4xx, como qualquer
+    // Error do domínio. O que NÃO está declarado aqui (panic, timeout) é
+    // InfraError, e cai no retry/circuit breaker do mod.ds.
+    pure function ValidateTaxId(taxId string) -> boolean throws InvalidTaxIdError
+}
+
+// --- impure (§10.1) -----------------------------------------------------
+// Efeito colateral ou não-determinismo: geração de PDF com arquivo temporário,
+// leitura de hardware, estado global.
+
+Foreign "go" from "foreign/documents" {
+    impure function GeneratePdf(template string, data Map<string, string>) -> bytes
+        throws PdfGenerationError
+}
+
+Foreign "go" from "foreign/hsm" {
+    impure function SignViaHsm(content bytes) -> bytes throws HsmUnavailableError
+}
+
+Error InvalidTaxIdError    { message "CPF/CNPJ inválido." }
+Error PdfGenerationError   { message "Falha ao gerar o documento." }
+Error HsmUnavailableError  { message "Módulo de assinatura indisponível." }

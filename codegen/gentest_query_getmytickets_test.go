@@ -29,7 +29,7 @@ import (
 //
 // --- Por que uma fixture SINTÉTICA, não o wallet real ---
 //
-// O wallet (docs/examples/wallet) não tem Ticket/Order — a fixture reproduz
+// O wallet (testdata/projects/wallet) não tem Ticket/Order — a fixture reproduz
 // a forma LITERAL do spec (nomes, join/on/where/as, exatamente como escrito
 // em §6.3). O ÚNICO campo inventado é o shape de TicketVW: o spec não lista
 // os campos dessa View. "orderId"/"status" bastam para provar a correlação

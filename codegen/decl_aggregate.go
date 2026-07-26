@@ -286,7 +286,7 @@ func emitApply(e *emit.Emitter, decl *ast.AggregateDecl, a *ast.ApplyDecl, model
 	// 2, L1.3c). emitApply era o ÚNICO emissor de corpo executável que não
 	// anexava um BuiltinLowerer — emitUseCasesBytes/emitPolicyExecute/Saga/
 	// Query sempre anexam. Sem isto, "state.createdAt = CreatedAt(now())"
-	// (docs/examples/pizzeria/kitchen/domain.ds:104) falha com "CallExpr sobre
+	// (testdata/projects/pizzeria/kitchen/domain.ds:104) falha com "CallExpr sobre
 	// \"now\" não é construção de VO/Event/Command conhecida".
 	//
 	// A sutileza do ctx: entre as quatro built-ins, só now() usa ctxGoName —

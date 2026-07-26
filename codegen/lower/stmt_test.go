@@ -11,7 +11,7 @@ import (
 )
 
 // stmt_test.go prova os critérios de conclusão da task E5.2 (§design codegen
-// 3.6/4.3) sobre o wallet real (docs/examples/wallet), complementado por
+// 3.6/4.3) sobre o wallet real (testdata/projects/wallet), complementado por
 // fixtures sintéticas só onde o wallet não exercita a forma (match, break
 // all — ver comentário de cada teste), na mesma convenção de env_test.go/
 // expr_test.go.

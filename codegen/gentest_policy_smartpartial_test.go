@@ -19,7 +19,7 @@ import (
 //
 // Fixture sintética NOVA (nem wallet, nem shop, nem Refunds/PriceCheck/
 // Ranking): TicketSales. Ticket.orderId agrupa vendas por pedido (distinct),
-// Ticket.price é um Money REAL (mesmo Operator + do wallet, docs/examples/
+// Ticket.price é um Money REAL (mesmo Operator + do wallet, testdata/projects/
 // wallet/domain.ds — sum exercita o dispatch fallível do Operator, não só a
 // soma nativa), e a Policy foca um ticket específico por id (focus) — as
 // TRÊS capacidades na MESMA Policy, sobre o resultado de um "list" anterior

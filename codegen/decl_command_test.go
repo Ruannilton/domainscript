@@ -22,7 +22,7 @@ import (
 
 // decl_command_test.go prova os critérios de conclusão da task E7.1 (§design
 // codegen 3.5/3.8, REQ-20.1) sobre os Commands reais do wallet
-// (docs/examples/wallet/application.ds): golden, determinismo, smoke compile
+// (testdata/projects/wallet/application.ds): golden, determinismo, smoke compile
 // e um teste comportamental (round-trip JSON) sobre o Go de fato gerado —
 // mesmo padrão de decl_event_test.go/decl_aggregate_test.go. Reusa
 // parseWalletProgram (decl_aggregate_test.go, mesmo pacote codegen_test):

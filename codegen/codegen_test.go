@@ -31,7 +31,7 @@ import (
 var walletGenerateOptions = codegen.Options{ModulePath: "domainscript/generated", GoVersion: "1.22"}
 
 // generateWalletProject roda Generate sobre o Program real do wallet
-// (docs/examples/wallet, via driver.CheckProject — o pipeline completo que
+// (testdata/projects/wallet, via driver.CheckProject — o pipeline completo que
 // um usuário final rodaria, não uma fixture reconstruída à mão como as
 // demais *_test.go deste pacote precisam fazer para contornar o bug de
 // gramática documentado em usecase_repair.go).

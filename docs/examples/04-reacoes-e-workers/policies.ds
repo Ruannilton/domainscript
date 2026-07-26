@@ -1,0 +1,47 @@
+// Policies (§7) — reação a eventos.
+//
+// `delivery` declara a garantia: `BestEffort` (pode perder, e tudo bem) ou
+// `AtLeastOnce` (pode repetir, então a reação precisa tolerar repetição).
+// Não existe exactly-once, e a linguagem não finge que existe.
+//
+// `ensure ... else Nop` é a forma canônica de ignorar um cenário em silêncio.
+// Ela é PERMITIDA aqui e PROIBIDA em Handle/UseCase (§25): uma reação
+// assíncrona que decide não agir é normal; um comando que não faz nada e não
+// diz por quê é bug.
+
+Error RefundFailed { message "Não foi possível reembolsar o pedido." }
+
+PublicEvent RefundRequested { orderId OrderId, reason RefundReason }
+
+ValueObject RefundReason(string) {
+    Valid { self.length > 0 }
+}
+
+Policy RefundAllOnEventCancelled on EventCancelled {
+    delivery AtLeastOnce
+    execute {
+        soldTickets = list Ticket t
+            where t.eventId == event.id and t.status == TicketStatus.Sold
+
+        // Um reembolso por PEDIDO, não por ingresso: `distinct` agrupa.
+        orderIds = soldTickets.distinct(t => t.orderId)
+
+        for orderId in orderIds {
+            emit RefundRequested(
+                orderId: orderId,
+                reason: RefundReason("Evento cancelado")
+            )
+        }
+    }
+}
+
+Policy ExpireReservations on ReservationExpired {
+    delivery AtLeastOnce
+    execute {
+        order = load Order(event.orderId)
+        // O pedido já saiu de Pending (pago, cancelado à mão, o que for):
+        // não há o que fazer, e isso não é erro.
+        ensure order.state.status == OrderStatus.Pending else Nop
+        order.Cancel("Reserva expirada")
+    }
+}

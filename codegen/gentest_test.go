@@ -15,7 +15,7 @@ import (
 // gentest_test.go prova os critérios de conclusão da fase 1 de H4 (§design
 // codegen 3.14, REQ-31.1): um Test cujo Name resolve a um Aggregate deste
 // módulo (§22.1) vira um arquivo Go de teste que roda `go test` verde sobre o
-// wallet.test.ds REAL (docs/examples/wallet) — o alvo de conclusão nomeado
+// wallet.test.ds REAL (testdata/projects/wallet) — o alvo de conclusão nomeado
 // pela própria task H4 (tasks.md).
 
 // findTestDecl acha o *ast.TestDecl de nome name em qualquer arquivo do

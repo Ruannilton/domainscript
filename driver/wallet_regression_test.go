@@ -11,11 +11,11 @@ import (
 
 // walletExampleDir é o exemplo de referência empacotado no repositório, relativo
 // ao diretório do pacote driver.
-var walletExampleDir = filepath.Join("..", "docs", "examples", "wallet")
+var walletExampleDir = filepath.Join("..", "testdata", "projects", "wallet")
 
 // TestWalletExampleClean fixa o lado positivo da regressão (DoD §5): o exemplo
 // Wallet **corrigido** que acompanha o repositório passa pela validação completa
-// sem nenhum diagnóstico — `dsc docs/examples/wallet` → exit 0.
+// sem nenhum diagnóstico — `dsc testdata/projects/wallet` → exit 0.
 func TestWalletExampleClean(t *testing.T) {
 	_, bag := CheckProject(walletExampleDir)
 	if bag.HasErrors() || bag.Len() != 0 {

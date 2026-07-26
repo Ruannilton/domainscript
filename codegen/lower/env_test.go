@@ -13,13 +13,13 @@ import (
 )
 
 // env_test.go prova os critérios de conclusão da task E5.0 (§design codegen
-// 3.6a) sobre o domain.ds real do wallet (docs/examples/wallet) — não ASTs
+// 3.6a) sobre o domain.ds real do wallet (testdata/projects/wallet) — não ASTs
 // puramente sintéticas, seguindo a mesma convenção de
 // codegen/decl_value_test.go: a fixture é o programa de verdade.
 
 // walletExampleDir é o exemplo de referência empacotado no repositório,
 // relativo a este pacote (codegen/lower).
-var walletExampleDir = filepath.Join("..", "..", "docs", "examples", "wallet")
+var walletExampleDir = filepath.Join("..", "..", "testdata", "projects", "wallet")
 
 // buildWalletEnv carrega o projeto wallet completo (todos os .ds do
 // diretório), monta o types.Model sobre a SymbolTable resolvida e devolve o
@@ -319,6 +319,6 @@ func TestSeedAccess_RealWalletAggregate(t *testing.T) {
 // um t.Fatal enganoso nos outros testes se o diretório mudar de lugar).
 func TestNew_SanityOverRealProject(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(walletExampleDir, "domain.ds")); err != nil {
-		t.Fatalf("docs/examples/wallet/domain.ds não encontrado a partir de codegen/lower: %v", err)
+		t.Fatalf("testdata/projects/wallet/domain.ds não encontrado a partir de codegen/lower: %v", err)
 	}
 }

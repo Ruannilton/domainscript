@@ -1,0 +1,72 @@
+// Infraestrutura do módulo (§13) — `mod.ds`.
+//
+// Cada bloco aqui alimenta uma feature da linguagem E a geração de deploy
+// (§21). Nada disto é "configuração de framework": é a declaração de onde as
+// coisas moram, e o compilador deriva o resto — containers, healthchecks,
+// migrations, variáveis de ambiente.
+
+Module Carteira {
+    // Herdado por todo UseCase do módulo; um UseCase pode sobrescrever (§5.2).
+    timeout 30s
+
+    Database WalletDb {
+        provider: "Postgres"
+        connection: env("DB_URL")
+        // Declarar suporte a XA é o que permite ao compilador escolher 2PC
+        // em vez de recusar a transação cross-database (§19.1).
+        supportsXA: true
+        manages: [Wallet]
+        // Erro de INFRAESTRUTURA se trata aqui — nunca no domínio (§23).
+        retry: { attempts: 3, backoff: "exponential" }
+        circuitBreaker: { threshold: 5, cooldown: 30s }
+        tenancy: { strategy: row_level, column: "tenant_id" }
+    }
+
+    // Destino dos campos FileRef roteados no bloco `storage` do Aggregate.
+    FileStorage DocumentStorage {
+        provider: "s3"
+        bucket: env("DOCUMENTS_BUCKET")
+        region: env("AWS_REGION")
+    }
+
+    // `storage: same` grava a chave na MESMA transação do negócio — é o que
+    // torna a idempotência atômica em vez de "quase sempre certa" (§15).
+    Idempotency {
+        storage: same
+        window: 24h
+        required: true
+        concurrentRetry: wait
+    }
+
+    Cache {
+        backend: layered
+        layers: [
+            { type: memory, maxSize: 100MB, ttl: 30s },
+            { type: redis, connection: env("REDIS_URL"), ttl: 5min }
+        ]
+        defaultTtl: 1min
+        stampedeProtection: true
+    }
+
+    RateLimit {
+        backend: redis
+        connection: env("REDIS_URL")
+        algorithm: token_bucket
+        onBackendFailure: open
+    }
+
+    // Entrega transacional de eventos: grava na tx do negócio, publica depois.
+    Outbox {
+        pollInterval: 1s
+        batchSize: 50
+        concurrency: 3
+    }
+
+    Telemetry {
+        exporter: "otlp"
+        endpoint: env("OTEL_EXPORTER_ENDPOINT")
+        traces { sampler: "parentbased_traceidratio", sampleRate: 0.1 }
+        metrics { interval: 30s }
+        logs { level: "info", format: "json" }
+    }
+}

@@ -19,7 +19,7 @@ import (
 
 // decl_usecase_test.go prova os critérios de conclusão da task E7.2 (§design
 // codegen 3.8, REQ-20.2/20.3) sobre os UseCases reais do wallet
-// (docs/examples/wallet/application.ds): golden, determinismo, smoke compile
+// (testdata/projects/wallet/application.ds): golden, determinismo, smoke compile
 // e dois testes comportamentais sobre o Go de fato gerado — mesmo padrão de
 // decl_aggregate_test.go/decl_aggregate_load_test.go/decl_command_test.go.
 //
@@ -34,7 +34,7 @@ import (
 // "wallet" (da 2ª linha) como o BINDING da QueryExpr, e a chamada
 // ".Deposit(...)" encadeia como postfix sobre a PRÓPRIA QueryExpr — o
 // execute inteiro vira UM ÚNICO AssignStmt (confirmado nesta task: `go run`
-// sobre driver.CheckProject("docs/examples/wallet") mostra
+// sobre driver.CheckProject("testdata/projects/wallet") mostra
 // len(uc.Execute.Stmts) == 1, não 2), não os dois statements que um leitor
 // humano do .ds esperaria. Isso é um bug de gramática PRÉ-EXISTENTE do
 // front-end (fora do escopo desta task de codegen — consertar exigiria mudar

@@ -33,11 +33,18 @@ jobs:
       - name: Test
         run: go test ./...
 
-  # Garante, a cada push/PR, que o transpilador processa TODOS os exemplos de
-  # docs/examples e que cada projeto Go efetivamente emitido compila de verdade
-  # (não só os golden/e2e do pacote de testes) — um guarda de regressão sobre a
-  # saída real do back-end.
-  examples:
+  # Garante, a cada push/PR, que o transpilador processa TODOS os projetos de
+  # testdata/projects e que cada projeto Go efetivamente emitido compila de
+  # verdade (não só os golden/e2e do pacote de testes) — um guarda de regressão
+  # sobre a saída real do back-end.
+  #
+  # NÃO confundir com `docs/examples/`: aqueles são escritos contra a
+  # ESPECIFICAÇÃO da linguagem (a fonte de verdade, ver CLAUDE.md), então usam
+  # formas que o transpilador ainda não aceita e por isso NÃO entram neste
+  # guarda — são a meta de conformidade, não fixture de regressão. Os projetos
+  # aqui são o oposto: escritos contra o que o transpilador aceita hoje, para
+  # que qualquer regressão apareça imediatamente.
+  fixtures:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,11 +57,11 @@ jobs:
       - name: Build dsc
         run: go build -o dsc ./cmd/dsc
 
-      - name: Validate all examples and compile every emitted Go project
+      - name: Validate all fixture projects and compile every emitted Go project
         run: |
           set -euo pipefail
 
-          # Exemplos que o front-end valida (dsc check) mas o back-end ainda
+          # Projetos que o front-end valida (dsc check) mas o back-end ainda
           # NÃO consegue gerar — limitação conhecida e rastreada, não uma
           # regressão. Cada entrada tem de apontar a issue que a mantém aberta.
           #   pizzeria -> ISSUE-7: módulo Kitchen combina UseCase E Policy no
@@ -62,10 +69,10 @@ jobs:
           KNOWN_UNGENERATABLE="pizzeria"
 
           fail=0
-          for dir in docs/examples/*/; do
+          for dir in testdata/projects/*/; do
             name="$(basename "$dir")"
 
-            # Fase 1 — o transpilador processa CADA exemplo (front-end): todos,
+            # Fase 1 — o transpilador processa CADA projeto (front-end): todos,
             # inclusive os ainda não geráveis, precisam validar limpo.
             echo "::group::dsc check $name"
             ./dsc check "$dir"
@@ -80,7 +87,7 @@ jobs:
               ( cd "$out" && go mod tidy && go build ./... && go vet ./... )
               echo "::endgroup::"
             elif printf ' %s ' $KNOWN_UNGENERATABLE | grep -q " $name "; then
-              echo "::warning title=exemplo não gerável::$name valida (check) mas não gera — limitação conhecida (ver KNOWN_UNGENERATABLE em ci.yml); go build pulado"
+              echo "::warning title=projeto não gerável::$name valida (check) mas não gera — limitação conhecida (ver KNOWN_UNGENERATABLE em ci.yml); go build pulado"
             else
               echo "::error title=falha de geração::$name falhou em 'dsc gen' e não está na lista de exceções conhecidas (KNOWN_UNGENERATABLE em ci.yml)"
               fail=1
@@ -89,12 +96,12 @@ jobs:
 
           exit "$fail"
 
-  # Ao mergear para main (e SÓ se test + examples passarem), compila o dsc para
+  # Ao mergear para main (e SÓ se test + fixtures passarem), compila o dsc para
   # os principais SOs/arquiteturas e publica uma release rolante "nightly": o
   # binário mais recente de main fica sempre disponível para baixar e testar
   # localmente, numa URL estável (releases/download/nightly/<asset>).
   release:
-    needs: [test, examples]
+    needs: [test, fixtures]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

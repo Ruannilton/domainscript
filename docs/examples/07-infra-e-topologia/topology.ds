@@ -1,0 +1,45 @@
+// Topologia de deployment (§12) — `topology.ds`.
+//
+// Services agrupam módulos. UM service = monólito. VÁRIOS = microsserviços.
+// Módulos do mesmo service conversando por canal = monólito modular.
+//
+// A ideia central: mudar a topologia NÃO altera o domínio. O mesmo código de
+// negócio roda como monólito ou distribuído — o que muda é este arquivo, e o
+// compilador REVALIDA as regras a cada mudança (cross-service sem Saga passa
+// a ser erro; módulos em services distintos sem canal, idem).
+
+Topology {
+    services {
+        CarteiraService     { modules: [Carteira] }
+        NotificacoesService { modules: [Notificacoes] }
+        PagamentosService   { modules: [Pagamentos] }
+    }
+
+    channels {
+        // `queue`: assíncrono e durável. `orderBy` define a chave de
+        // ordenação — sem ela o compilador avisa (§25), porque uma fila sem
+        // ordem definida entrega eventos do mesmo agregado fora de sequência.
+        Carteira -> Notificacoes {
+            via: queue
+            provider: "rabbitmq"
+            connection: env("RABBITMQ_URL")
+            orderBy: aggregateId
+            workers { concurrency: 5, maxRate: 100, batchSize: 10 }
+        }
+
+        // `grpc`: síncrono. Timeout e circuit breaker são obrigatórios na
+        // prática — chamada remota síncrona sem eles é como o sistema cai.
+        Carteira -> Pagamentos {
+            via: grpc
+            connection: env("PAGAMENTOS_GRPC_URL")
+            timeout: 10s
+            circuitBreaker: { threshold: 5, cooldown: 30s }
+        }
+    }
+}
+
+// Tipos de canal: `direct` (default, in-process), `queue`, `grpc`, `http`,
+// `stream`.
+//
+// Tenant e trace context propagam AUTOMATICAMENTE por qualquer um deles
+// (§14, §20) — não há header para lembrar de repassar.

@@ -31,7 +31,7 @@ import (
 // Duas divergências, cada uma investigada e documentada (a task pede para só
 // desviar quando genuinamente necessário, nunca por conveniência):
 //
-//  1. O StatementEntry REAL do wallet (docs/examples/wallet/domain.ds) não
+//  1. O StatementEntry REAL do wallet (testdata/projects/wallet/domain.ds) não
 //     tem campo "date" — só type/amount/description. O spec do Wallet (§4.5,
 //     não o exemplo deste repo) POPULA "date" com "event.timestamp", o
 //     metadata implícito readonly de todo Event (spec §4.3: "timestamp,

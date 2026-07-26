@@ -12,9 +12,9 @@ import (
 // generate_e2e_shop_test.go fecha um gap encontrado na auditoria da task H5
 // (§design codegen 5, DoD §5.2/5.3/5.4, NFR-12/13): generate_e2e_wallet_test.go
 // prova os critérios da DoD sobre o Wallet (módulo único, 1 service implícito),
-// mas nenhum teste chamava GenerateProject sobre docs/examples/shop — o único
+// mas nenhum teste chamava GenerateProject sobre testdata/projects/shop — o único
 // exemplo MULTI-módulo/multi-service do repositório, citado explicitamente pela
-// DoD §5.2 ("O gerado a partir de docs/examples/wallet e docs/examples/shop
+// DoD §5.2 ("O gerado a partir de testdata/projects/wallet e testdata/projects/shop
 // compila... e passa os testes de fumaça"). shop_regression_test.go (E?) só
 // exercita o FRONT-END (CheckProject/diagnósticos) sobre o Shop — nunca chama
 // o gerador. Este arquivo mesma estrutura/nomenclatura de
@@ -47,8 +47,8 @@ import (
 // closure honesto do gap sem inflar superfície de teste.
 
 // generateShopE2EProject roda GenerateProject sobre o Shop real
-// (docs/examples/shop), escrevendo em um diretório temporário isolado — o
-// MESMO caminho que `dsc gen docs/examples/shop -o <out>` percorre.
+// (testdata/projects/shop), escrevendo em um diretório temporário isolado — o
+// MESMO caminho que `dsc gen testdata/projects/shop -o <out>` percorre.
 func generateShopE2EProject(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "out")

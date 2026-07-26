@@ -1,0 +1,46 @@
+// Versionamento de API (§18) — `versions/*.ds`.
+//
+// O domínio conhece SÓ a versão atual. A tradução acontece na borda, e é
+// simétrica ao Upcast de eventos (§4.3): lá se traduz o passado gravado, aqui
+// o passado que ainda chama.
+//
+// Endpoints inalterados passam direto — só se declara o que mudou.
+
+Version v1 {
+    deprecated: "2026-01-01"
+    sunset: "2026-06-01"
+
+    // upcast: request ANTIGO -> Command ATUAL.
+    // Campo obrigatório sem default aqui é ERRO de compilação (§25): sem ele
+    // a requisição antiga não teria como formar o Command atual, e isso
+    // precisa aparecer na build, não em produção.
+    upcast DepositCmd {
+        from { value decimal, currency string, description string }
+        to {
+            amount = Money(amount: value, currency: currency)
+            description = TransactionDescription(description)
+            channel = Channel("legacy")
+        }
+    }
+
+    // downcast: View ATUAL -> response ANTIGA.
+    downcast WalletSummaryVW {
+        to {
+            balance  = self.balance_amount
+            currency = self.balance_currency
+            owner    = self.holder
+        }
+    }
+
+    // Mudança SEMÂNTICA não se resolve traduzindo forma: se a regra de
+    // negócio mudou, a rota antiga aponta para outro UseCase.
+    route "/wallets/{walletId}/transfer" -> PerformLegacyTransfer
+}
+
+// Ciclo de vida automático:
+//
+//   Após `deprecated`  headers Deprecation/Sunset nas respostas + warning na
+//                      compilação
+//   Após `sunset`      410 Gone
+//
+// A validação é SEMPRE a atual — traduzir a forma não afrouxa a regra.
