@@ -88,7 +88,7 @@ sema/
 └── rules_warnings.go      # cobertura §22.7 por ramo de Error (REQ-60)
 
 .github/workflows/ci.yml   # pizzeria sai de KNOWN_UNGENERATABLE (REQ-55.10)
-docs/sdd/specs/codegen/gaps.md   # delimitações e reclassificações (REQ-61)
+../codegen/gaps.md   # delimitações e reclassificações (REQ-61)
 ```
 
 **Direção de dependências (inalterada):** `driver → sema → resolver → parser →
@@ -484,7 +484,7 @@ por número):
   o `Foreign` genérico do §10.2 tem (`pure function ComputeMerkleRoot(...) ->
   bytes`). E o próprio exemplo que motiva REQ-57 usa `PaymentResult(status:
   PaymentStatus.Declined)` (§24.3) — tipo que não aparece declarado em nenhuma
-  seção da spec (`grep -rn "PaymentResult" docs/sdd/steerings/domainscript-spec-v7/`
+  seção da spec (`grep -rn "PaymentResult" ../../steerings/domainscript-spec-v7/`
   só acha as duas linhas do próprio exemplo, em §19.2 e §24.3). Não há
   declaração já existente da qual (a) possa nascer.
 - **(b) `Adapter X returns <Tipo>` declarado — fora de escopo, e subespecificada
@@ -494,7 +494,7 @@ por número):
   como?); um Nível 2 precisaria que `function "Nome"` ganhasse `-> Tipo`, igual
   ao `Foreign` genérico. As duas mudanças exigem gramática nova em
   léxico→parser→resolver→sema — mesma natureza de ISSUE-2
-  (`docs/sdd/issues/features-spec-v6-nao-modeladas-pelo-frontend.md`), fora do
+  (`../../issues/features-spec-v6-nao-modeladas-pelo-frontend.md`), fora do
   que uma task de codegen decide sozinha.
 - **(c) Delimitar — ESCOLHIDA.** Sem (a) e com (b) fora de escopo, não sobra
   opção implementável neste ciclo. `Call<Nome>` continua **exatamente** como
@@ -607,7 +607,7 @@ memória). Prefiltro no store fica para o ciclo de providers reais (G-4).
 leitura que nenhuma das duas rotas originalmente prescritas (derivar de
 `EventType()` via um registro já disponível; usar um campo que `Event`/
 `EventMeta` já ofereça) existe hoje — ver
-`docs/sdd/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. Decisão:
+`../../issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. Decisão:
 **thread via `ctx`, o mesmo mecanismo já usado para `tenantID`** — um novo par
 `WithAggregateType`/`AggregateTypeFrom` em `codegen/rtsrc/contextkeys.go.txt`,
 seguindo exatamente a forma de `WithTenant`/`TenantFrom` (§13, já em uso no

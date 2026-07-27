@@ -5,7 +5,7 @@
 A spec é a fonte de verdade (ver `CLAUDE.md`). Estas issues apontam pontos em
 que ela não pode ser implementada como está — texto incompleto ou contraditório.
 **Nenhuma linha de código antes de a spec ser revisada**; a auditoria completa
-que as originou está em `docs/sdd/steerings/review-v7.md`.
+que as originou está em [review-v7.md](../steerings/review-v7.md).
 
 - [`ref` é keyword na §5.1 e identificador na §2.5 (contradição interna)](spec-v7-ref-keyword-vs-identificador.md)
 - [Identidade implícita do Aggregate (`self.id`) sem declaração nem tipo](spec-v7-identidade-implicita-do-aggregate.md)

@@ -11,10 +11,14 @@
             "id": "3109528d2720de35",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "docs/sdd/issues/visibility-de-view-nao-implementado.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "Nova aba"
+              "title": "visibility-de-view-nao-implementado"
             }
           }
         ]
@@ -74,7 +78,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 407.5
   },
   "right": {
     "id": "0b06f86b0729abd2",
@@ -179,8 +183,16 @@
       "bases:Criar nova base": false
     }
   },
-  "active": "dd50d38c21ceef9e",
+  "active": "3109528d2720de35",
   "lastOpenFiles": [
+    "docs/sdd/state.md",
+    "docs/sdd/README.md",
+    "docs/sdd/specs/correcoes-issues-6-8-12/tasks/M2.2.md",
+    "docs/sdd/steerings/domainscript-spec-v7/README.md",
+    "docs/sdd/issues/m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md",
+    "docs/sdd/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md",
+    "docs/sdd/specs/correcoes-issues-6-8-12/tasks/M1.3.md",
+    "docs/sdd/issues/open-issues.md",
     "Sem título.canvas",
     "testdata/projects/README.md",
     "README.md",

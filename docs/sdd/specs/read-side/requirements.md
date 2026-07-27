@@ -1,9 +1,9 @@
 # Requirements — Read Side Completo (Cláusulas de Query e Smart Partial Loading)
 
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
-> `tasks`), continuação direta do ciclo `docs/sdd/specs/codegen/` (REQ-14..32,
+> `tasks`), continuação direta do ciclo `../codegen/` (REQ-14..32,
 > Marcos E–H, completo). Nasce dos gaps **G-1**, **G-2** e **G-8** de
-> `docs/sdd/specs/codegen/gaps.md`: as cláusulas SQL-like de Query e o Smart
+> `../codegen/gaps.md`: as cláusulas SQL-like de Query e o Smart
 > Partial Loading (§20 do spec) — as únicas lacunas em que **exemplos do próprio
 > spec v6 não geram código hoje**.
 >

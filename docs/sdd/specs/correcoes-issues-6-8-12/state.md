@@ -42,7 +42,7 @@
   nunca por tipo de Aggregate; um módulo sem `Database` ou com dois
   Aggregates no mesmo `Database` pode despachar `Handle` de tipos diferentes
   no mesmo `Run`). Issue nova (a original já está `SOLVED`):
-  `docs/sdd/issues/m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md`.
+  [m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype](../../issues/m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md).
   `design.md` §5.1/§7.2 precisa decidir de novo antes de reabrir.
 - M2.3 — Implementar o caminho de `emit` escolhido em M2.2 (rota (i)
   Dispatcher publish-only, `design.md` §4.4). Bloqueada: o mecanismo
@@ -51,7 +51,7 @@
   decide o caso de um módulo só-Saga (sem Policy/UseCase, sem `func Wire`
   nenhum para estender) — nenhum dos arquivos necessários
   (`codegen/decl_policy.go`, `codegen/codegen.go`) está em `target_files`.
-  `docs/sdd/issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md`.
+  [m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files](../../issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md).
   `design.md` §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
   desta task precisa ganhar os arquivos necessários antes de reabrir.
 - M4.1 — Shrinking determinístico do contra-exemplo de `property` (§22.5).
@@ -65,7 +65,7 @@
   e `codegen/gentest_property_test.go`), e o agente não pode nem tocá-los
   fora da lista nem rodar `go test`/`UPDATE_GOLDEN=1` para regenerar o
   golden. Issue:
-  `docs/sdd/issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md`.
+  [m4-1-shrinking-de-property-muda-golden-fora-de-target-files](../../issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md).
   `tasks/M4.1.md` precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
   `codegen/gentest_test.go` em `target_files` (ou uma decisão de design que
   isole a mudança) antes de reabrir.
@@ -81,5 +81,5 @@
   exigiria gramática nova em léxico→parser→resolver→sema, fora do que uma
   task de codegen decide sozinha; (c) delimitar foi a única opção
   implementável neste ciclo. Issue de revisão de spec registrada:
-  `docs/sdd/issues/spec-v7-adapter-sem-contrato-de-resposta.md`. M3.2/M3.3 só
+  [spec-v7-adapter-sem-contrato-de-resposta](../../issues/spec-v7-adapter-sem-contrato-de-resposta.md). M3.2/M3.3 só
   reabrem depois de a spec da linguagem decidir o contrato.

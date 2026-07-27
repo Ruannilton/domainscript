@@ -1,8 +1,8 @@
 # Requirements — Back-end do Transpilador DomainScript (Geração de Go)
 
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
-> `tasks`), independente dos ciclos anteriores em `docs/sdd/specs/` e
-> `docs/sdd/specs/type-checking/`. Define **o quê** e **por quê** desta etapa. Não
+> `tasks`), independente dos ciclos anteriores em `../` e
+> `../type-checking/`. Define **o quê** e **por quê** desta etapa. Não
 > define implementação (isso é `design.md`).
 >
 > Continuidade de numeração: este ciclo continua a série do projeto a partir de

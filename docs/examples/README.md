@@ -1,7 +1,7 @@
 # Exemplos de DomainScript
 
 Estes exemplos existem para **mostrar o que dá para fazer com a linguagem**.
-São escritos contra a especificação — `.claude/steerings/domainscript-spec-v7/`
+São escritos contra a especificação — [domainscript-spec-v7](../sdd/steerings/domainscript-spec-v7/README.md)
 —, que é a fonte de verdade do que a DomainScript é.
 
 > ⚠️ **Estes exemplos não compilam com o transpilador de hoje, e isso é
@@ -9,7 +9,7 @@ São escritos contra a especificação — `.claude/steerings/domainscript-spec-
 > não aceita (`self` em corpos de ValueObject, `notify`, `Foreign` com
 > `pure`/`impure`, identidade implícita do Aggregate, metadata implícito de
 > Event). O inventário completo dessa distância está em
-> `.claude/steerings/review-v7.md`. Aqui a spec manda; quando código e spec
+> [review-v7.md](../sdd/steerings/review-v7.md). Aqui a spec manda; quando código e spec
 > divergem, o código é que está errado.
 >
 > Se você procura projetos que **passam** no `dsc check`/`dsc gen` de hoje,

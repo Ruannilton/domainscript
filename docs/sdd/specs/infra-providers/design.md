@@ -522,7 +522,7 @@ Levantados cruzando o design com o código real (`program/graph.go`,
   global (igual ao in-memory).
 
 - **R7 — Fixture-âncora precisa combinar UseCase + Policy no mesmo módulo?**
-  ISSUE-7 (`docs/sdd/issues/open-issues.md`) já mostrou que um módulo com UseCase E Policy
+  ISSUE-7 (`../../issues/open-issues.md`) já mostrou que um módulo com UseCase E Policy
   colide no wiring (`Wire` duplicado). A fixture-âncora deste ciclo deve
   **evitar** essa combinação por módulo (senão o `dsc gen` falha por um motivo
   alheio a este ciclo) — ou ISSUE-7 vira pré-requisito. Decisão: estruturar a

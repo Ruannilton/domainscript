@@ -15,7 +15,7 @@
   ciclo read-side, REQ-39.1/I6.2, e não entra aqui.) Oportunista: fechar cada
   um quando o vizinho for tocado.
 
-  EM ANDAMENTO (spec criada): `docs/sdd/specs/correcoes-issues-6-7-8/`
+  EM ANDAMENTO (spec criada): `../specs/correcoes-issues-6-7-8/`
   (Marco L, REQ-53 / §design 3). Análise de raiz categorizou os seis
   sub-itens por tratabilidade: cinco fecham em codegen/runtime — `then
   state` (§22.1, replay+compara campos), `emitted`/`released` em Saga
@@ -28,7 +28,7 @@
   para um ciclo de front-end: fecha só a fatia tratável e mantém esse resíduo
   apontado.
 
-  Status conforme `docs/sdd/state.md`: Marco L ainda **in-progress**
+  Status conforme `../state.md`: Marco L ainda **in-progress**
   (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d pausada por decisão do
   usuário; L1.3e/L1.3f bloqueadas em cascata — ver a issue sobre o pizzeria
   bloqueado por múltiplos defeitos de codegen; próxima task L2.5 —

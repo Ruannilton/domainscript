@@ -1,7 +1,7 @@
 # Requirements — Resolução Completa de Nomes & Tipos
 
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
-> `tasks`), independente da spec do front-end em `docs/sdd/specs/`. Define **o quê**
+> `tasks`), independente da spec do front-end em `../`. Define **o quê**
 > e **por quê** desta etapa. Não define implementação (isso é `design.md`).
 >
 > Continuidade de numeração: este ciclo continua a série do projeto a partir de
@@ -12,7 +12,7 @@
 
 ### 1.1. Contexto e problema
 
-O front-end do transpilador (spec em `docs/sdd/specs/`) está marcado como concluído
+O front-end do transpilador (spec em `../`) está marcado como concluído
 e "pronto para produção" (Fases 0–11, Marco D). Apesar disso, ele **deixa passar
 erros reais e triviais** porque a fase de resolução de nomes (REQ-4) foi
 especificada e implementada de forma incompleta.

@@ -308,9 +308,9 @@
   - b. Atualizar a doc dos exemplos que marcavam esses providers como
     decorativos (`docs/examples/pizzeria` README — postgres/rabbitmq deixam de
     ser "só rótulo").
-  - c. Atualizar `docs/sdd/specs/codegen/gaps.md` (G-4 parcialmente fechado — 5
-    categorias), `docs/sdd/issues/open-issues.md` (ISSUE-3 idem, restante de G-4 aberto),
-    `docs/sdd/state.md`, `README.md`/`CLAUDE.md`.
+  - c. Atualizar `../codegen/gaps.md` (G-4 parcialmente fechado — 5
+    categorias), `../../issues/open-issues.md` (ISSUE-3 idem, restante de G-4 aberto),
+    `../../state.md`, `README.md`/`CLAUDE.md`.
   - **Marco J — Providers Reais — fechado (recorte de 5).**
 
 ## Mapa de Dependências

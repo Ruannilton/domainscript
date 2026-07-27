@@ -426,6 +426,6 @@ tabela outbox durável (linha persistida na mesma tx) fecha a janela.
 - REQ-51 combina teste de wiring (asserção de string sobre o gerado, sem infra
   viva) + comportamental sobre sqlite real (`gentest.WriteFiles`/`RunTests`,
   sem broker) + atualização de golden e2e do `shop`.
-- Fechamento: `docs/sdd/issues/open-issues.md` marca as três `RESOLVED`; `gaps.md` §G-4
+- Fechamento: `../../issues/open-issues.md` marca as três `RESOLVED`; `gaps.md` §G-4
   "Residual aberto" perde o item do produtor→outbox→canal; `state.md` marca o
   Marco K `done`.

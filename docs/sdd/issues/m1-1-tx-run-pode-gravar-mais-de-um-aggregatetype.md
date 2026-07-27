@@ -41,7 +41,7 @@
 
   **2. A própria spec da linguagem exemplifica "mesmo Database → commit
   local" sem restringir o tipo de Aggregate.**
-  `docs/sdd/steerings/domainscript-spec-v7/19-transactions-sagas.md:7`: "Mesmo
+  `../steerings/domainscript-spec-v7/19-transactions-sagas.md:7`: "Mesmo
   `Database` | Commit local" — a tabela normativa condiciona só ao `Database`,
   nunca ao tipo. O exemplo do próprio spec/design (`PerformTransfer`, dois
   `load Wallet(...)` + dois dispatches) só usa o MESMO tipo (`Wallet`) duas

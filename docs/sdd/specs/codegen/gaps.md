@@ -2,7 +2,7 @@
 
 > Documento complementar ao ciclo `requirements.md` → `design.md` → `tasks.md`
 > (REQ-14..32, Marcos E–H, **completo**). Registra, ordenado por criticidade, o
-> que o spec da linguagem (`docs/sdd/steerings/domainscript-spec-v7/`) promete e o
+> que o spec da linguagem (`../../steerings/domainscript-spec-v7/`) promete e o
 > transpilador ainda não entrega — auditoria feita após o fechamento de H5,
 > cruzando o spec com o código real e as notas de escopo de `tasks.md`.
 >
@@ -19,12 +19,12 @@
 
 ### G-1. Read Side incompleto: cláusulas SQL-like em Query (spec §6.3)
 
-**✅ Fechado pelo ciclo `docs/sdd/specs/read-side/` (REQ-33..35/38/40, Marco I).**
+**✅ Fechado pelo ciclo `../read-side/` (REQ-33..35/38/40, Marco I).**
 `where`/`orderBy`/`skip`/`take`/`as` sobre `list`/`load`-coleção, `join`
 mesmo-banco e o operador `in` geram Go real sobre `runtime.Query[T]`
 (in-memory) com descida para SQL parametrizado no adapter sqlite pelo seam
 `Dialect` (REQ-40). As Queries `GetStatement` e `GetMyTickets` do spec §6.3
-agora geram, compilam e passam teste comportamental (`docs/sdd/specs/
+agora geram, compilam e passam teste comportamental (`../
 read-side/requirements.md` §1.4, itens 1–2). Desvio remanescente:
 `orderBy`/`skip`/`take` pós-join ficaram de fora (erro de geração claro em
 vez de adivinhar a semântica) — ver `read-side/tasks.md` I5.1. `join`
@@ -57,10 +57,10 @@ próprio codebase (`lower/builtins.go`, `decl_query.go`, fatia H4 §22.4 em
 
 ### G-2. Smart Partial Loading: `distinct`/`sum`/`focus` (spec §20)
 
-**✅ Fechado pelo ciclo `docs/sdd/specs/read-side/` (REQ-37, Marco I).**
+**✅ Fechado pelo ciclo `../read-side/` (REQ-37, Marco I).**
 `distinct(lambda)`/`sum(lambda)`/`focus(id)` geram Go sobre `Lowerer.Lambda`
 com paginação nativa de `AppendList<T>`; a Policy `RefundAllOnEventCancelled`
-do spec §7 gera na forma canônica (`docs/sdd/specs/read-side/requirements.md`
+do spec §7 gera na forma canônica (`../read-side/requirements.md`
 §1.4, item 3; `read-side/tasks.md` I6.1/I6.2). Desvio remanescente: `sum`/
 `distinct` como agregação SQL (`SELECT SUM`/`DISTINCT`) não descem — o seam
 permite, mas entra só quando houver medição que justifique
@@ -102,7 +102,7 @@ de front-end (parser → resolver → sema → types), e só depois codegen.
 
 ### G-4. Providers reais de infraestrutura
 
-**Parcialmente fechado pelo ciclo `docs/sdd/specs/infra-providers/` (Marco J,
+**Parcialmente fechado pelo ciclo `../infra-providers/` (Marco J,
 REQ-41..48) — um recorte deliberado de 5 categorias.** Tudo continua atrás
 de seams limpos (NFR-12 respeitado); a tabela abaixo reflete o estado
 ATUAL, pós-Marco J:
@@ -110,7 +110,7 @@ ATUAL, pós-Marco J:
 | Categoria | Spec pede | Implementado | Onde está documentado |
 |---|---|---|---|
 | Database | `"Postgres"` (§12) | `"sqlite"` **e** `"postgres"` são adapters reais (REQ-41) — outros bancos (MySQL, SQL Server, Mongo, Cassandra) seguem rótulo decorativo | `codegen/sql_wiring.go`/`codegen/sqlrt/`; J1 em `infra-providers/tasks.md` |
-| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **produtor→canal cross-service fechado** (REQ-42.6/REQ-51, ciclo `correcoes-issues-9-10-11`/Marco K, K3.1-K3.4): um módulo com Database real + canal `provider:"rabbitmq"` enfileira o `PublicEvent` cross-service no outbox atomicamente com a tx de negócio, e o relay do `DurableOutbox` (com o canal como `publisher`) publica de verdade — nunca mais publish direto no commit | `codegen/sql_wiring.go`/`codegen/rtsrc/outbox.go.txt`/`codegen/sqlrt/uow.go.txt`; J2 em `infra-providers/tasks.md`; K3 em `correcoes-issues-9-10-11/tasks.md`; ISSUE-9 (`docs/sdd/issues/open-issues.md`, RESOLVED) |
+| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **produtor→canal cross-service fechado** (REQ-42.6/REQ-51, ciclo `correcoes-issues-9-10-11`/Marco K, K3.1-K3.4): um módulo com Database real + canal `provider:"rabbitmq"` enfileira o `PublicEvent` cross-service no outbox atomicamente com a tx de negócio, e o relay do `DurableOutbox` (com o canal como `publisher`) publica de verdade — nunca mais publish direto no commit | `codegen/sql_wiring.go`/`codegen/rtsrc/outbox.go.txt`/`codegen/sqlrt/uow.go.txt`; J2 em `infra-providers/tasks.md`; K3 em `correcoes-issues-9-10-11/tasks.md`; ISSUE-9 (`../../issues/open-issues.md`, RESOLVED) |
 | Canais | `direct`/`queue`/`grpc`/`http`/`stream` (§11) | `queue` ganhou o provider `"rabbitmq"` real (cross-process, ordenação por chave, reconexão, DLQ — REQ-43); `direct` continua in-memory (não precisa de provider); `grpc`/`http`/`stream` continuam erro de geração | `codegen/channel_rabbitmq.go`; J3 em `infra-providers/tasks.md` |
 | Cache backend | `memory`/`redis`/`layered` (§15) | `redis` real (REQ-44) — `layered` segue fora de escopo | `codegen/redisrt/`; J4 em `infra-providers/tasks.md` |
 | RateLimit backend | `redis` (§16) | real, com fallback local em falha do Redis (REQ-44.5) | `codegen/redisrt/`; J4 em `infra-providers/tasks.md` |
@@ -120,7 +120,7 @@ ATUAL, pós-Marco J:
 **Residual aberto (não fechado por Marco J, registrado para um ciclo
 futuro):**
 - ~~**Outbox → canal cross-service (REQ-42.6, ISSUE-9)**~~ — **fechado** pelo
-  ciclo `docs/sdd/specs/correcoes-issues-9-10-11/` (Marco K, K3.1-K3.4,
+  ciclo `../correcoes-issues-9-10-11/` (Marco K, K3.1-K3.4,
   REQ-51): `durableProducer` (K3.1) detecta a condição de ativação (Database
   real + canal `provider:"rabbitmq"`); o produtor abre uma UnitOfWork real
   sobre `database/sql` (K3.2, `emitSingleDatabaseWiring`); ela enfileira o
@@ -135,18 +135,18 @@ futuro):**
   na 1ª tentativa, a linha fica undelivered (`attempts++`), o `Tick`
   seguinte re-publica — nenhum evento perdido. `wallet`/`shop` permanecem
   byte-idênticos (nenhum dos dois satisfaz a condição de ativação). Ver
-  ISSUE-9 (`docs/sdd/issues/open-issues.md`, RESOLVED).
+  ISSUE-9 (`../../issues/open-issues.md`, RESOLVED).
 - **Vendorização real / build offline (`R10`, §design infra-providers
   §2.2):** o critério "`go build -mod=vendor` contra um `vendor/` real,
   materializado a partir da árvore vendorizada do próprio repositório
   domainscript" nunca foi implementado — os smoke tests dos 5 providers
   usam `go mod tidy` (rede) em vez de `-mod=vendor` (offline). Registrado
-  como desvio explícito em J6.1/`docs/sdd/state.md`.
+  como desvio explícito em J6.1/`../../state.md`.
 - **Outros bancos** (MySQL, SQL Server, Mongo, Cassandra), **gRPC/HTTP/
   stream** como `via` de canal, **Idempotency `external`** (Redis/Dynamo),
   **Cache `layered`**, **GCS/Azure Blob** para FileStorage — todos
   explicitamente fora do recorte de 5 categorias do Marco J (ver
-  `docs/sdd/specs/infra-providers/requirements.md`, "Fora de escopo").
+  `../infra-providers/requirements.md`, "Fora de escopo").
 
 **Fechar o restante exige:** para os bancos/canais/backends fora do recorte
 de Marco J, o modelo "implementar `Dialect`/adapter + 1 entrada de
@@ -194,11 +194,11 @@ Cada uma registrada nas fatias de H4 em `tasks.md` e/ou em
 | `Subject emitted`/`released` de dentro de um passo de Saga | §22.3 | erro de geração claro (passo de Saga não tem Tx/Store) |
 | Contra-exemplo **mínimo** (shrinking) em property | §22.5 | reporta a sequência completa, sem shrinking |
 | `rolledback` com reversão real | §22.2 | é só `err != nil` — a UnitOfWork in-memory não tem staging (`rtsrc/uow.go.txt`) |
-| Exemplo canônico de §22.4 (agrupamento por `orderId`) | §22.4 | **✅ fechado** — fixture des-adaptada pelo ciclo `docs/sdd/specs/read-side/` (REQ-39.1, task I6.2): 3 tickets, 2 orders, `.distinct(t => t.orderId)`, `emitted count 2`, sem a adaptação "um orderId por ticket". Desvio remanescente: `reason` de `RefundRequested` usa o VO wrapper `RefundReason(string)` em vez do primitivo `string` cru do literal do spec — primitivo nu é proibido no Write Side (REQ-5.1); ver `read-side/tasks.md` I6.2. |
+| Exemplo canônico de §22.4 (agrupamento por `orderId`) | §22.4 | **✅ fechado** — fixture des-adaptada pelo ciclo `../read-side/` (REQ-39.1, task I6.2): 3 tickets, 2 orders, `.distinct(t => t.orderId)`, `emitted count 2`, sem a adaptação "um orderId por ticket". Desvio remanescente: `reason` de `RefundRequested` usa o VO wrapper `RefundReason(string)` em vez do primitivo `string` cru do literal do spec — primitivo nu é proibido no Write Side (REQ-5.1); ver `read-side/tasks.md` I6.2. |
 
 ### G-8. Predicado de `where` com limitação de hoisting
 
-**✅ Fechado pelo ciclo `docs/sdd/specs/read-side/` (REQ-36, Marco I, task I1.1).**
+**✅ Fechado pelo ciclo `../read-side/` (REQ-36, Marco I, task I1.1).**
 O seam de predicado evoluiu para `func(T) (bool, error)` (`runtime.Query[T]`,
 task I0.1): condição que exige hoisting (construção de VO composto, operador
 de VO falível) agora é aceita, propagando o erro do item para o chamador da
@@ -224,7 +224,7 @@ hoisting continua gerando o predicado enxuto de antes.
 ## Priorização recomendada
 
 1. ~~**"Marco E8 de verdade"** — Read Side completo: G-1 + G-2 + G-8.~~
-   **Fechado** pelo ciclo `docs/sdd/specs/read-side/` (Marco I) — §6.3, §7 e
+   **Fechado** pelo ciclo `../read-side/` (Marco I) — §6.3, §7 e
    §20 do spec geram Go de verdade, e o §22.4 canônico voltou à forma do
    spec.
 2. **Primeiro provider real** — G-4, começando por postgres (valida o seam

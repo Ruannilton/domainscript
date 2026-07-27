@@ -161,7 +161,7 @@
   t.orderId)` + `for`/`emit`) na forma canônica; a fixture de §22.4 (H4,
   módulo Refunds) VOLTA ao spec — 3 tickets, 2 orders, `emitted count 2` —
   removendo a adaptação "um orderId por ticket" e atualizando a nota da 6ª
-  fatia de H4 em `docs/sdd/specs/codegen/tasks.md` (a adaptação deixa de
+  fatia de H4 em `../codegen/tasks.md` (a adaptação deixa de
   existir; o registro histórico aponta para este ciclo). _(REQ-37.5,
   REQ-39.1/39.2)_
   **Depende:** I6.1.
@@ -171,7 +171,7 @@
   **Desvio remanescente:** `reason` de `RefundRequested` usa o VO wrapper
   `RefundReason(string)` em vez do primitivo `string` cru do literal do spec
   (§22.4) — primitivo nu é proibido no Write Side (REQ-5.1); documentado em
-  `codegen/gentest_policy_test.go` e `docs/sdd/specs/codegen/tasks.md`.
+  `codegen/gentest_policy_test.go` e `../codegen/tasks.md`.
 
 ### Fase I7 — Descida SQL (sqlite) sobre dialeto plugável
 
@@ -240,7 +240,7 @@
 ### Fase I8 — Fechamento do ciclo
 
 - [x] **I8.1** Revisão contra a DoD (requirements §5); atualizar
-  `docs/sdd/specs/codegen/gaps.md` (G-1/G-2/G-8 fechados com ponteiro para
+  `../codegen/gaps.md` (G-1/G-2/G-8 fechados com ponteiro para
   este ciclo; item §22.4 de G-7 atualizado; "Fora de Escopo Registrado" do
   design §5 vira os gaps remanescentes); atualizar `README.md`/`CLAUDE.md` se
   o estado descrito neles mudou. _(REQ-39.3, DoD §5)_

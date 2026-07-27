@@ -19,7 +19,7 @@
   SQL — adicionar banco vira "implementar `Dialect` + entrada no registro"; o
   restante (driver real, migrations, type mapping) segue aberto.
 
-  EM ANDAMENTO (spec criada): `docs/sdd/specs/infra-providers/` (Marco J,
+  EM ANDAMENTO (spec criada): `../specs/infra-providers/` (Marco J,
   REQ-41..48 / NFR-21..24) tratou esta issue com **recorte de 5 providers** —
   Postgres, RabbitMQ, Redis (Cache+RateLimit), S3 e Outbox durável. As demais
   categorias de G-4 (outros bancos, gRPC-canal, Dynamo para idempotency
@@ -33,13 +33,13 @@
   (J2, `runtime.DurableOutbox`/`sql_wiring.go:emitOutboxDatabaseWiring`) —
   todos opt-in, isolados atrás do seam existente, cobertos por golden +
   smoke compile (NFR-17) e determinismo (NFR-21, `infra_providers_
-  determinism_test.go`). Ver `docs/sdd/specs/codegen/gaps.md` §G-4 para a
+  determinism_test.go`). Ver `../specs/codegen/gaps.md` §G-4 para a
   tabela completa antes/depois por categoria.
 
   Residual que sobrou do Marco J (rastreado à parte, já resolvido): o lado
   PRODUTOR do Outbox→canal cross-service (REQ-42.6) publicava direto no
   commit em vez de enfileirar no outbox — isso foi fechado pelo Marco K
-  (`docs/sdd/specs/correcoes-issues-9-10-11/`, ex-ISSUE-9, RESOLVED nos
+  (`../specs/correcoes-issues-9-10-11/`, ex-ISSUE-9, RESOLVED nos
   commits `1137ba9`/`e2f3ec9`/`9fd30f0`/`c580e1f`).
 
   Ainda em aberto (não fechado por nenhum ciclo até agora): a

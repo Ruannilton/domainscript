@@ -15,7 +15,7 @@
   unificar o wiring: um único `Wire(...)` por módulo que registre tanto os
   UseCases (dispatcher/UoW) quanto as Policies (assinaturas de evento).
 
-  EM ANDAMENTO (spec criada): `docs/sdd/specs/correcoes-issues-6-7-8/`
+  EM ANDAMENTO (spec criada): `../specs/correcoes-issues-6-7-8/`
   (Marco L, REQ-52 / §design 2). Achado da análise de raiz: **o próprio
   código já resolve esta colisão em outros lugares** — `StartWorkers`,
   `WireQueryCache`, `WireOutboxStore`/`StartOutboxRelay` usam nome próprio
@@ -29,5 +29,5 @@
   issue). **Porém não marcar esta issue como totalmente resolvida** enquanto
   a issue sobre o pizzeria bloqueado por múltiplos defeitos de codegen (o
   bloqueio real e maior de gerar o pizzeria de ponta a ponta, achado em
-  L1.2) permanecer aberta — ver `docs/sdd/specs/correcoes-issues-6-7-8/`.
+  L1.2) permanecer aberta — ver `../specs/correcoes-issues-6-7-8/`.
 - SOLVED: FALSE

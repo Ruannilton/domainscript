@@ -12,7 +12,7 @@
   estendida, marshalling FFI detalhado) — declarados planejado/a definir pelo
   spec, sem ação pendente deste lado.
 
-  EM ANDAMENTO (spec criada): `docs/sdd/specs/correcoes-issues-6-7-8/`
+  EM ANDAMENTO (spec criada): `../specs/correcoes-issues-6-7-8/`
   (Marco L, REQ-54 / §design 4). Decisão por item: (b) cobertura §22.7 —
   a task L3.1 começa pela análise de raiz de `checkHandleErrorCoverage`; se
   o checker consegue cruzar os ramos `ensure ... else Error` com os cenários
@@ -22,7 +22,7 @@
   aritmética/FFI) — **reclassificados** de "dívida de codegen" para
   "aguardando definição no spec da linguagem" (exigem sintaxe nova não
   definida; não há ação de codegen pendente). Fecha (b) e reclassifica
-  (a)/(c) quando o Marco L fechar. Conforme `docs/sdd/state.md`, o Marco L
+  (a)/(c) quando o Marco L fechar. Conforme `../state.md`, o Marco L
   ainda está in-progress (task corrente: L2.5), então esta issue segue
   aberta.
 - SOLVED: FALSE

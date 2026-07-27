@@ -835,7 +835,7 @@
   eventos são todos distintos). `emitted count N` compara `len(published)`.
 
   **Adaptação da fixture (mesmo precedente de "Fixtures de exemplo não são
-  fonte de verdade", `docs/sdd/specs/codegen/design.md` §6 — já usado pela
+  fonte de verdade", `../codegen/design.md` §6 — já usado pela
   fatia de Saga, que sintetizou o módulo `Booking`, e pela de property, que
   dropou o `Transfer` ilustrativo do spec):** nem wallet nem shop têm uma
   Policy com corpo de negócio de verdade (o único Policy do shop é `execute {
@@ -858,7 +858,7 @@
   Go de fato gerado, que o predicado por item filtra de verdade e que cada
   `RefundRequested` publicado é observado pelo coletor).
 
-  **Adaptação REMOVIDA em `docs/sdd/specs/read-side/tasks.md` (I6.2):**
+  **Adaptação REMOVIDA em `../read-side/tasks.md` (I6.2):**
   `distinct`/agrupamento fechou em I6.1 (§20, REQ-37.1) — a fixture voltou à
   forma EXATA do spec (`soldTickets.distinct(t => t.orderId)`, 3 tickets, 2
   orders, `emitted count 2`), removendo o "um `orderId` por ticket" acima.
@@ -963,7 +963,7 @@
   deps opt-in, golden+smoke pareados, determinismo) e as entradas de pacote de
   `codegen/*` no layout — sem duplicar `design.md`/`tasks.md`.
 
-  **Este é o fechamento de todo o ciclo `docs/sdd/specs/codegen/` (Marcos E, F, G,
+  **Este é o fechamento de todo o ciclo `../codegen/` (Marcos E, F, G,
   H) — front-end e back-end do transpilador estão ambos completos.**
   **Commit:** `docs(repo): fecha o back-end e atualiza o estado`
 

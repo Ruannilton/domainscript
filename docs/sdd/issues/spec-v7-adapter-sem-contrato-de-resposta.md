@@ -19,7 +19,7 @@
     ComputeMerkleRoot(items List<bytes>) -> bytes`).
   - `PaymentResult`, o tipo usado no `mock ... returns PaymentResult(...)` do
     exemplo canônico de Test de Saga, não é declarado em NENHUM lugar da
-    spec — `grep -rn "PaymentResult" docs/sdd/steerings/domainscript-spec-v7/`
+    spec — `grep -rn "PaymentResult" ../steerings/domainscript-spec-v7/`
     só encontra as duas linhas do próprio exemplo (§19.2 e §24.3).
   - `24-testing.md` §24.7 lista "Mock com retorno de tipo errado → Erro" como
     garantia semântica, o que pressupõe um tipo contra o qual checar — mas
@@ -55,7 +55,7 @@
   Sem essa definição, `TASK-M3.2` ("Implementar `result = call
   Adapter(...)`") e `TASK-M3.3` ("`mock ... returns X` injeta X como retorno
   do stub") da spec `correcoes-issues-6-8-12` (REQ-57.2/57.3) ficam
-  canceladas nesta revisão — ver `docs/sdd/specs/correcoes-issues-6-8-12/design.md`
+  canceladas nesta revisão — ver `../specs/correcoes-issues-6-8-12/design.md`
   §4.5/§7.2 para o registro completo da decisão de delimitar em vez de
   adivinhar o contrato.
 - SOLVED: FALSE

@@ -34,7 +34,7 @@ confirmada por reprodução**, até onde o escopo de codegen/runtime/sema alcan�
   mostrou **viável em `sema` sem re-arquitetura** — mais a reclassificação
   documentada dos itens que dependem do spec da linguagem.
 - **REQ-61:** o fechamento documental — delimitações (`acesso NEGADO`,
-  `released`) e atualização de `gaps.md`/`docs/sdd/issues/`.
+  `released`) e atualização de `gaps.md`/`../../issues/`.
 
 ### 1.2. Alinhamento filosófico com o spec
 
@@ -287,7 +287,7 @@ reclassificada — para nenhuma delas continuar sendo um saco indefinido.
 
 **Critérios de aceitação:**
 
-1. THE SYSTEM SHALL documentar em `docs/sdd/specs/codegen/gaps.md` e na issue de
+1. THE SYSTEM SHALL documentar em `../codegen/gaps.md` e na issue de
    ISSUE-6 que o **cenário de acesso NEGADO** e o verbo **`released`** exigem
    definição no spec da linguagem / nova gramática, apontados para um ciclo de
    front-end.
@@ -295,8 +295,8 @@ reclassificada — para nenhuma delas continuar sendo um saco indefinido.
    itens de §25 (avg/min/max/group by, aritmética estendida, marshalling FFI)
    de "dívida de codegen" para **"aguardando definição no spec da linguagem"**,
    em `gaps.md` e na issue de ISSUE-8.
-3. THE SYSTEM SHALL atualizar `docs/sdd/issues/open-issues.md` e cada arquivo de
-   issue tocado com o estado final, e o ponteiro de `docs/sdd/state.md` conforme
+3. THE SYSTEM SHALL atualizar `../../issues/open-issues.md` e cada arquivo de
+   issue tocado com o estado final, e o ponteiro de `../../state.md` conforme
    as regras do `CLAUDE.md`.
 
 ---
@@ -342,7 +342,7 @@ escopo de teste é o da task, não a suíte inteira; CI roda o resto.
 | REQ-58 | Shrinking de `property` | ISSUE-6 | `codegen/gentest_property.go` | M4 |
 | REQ-59 | `rolledback` com staging | ISSUE-6 | `codegen/rtsrc/uow.go.txt`, `codegen/gentest.go` | M4 |
 | REQ-60 | Cobertura §22.7 por ramo de `Error` | ISSUE-8 | `sema/rules_warnings.go` | M5 |
-| REQ-61 | Delimitações e reclassificações | ISSUE-6, ISSUE-8, ISSUE-12 | `docs/sdd/specs/codegen/gaps.md`, `docs/sdd/issues/` | M5 |
+| REQ-61 | Delimitações e reclassificações | ISSUE-6, ISSUE-8, ISSUE-12 | `../codegen/gaps.md`, `../../issues/` | M5 |
 
 ---
 
@@ -363,7 +363,7 @@ O ciclo está completo quando:
 5. O warning de §22.7 nomeia o `Error` não coberto, com par NFR-4 (REQ-60).
 6. `go build ./...` / `go vet ./...` / `gofmt -l .` limpos; testes de escopo de
    cada task verdes; CI verde na PR da spec.
-7. `gaps.md`, `docs/sdd/issues/` e `docs/sdd/state.md` refletem o estado final:
+7. `gaps.md`, `../../issues/` e `../../state.md` refletem o estado final:
    **ISSUE-12** → `RESOLVED`; **ISSUE-6** → resolvida na fatia fechada, com
    `acesso NEGADO` e `released` apontados para um ciclo de front-end;
    **ISSUE-8** → fechada em (b) e reclassificada em (a)/(c) (REQ-61).

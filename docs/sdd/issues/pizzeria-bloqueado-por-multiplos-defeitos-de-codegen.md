@@ -118,7 +118,7 @@
     e seguir para as Fases L2/L3** (independentes de L1) em vez de perseguir
     o fechamento completo de `pizzeria` agora. L1.3d/L1.3e/L1.3f ficam
     **BLOQUEADAS**, sem tentativa adicional neste ciclo — ver
-    `docs/sdd/state.md` para o registro completo da decisão.
+    `../state.md` para o registro completo da decisão.
   - **Conclusão:** o `pizzeria` está bloqueado por PELO MENOS CINCO defeitos
     independentes (F5/G3 + os quatro acima), nenhum deles dentro do escopo de
     REQ-52 (Wire unificado) — REQ-52.7 pede exatamente isto: registrar como
@@ -132,5 +132,5 @@
     o item 4, e a guarda F5/G3 em si). Este registro é INDEPENDENTE da issue
     sobre a colisão de Wire (que L1.1 já fechou); não considerar aquela issue
     totalmente resolvida enquanto esta (o bloqueio real e maior de
-    `pizzeria`) permanecer aberta — ver `docs/sdd/specs/correcoes-issues-6-7-8/`.
+    `pizzeria`) permanecer aberta — ver `../specs/correcoes-issues-6-7-8/`.
 - SOLVED: FALSE

@@ -1,7 +1,7 @@
 # Review do transpilador contra a spec v7
 
 > Auditoria da árvore em `main` (commit `b77b8d7`) contra
-> `docs/sdd/steerings/domainscript-spec-v7/`, seção por seção. Lista o que está
+> `domainscript-spec-v7/`, seção por seção. Lista o que está
 > **faltando** e o que está **divergente** — não o que já funciona, exceto
 > quando o contraste é necessário para localizar a divergência.
 >
@@ -17,7 +17,7 @@
 > (`docs/examples/`) são outra coisa: escritos contra a spec, não passam hoje —
 > ver a seção G.
 >
-> **Relação com o que já existe.** `docs/sdd/specs/codegen/gaps.md` mapeia o
+> **Relação com o que já existe.** `../specs/codegen/gaps.md` mapeia o
 > transpilador contra a **v6** e continua válido no que cobre; os itens
 > repetidos aqui aparecem com a referência cruzada (`G-n`) para não duplicar
 > registro. O que este documento acrescenta é o **delta v7**: a §10 (FFI
@@ -119,7 +119,7 @@ $ dsc check p3/          # Aggregate Wallet da §4.5, verbatim
 usa `self.id` de forma consistente (§4.5 e §2.5), mas **nunca diz qual é o
 tipo dele** nem como ele se relaciona com o VO de id do domínio
 (`WalletId`/`PersonId`) — bloqueio real de implementação, registrado em
-`docs/sdd/issues/spec-v7-identidade-implicita-do-aggregate.md`.
+[spec-v7-identidade-implicita-do-aggregate](../issues/spec-v7-identidade-implicita-do-aggregate.md).
 
 ### A-3. Metadata implícito de Event: `timestamp`/`sequence`/`aggregateId`/`eventType` (§4.2)
 
@@ -195,7 +195,7 @@ implementado (`codegen/lower/builtins.go`,
 **Correção:** esta é uma **contradição interna da spec**, não uma escolha da
 implementação — a §5.1 exige `ref` como keyword e a §2.5 o usa como
 identificador; nenhuma gramática satisfaz as duas. Precisa de decisão na spec
-antes de qualquer código: `docs/sdd/issues/spec-v7-ref-keyword-vs-identificador.md`.
+antes de qualquer código: [spec-v7-ref-keyword-vs-identificador](../issues/spec-v7-ref-keyword-vs-identificador.md).
 
 ### A-7. Catálogo de métodos embutidos: 3 entradas (§2.2, §2.4)
 
@@ -338,7 +338,7 @@ filtro automático, 404 cross-tenant, fail-closed 400, `tenancy: none` por rota,
 
 ### B-4. §6.2 — `visibility` de View: aceito e ignorado
 
-Sem novidade em relação a G-5 / `docs/sdd/issues/visibility-de-view-nao-implementado.md`,
+Sem novidade em relação a G-5 / [visibility-de-view-nao-implementado](../issues/visibility-de-view-nao-implementado.md),
 mas vale repetir porque é a única lacuna com consequência de **segurança que
 falha em silêncio**: o bloco é parseado (`ast.ViewDecl.Visibility`) e nenhum
 arquivo de `codegen/` lê o campo. Campos declarados como restritos são
@@ -425,7 +425,7 @@ nu — o defeito é específico de `backend`, em
 
 **Correção:** aceitar o identificador nu. É defeito de código puro, sem lacuna
 de spec envolvida — issue
-`docs/sdd/issues/cache-ratelimit-backend-exige-string-contra-spec.md`.
+[cache-ratelimit-backend-exige-string-contra-spec](../issues/cache-ratelimit-backend-exige-string-contra-spec.md).
 
 ---
 
