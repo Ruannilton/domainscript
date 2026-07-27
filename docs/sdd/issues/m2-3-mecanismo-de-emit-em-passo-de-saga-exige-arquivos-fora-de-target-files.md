@@ -1,8 +1,8 @@
 # M2.3: mecanismo normativo de `emit` em passo de Saga (design.md §4.4, rota i) exige [decl_policy.go](../../../codegen/decl_policy.go)/[codegen.go](../../../codegen/codegen.go), fora de `target_files`
-- SPEC: correcoes-issues-6-8-12
-- TASK: M2.3
+- SPEC: [correcoes-issues-6-8-12](../specs/correcoes-issues-6-8-12/requirements.md)
+- TASK: [M2.3](../specs/correcoes-issues-6-8-12/tasks/M2.3.md)
 - DESCRIPTION: [M2.3.md](../specs/correcoes-issues-6-8-12/tasks/M2.3.md) manda implementar a rota **(i) Dispatcher
-  publish-only**, decidida por M2.2 (já `completed`) e registrada como
+  publish-only**, decidida por [M2.2](../specs/correcoes-issues-6-8-12/tasks/M2.2.md) (já `completed`) e registrada como
   **normativa** em [design.md](../specs/correcoes-issues-6-8-12/design.md) §4.4 — a própria task diz "Não escolha uma
   rota diferente." `target_files` de M2.3 é só
   [decl_saga.go](../../../codegen/decl_saga.go), [stmt.go](../../../codegen/lower/stmt.go),

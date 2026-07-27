@@ -1,6 +1,6 @@
 # M1.1: uma `Tx.Run()` PODE gravar eventos de mais de um `aggregateType` — a rota "thread via `ctx`" não serve
-- SPEC: correcoes-issues-6-8-12
-- TASK: M1.1
+- SPEC: [correcoes-issues-6-8-12](../specs/correcoes-issues-6-8-12/requirements.md)
+- TASK: [M1.1](../specs/correcoes-issues-6-8-12/tasks/M1.1.md)
 - DESCRIPTION: [design.md](../specs/correcoes-issues-6-8-12/design.md) §5.1 ("Como `aggregateType` chega a `Append`
   (decisão de M1.1)") registra a decisão do usuário — carimbar `ctx` UMA vez,
   em [decl_usecase.go](../../../codegen/decl_usecase.go), imediatamente antes de `uow.Run(ctx, ...)` —
@@ -19,7 +19,8 @@
   MESMO `Database` (commit local, sem 2PC).
 
   **1. A única regra transacional do front-end é por `Database`, nunca por
-  tipo de Aggregate.** `sema/rules_crossfile.go:161-198`
+  tipo de Aggregate.**
+  [`sema/rules_crossfile.go:161-198`](../../../sema/rules_crossfile.go#L161-L198)
   (`checkTransactions`, REQ-5.9) só soma os `Database` distintos tocados por
   um `UseCase` e erra quando são `>1` sem XA universal
   (`len(distinct(dbs)) > 1 && !allXA`). Não existe nenhuma verificação sobre
@@ -41,26 +42,30 @@
 
   **2. A própria spec da linguagem exemplifica "mesmo Database → commit
   local" sem restringir o tipo de Aggregate.**
-  `../steerings/domainscript-spec-v7/19-transactions-sagas.md:7`: "Mesmo
-  `Database` | Commit local" — a tabela normativa condiciona só ao `Database`,
+  [`19-transactions-sagas.md:7`](../steerings/domainscript-spec-v7/19-transactions-sagas.md):
+  "Mesmo `Database` | Commit local" — a tabela normativa condiciona só ao `Database`,
   nunca ao tipo. O exemplo do próprio spec/design (`PerformTransfer`, dois
   `load Wallet(...)` + dois dispatches) só usa o MESMO tipo (`Wallet`) duas
   vezes, mas nada na regra exige homogeneidade de tipo — é só a fixture
   ilustrativa que não cobre o caso heterogêneo.
 
   **3. O codegen já suporta, hoje, dispatch de Handle em Aggregates
-  DIFERENTES dentro do mesmo `Run()`.** `decl_usecase.go:427-486`
+  DIFERENTES dentro do mesmo `Run()`.**
+  [`decl_usecase.go:427-486`](../../../codegen/decl_usecase.go#L427-L486)
   (`touchedAggregates`) varre `execute.Stmts` reconhecendo `load Agg(...)` +
   dispatch subsequente para QUALQUER Aggregate do mapa `aggregates` (todos os
   Aggregates do módulo, não um só) — usado por `usecase2PCPlan` exatamente
   para DETECTAR quando 2+ Aggregates de tipos diferentes são tocados. Quando
   esses tipos compartilham o MESMO `Database` (ou nenhum `Database` existe),
   `usecase2PCPlan` devolve `ok=false` (precisa de `len(seen) >= 2` bancos
-  DISTINTOS, `decl_usecase.go:399-401`) e o caminho gerado é o de banco único
-  — `emitUseCaseDecl:345-346`, um `uow.Run(ctx, func(tx runtime.Tx) error
-  {...})` só, onde `l.WithHandleDispatch(aggregates, "tx")`
-  (`lower/stmt.go`) despacha CADA `Handle` reconhecido, de QUALQUER
-  Aggregate do módulo, no MESMO `tx`.
+  DISTINTOS,
+  [`decl_usecase.go:399-401`](../../../codegen/decl_usecase.go#L399-L401)) e o
+  caminho gerado é o de banco único —
+  [`emitUseCaseDecl:345-346`](../../../codegen/decl_usecase.go#L345-L346), um
+  `uow.Run(ctx, func(tx runtime.Tx) error {...})` só, onde
+  `l.WithHandleDispatch(aggregates, "tx")`
+  ([`lower/stmt.go`](../../../codegen/lower/stmt.go)) despacha CADA `Handle`
+  reconhecido, de QUALQUER Aggregate do módulo, no MESMO `tx`.
 
   **Contraexemplo concreto (não precisei escrever/rodar — é o caminho já
   citado acima ponto a ponto):** um módulo sem `Database` declarado, com dois
@@ -117,11 +122,13 @@
      exigiria mudar `Tx.Append(aggregateID string, events []Event)` para
      aceitar um terceiro parâmetro (ou uma variante
      `Tx.AppendTyped(aggregateType, aggregateID string, events []Event)`),
-     tocando `runtime.Tx` (`uow.go.txt`) e o call site real em
-     `lower/stmt.go:handleDispatchCall` — ambos fora de `target_files` de
-     M1.1 hoje.
-  2. Restringir a regra do front-end (`checkTransactions`, REQ-5.9, `sema/`)
-     para também barrar/isentar o caso heterogêneo — mudaria semântica da
+     tocando `runtime.Tx` ([`uow.go.txt`](../../../codegen/rtsrc/uow.go.txt)) e o
+     call site real em
+     [`lower/stmt.go:handleDispatchCall`](../../../codegen/lower/stmt.go#L2035)
+     — ambos fora de `target_files` de M1.1 hoje.
+  2. Restringir a regra do front-end (`checkTransactions`, REQ-5.9,
+     [`sema/`](../../../sema)) para também barrar/isentar o caso heterogêneo —
+     mudaria semântica da
      linguagem (o que hoje compila deixaria de compilar), fora do escopo
      desta spec de correções e do pacote `codegen`.
   3. Alguma outra rota que o design ainda não considerou (ex.: derivar o tipo
