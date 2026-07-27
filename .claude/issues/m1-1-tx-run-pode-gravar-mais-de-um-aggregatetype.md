@@ -131,3 +131,12 @@
   Nenhuma das três está em `target_files` de M1.1 nem foi escolhida por
   conta própria.
 - SOLVED: []
+
+# Solução sugerida
+
+Passar o `aggregateType` por CHAMADA, não por `ctx` de todo o `Run` — exigiria mudar `Tx.Append(aggregateID string, events []Event)` para
+aceitar um terceiro parâmetro (ou uma variante
+`Tx.AppendTyped(aggregateType, aggregateID string, events []Event)`),
+tocando `runtime.Tx` (`uow.go.txt`) e o call site real em
+`lower/stmt.go:handleDispatchCall` — ambos fora de `target_files` de
+M1.1 hoje.

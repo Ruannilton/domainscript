@@ -32,7 +32,10 @@ Para considerar esta tarefa concluída, os seguintes cenários devem passar:
 - [ ] **TEST-2:** [Descrição do cenário de erro ou edge case]
 
 
-## 4. Mensagem de Commit
+## 4. Revisão requerida
+[Alguma preocupação que precisa ser revisada antes de implementar a task]
+
+## 5. Mensagem de Commit
 feat([escopo/pacote]): [resumo imperativo da task em até 50 chars]
 
 
