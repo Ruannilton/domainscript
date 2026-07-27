@@ -1,11 +1,11 @@
 ---
 name: spec-creator
-description: Use this when creating a new spec under .claude/specs/ for a new development cycle (Marco) in this repo — scaffolds requirements.md, design.md, one file per task under tasks/, and a state.md tracking pending/blocked tasks, from the templates in assets/.
+description: Use this when creating a new spec under docs/sdd/specs/ for a new development cycle (Marco) in this repo — scaffolds requirements.md, design.md, one file per task under tasks/, and a state.md tracking pending/blocked tasks, from the templates in assets/.
 ---
 
 # Spec Creator
 
-Scaffolds a new spec directory under `.claude/specs/<spec-slug>/`, following
+Scaffolds a new spec directory under `docs/sdd/specs/<spec-slug>/`, following
 the spec-driven flow described in root `CLAUDE.md`. `requirements.md` and
 `design.md` are created as a single file each, same as every spec before
 this one. **Tasks are not** — each task gets its own file under `tasks/`,
@@ -33,7 +33,7 @@ skill.
 ## Resulting layout
 
 ```
-.claude/specs/<spec-slug>/
+docs/sdd/specs/<spec-slug>/
 ├── requirements.md
 ├── design.md
 ├── state.md              # aggregate index: pending vs. blocked task codes
@@ -59,20 +59,20 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
    - **Goal** — one or two sentences: what this cycle delivers and why.
    - **Builds on** — which prior spec(s) this extends, if any (most specs
      do — check `CLAUDE.md`'s "Current state" section for the chain).
-   - **Marco letter** — `.claude/state.md` is a lean two-line pointer now,
+   - **Marco letter** — `docs/sdd/state.md` is a lean two-line pointer now,
      not a spec index (see `CLAUDE.md`); find the last Marco letter used by
-     listing `.claude/specs/*/` and reading the existing `tasks.md` /
+     listing `docs/sdd/specs/*/` and reading the existing `tasks.md` /
      `tasks/*.md` files (K, L, ...). The new spec gets the next one. Confirm
      with the user if it's ambiguous.
 
 2. **Derive `<spec-slug>`** — kebab-case, same convention as existing spec
    directories (e.g. `correcoes-issues-6-7-8`, `infra-providers`).
 
-3. **Check for collisions.** `.claude/specs/<spec-slug>/` must not already
+3. **Check for collisions.** `docs/sdd/specs/<spec-slug>/` must not already
    exist. If it does, stop and tell the user instead of overwriting.
 
 4. **Number REQs/NFRs.** Scan every existing `requirements.md` (`grep -h
-   'REQ-\|NFR-' .claude/specs/*/requirements.md`) for the highest `REQ-N`/
+   'REQ-\|NFR-' docs/sdd/specs/*/requirements.md`) for the highest `REQ-N`/
    `NFR-N` in use; this spec's requirements continue the sequence — never
    restart at 1 and never reuse a number, mirroring the `ISSUE-<n>`
    convention used for issues.
@@ -89,7 +89,7 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
 
 6b. **Check every requirement against the language spec.** Before a REQ
    reaches `requirements.md`, point at the section of
-   `.claude/steerings/domainscript-spec-v7/` that describes it, and cite that
+   `docs/sdd/steerings/domainscript-spec-v7/` that describes it, and cite that
    section in the REQ. The language spec is the source of truth (root
    `CLAUDE.md`): a requirement it does not describe — or describes in a
    different shape — must not be written. Where the spec is ambiguous,
@@ -99,7 +99,7 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
    `spec-v7-*.md` issues for the format) and leave that requirement out of
    the spec entirely — not in as a conditional or a TODO. Record the omission
    in `requirements.md`'s out-of-scope section, pointing at the issue.
-   `.claude/steerings/review-v7.md` is the standing audit of implementation
+   `docs/sdd/steerings/review-v7.md` is the standing audit of implementation
    vs. spec; consult it so a cycle doesn't re-derive what's already catalogued.
 
 7. **Break the work into tasks.** Follow `CLAUDE.md`'s working conventions:
@@ -130,12 +130,12 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
    register an issue via the `issue-generator` skill if the blocker is
    out of this spec's scope).
 
-9. **Update the root `.claude/state.md`, only if this spec's work is next.**
+9. **Update the root `docs/sdd/state.md`, only if this spec's work is next.**
    It's a lean, two-line resume pointer (see `CLAUDE.md`) — never a
    per-spec table, so don't add a row. Check its current spec-task pointer:
    if it names a task that's already `completed` or names no real pending
    work, overwrite it with this spec's first task
-   (`.claude/specs/<spec-slug>/tasks/<first-code>.md`). If it already points
+   (`docs/sdd/specs/<spec-slug>/tasks/<first-code>.md`). If it already points
    at real pending work in another spec, leave it alone — this spec's tasks
    queue behind, tracked by its own `state.md` until their turn comes.
 
@@ -150,6 +150,6 @@ that in the spec's `state.md` — drop it from `PENDING TASKS` on
 continue, move it back to `PENDING TASKS` if unblocked. If that change makes
 this spec's next task the one at the front of the overall queue (or takes it
 off, because this spec ran out of pending tasks), update the root
-`.claude/state.md` spec-task pointer to match — see the "Keep `.claude/state.md`
+`docs/sdd/state.md` spec-task pointer to match — see the "Keep `docs/sdd/state.md`
 lean" rule in `CLAUDE.md`: overwrite the pointer, never turn it back into a
 table.

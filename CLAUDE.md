@@ -2,10 +2,10 @@
 
 Guidance for Claude Code working in this repository.
 
-**Status and history do not live here.** `.claude/state.md` is the resume
+**Status and history do not live here.** `docs/sdd/state.md` is the resume
 pointer — the next spec-task and the next issue, nothing more. Per-spec status
 lives in each spec's own task tracking; open defects in
-`.claude/issues/open-issues.md`. Read the pointer before starting work.
+`docs/sdd/issues/open-issues.md`. Read the pointer before starting work.
 
 ## What is being built
 
@@ -59,7 +59,7 @@ flowchart LR
 
 ## The language spec
 
-`.claude/steerings/domainscript-spec-v7/` — one file per section, indexed by
+`docs/sdd/steerings/domainscript-spec-v7/` — one file per section, indexed by
 its `README.md`. **Load only the sections your task needs**, not the whole spec.
 
 ### The spec is the source of truth — always
@@ -79,7 +79,7 @@ easier. This binds in both directions:
   moving, and do not encode the guess in code "for now". Implement after the
   spec is revised, against the revised text.
 
-`.claude/steerings/review-v7.md` is the standing audit of the implementation
+`docs/sdd/steerings/review-v7.md` is the standing audit of the implementation
 against v7: what is missing, what diverges, and what exists outside the spec.
 Read it before planning conformance work.
 
@@ -93,10 +93,10 @@ compilação → `25-compilation-rules.md`; §22 testing `*.test.ds` →
 ## Where things live
 
 ```
-.claude/state.md          resume pointer — next spec-task + next issue, only
-.claude/specs/<spec>/     requirements.md, design.md + task tracking (see below)
-.claude/issues/           one file per open issue; open-issues.md indexes them
-.claude/steerings/        ambient reference docs (the language spec)
+docs/sdd/state.md         resume pointer — next spec-task + next issue, only
+docs/sdd/specs/<spec>/    requirements.md, design.md + task tracking (see below)
+docs/sdd/issues/          one file per open issue; open-issues.md indexes them
+docs/sdd/steerings/       ambient reference docs (the language spec)
 .claude/agents/           subagent definitions — the operative detail on who does what
 .claude/hooks/            guard scripts referenced by agent frontmatter
 .claude/skills/           spec-creator scaffolds a spec, issue-generator files an
@@ -110,9 +110,9 @@ done in whichever model its spec uses — check the box in `tasks.md`, or set
 `status: completed` in the task file and drop it from the spec's `state.md`.
 
 **Which specs exist, what each covers and where each stands**: list
-`.claude/specs/*/` and read its `requirements.md` and task tracking. That is
+`docs/sdd/specs/*/` and read its `requirements.md` and task tracking. That is
 authoritative; this file deliberately keeps no spec index, because one goes
-stale. `.claude/specs/codegen/gaps.md` records what the language spec promises
+stale. `docs/sdd/specs/codegen/gaps.md` records what the language spec promises
 and the transpiler does not yet deliver.
 
 Specs are written in **Portuguese**. Work is maintenance and extension, not
@@ -123,8 +123,8 @@ change is needed, update the spec.
 ## Execution rules
 
 - **One task at a time.** Never start a second before the current one is
-  committed. Pick it up from `.claude/state.md`.
-- **Keep `.claude/state.md` lean.** Exactly two pointers — next spec-task, next
+  committed. Pick it up from `docs/sdd/state.md`.
+- **Keep `docs/sdd/state.md` lean.** Exactly two pointers — next spec-task, next
   issue — overwritten in place, never appended: no per-spec table, no history,
   no running log. The spec-task pointer advances mechanically as work
   completes; the issue pointer is a manual priority call.

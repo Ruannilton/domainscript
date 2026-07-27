@@ -7,7 +7,8 @@
 # O que ele não pode é **consertar**: nenhuma edição de código do repositório.
 # Regra de caminho para Write/Edit/NotebookEdit:
 #
-#   .../.claude/...        -> permitido (o arquivo da issue, o índice)
+#   .../docs/sdd/...       -> permitido (o arquivo da issue, o índice)
+#   .../.claude/...        -> permitido (state, skills assets)
 #   dentro do repositório  -> negado    (código, fixtures, docs, CI)
 #   fora do repositório    -> permitido (/tmp, cópia isolada de reprodução)
 #
@@ -70,15 +71,16 @@ esac
 rel=$(printf '%s' "$rel" | sed -E 's#^/\.claude/worktrees/[^/]+##')
 [ -n "$rel" ] || rel=/
 
-# Arquivo de issue / qualquer coisa sob .claude/: sempre permitido. A regra é
-# avaliada no caminho RELATIVO ao root — sobre o caminho absoluto, a árvore
-# inteira de um worktree casaria `*/.claude/*` e liberaria todo o código.
+# Arquivo de issue / qualquer coisa sob .claude/ ou docs/sdd/: sempre permitido.
+# A regra é avaliada no caminho RELATIVO ao root — sobre o caminho absoluto, a
+# árvore inteira de um worktree casaria `*/.claude/*` e liberaria todo o código.
 case "$rel" in
 */.claude/*) exit 0 ;;
+*/docs/sdd/*) exit 0 ;;
 esac
 
 # Escapa o mínimo para um JSON válido: barra invertida, aspas e tabs.
-reason="issue-registrar nao conserta nem altera o repositorio: Write/Edit dentro do repo so sob .claude/. Caminho recusado: $path. Para reproduzir um defeito, trabalhe numa copia fora do repositorio (ex.: sob /tmp) — rodar teste e permitido, editar o codigo versionado nao. O conserto e de outra task/agente."
+reason="issue-registrar nao conserta nem altera o repositorio: Write/Edit dentro do repo so sob .claude/ ou docs/sdd/. Caminho recusado: $path. Para reproduzir um defeito, trabalhe numa copia fora do repositorio (ex.: sob /tmp) — rodar teste e permitido, editar o codigo versionado nao. O conserto e de outra task/agente."
 reason=$(printf '%s' "$reason" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/ /g')
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$reason"
 exit 0
