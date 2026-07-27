@@ -50,12 +50,12 @@
 ### Fase E0 — Setup do gerador e prep do exemplo
 
 - [x] **E0.1** Scaffold dos pacotes: `codegen/`, `codegen/emit/`, `codegen/lower/`,
-  `codegen/rtsrc/`, cada um com `doc.go`. Adicionar `driver.GenerateProject(dir, out,
+  `codegen/rtsrc/`, cada um com [doc.go](../../../../codegen/doc.go). Adicionar `driver.GenerateProject(dir, out,
   opts)` (stub que só chama `CheckProject` e recusa se `HasErrors`, imprimindo o bag)
   e reestruturar `cmd/dsc` para **subcomandos**: `dsc check <path>` (comportamento
   atual, default quando o 1º arg não é subcomando conhecido — retrocompatível) e
   `dsc gen <dir> -o <out>` (stub). _(REQ-14, REQ-32, §design 2/3.15)_
-  **Toca:** `codegen/*`, `driver/driver.go` (+`GenerateProject`), `cmd/dsc/main.go`
+  **Toca:** `codegen/*`, [driver.go](../../../../driver/driver.go) (+`GenerateProject`), [main.go](../../../../cmd/dsc/main.go)
   (`run` vira dispatcher de subcomando + parse de `-o`; hoje aceita só 1 arg
   posicional e sempre valida).
   **Conclusão:** `go build ./...` compila os pacotes vazios; `dsc gen <projeto-com-
@@ -95,7 +95,7 @@
   gofmt-ada e **byte-idêntica** entre duas emissões.
   **Commit:** `feat(emit): Emitter com imports geridos e go/format`
 
-- [x] **E1.2** `names.go`: mapeamento de identificadores — tipo (PascalCase), campo
+- [x] **E1.2** [names.go](../../../../codegen/goname/names.go): mapeamento de identificadores — tipo (PascalCase), campo
   (exporta + tag `json` com nome original), `Operator`→método (`+`→`Add`, `-`→`Sub`,
   `*`→`Mul`, `/`→`Div`, `>=`→`Gte`, `<=`→`Lte`, `>`→`Gt`, `<`→`Lt`, `==`→`Eq`,
   `!=`→`Neq`), membro de Enum (`Tipo`+`Membro`), pacote (nome do módulo, minúsculo),
@@ -203,7 +203,7 @@
 > ambiente de tipos, o dispatch de operador e o acesso a membro não sabem a forma Go.
 
 - [x] **E5.0** **`lower/env.go` — `TypeEnv` (ambiente de tipos local).** Implementa
-  `types.Scope`; semeia receptores por construto (espelhando `resolver/receivers.go`)
+  `types.Scope`; semeia receptores por construto (espelhando [receivers.go](../../../../resolver/receivers.go))
   e parâmetros (`Model.TypeOfRef`); ao percorrer o corpo, **estende o escopo em cada
   `AssignStmt` de alvo nu** inferindo o RHS, **incluindo o que `types.Infer` não
   cobre**: `load T(id)`→tipo de `T`; `list T … as V`→`List<V>` (sem `as`: `List<T>`);
@@ -449,12 +449,12 @@
 - [x] **H1** gRPC: `.proto` (de `InterfaceDecl` `GRPC` + `GrpcService`/`GrpcRPC`) +
   stubs, dep `google.golang.org/grpc` **isolada** num pacote de borda, **ausente** sem
   `Interface GRPC`. _(REQ-29, NFR-12, §design 3.12)_
-  **Conclusão:** `.proto` textual (`grpc_proto.go`) + servidor gRPC real sem
+  **Conclusão:** `.proto` textual ([grpc_proto.go](../../../../codegen/grpc_proto.go)) + servidor gRPC real sem
   protoc/`*.pb.go` (`grpc.ServiceDesc`/`MethodDesc` manuais + `encoding.Codec`
-  JSON, `grpc.go`); dep isolada em `grpcedge/` (vendorado, `codegen/grpcrt`),
+  JSON, [grpc.go](../../../../codegen/grpc.go)); dep isolada em `grpcedge/` (vendorado, `codegen/grpcrt`),
   ausente sem `Interface GRPC` (go.mod, golden, smoke via `go mod tidy` real, e
   round-trip comportamental via `bufconn` — fixture sintética `GrpcDemo`,
-  `grpc_test.go`).
+  [grpc_test.go](../../../../codegen/grpc_test.go)).
   **Commit:** `feat(codegen): exposição gRPC (dep isolada)`
 
 - [x] **H2** Observabilidade: `log/slog` (stdlib) por padrão com trace context; adapter
@@ -484,16 +484,16 @@
   núcleo (`Counter`/`Histogram`, `rtsrc/metrics.go.txt` — sem opt-in, ao
   contrário do adapter OTel de H2, que documenta métricas como fora de
   escopo). Dois gatilhos: `on Evento` vira subscriber no
-  `runtime.Dispatcher` (`WireMetrics`, `decl_metric.go`, mesmo padrão de
-  `decl_policy.go`; `needsDispatcher` como `hasCachedQueries`); `on
+  `runtime.Dispatcher` (`WireMetrics`, [decl_metric.go](../../../../codegen/decl_metric.go), mesmo padrão de
+  [decl_policy.go](../../../../codegen/decl_policy.go); `needsDispatcher` como `hasCachedQueries`); `on
   Saga.completed` vira hook direto no código gerado da própria Saga
-  (`decl_saga.go` — sem Dispatcher, já que uma Saga não publica nada ao
+  ([decl_saga.go](../../../../codegen/decl_saga.go) — sem Dispatcher, já que uma Saga não publica nada ao
   concluir), atualizado logo após sucesso com a duração
   (`time.Since(start).Seconds()`) quando um histogram não declara `value`.
   Fecha um gap do front-end: `MetricDecl` não passa por nenhuma resolução de
   nomes em REQ-9 (confirmado empiricamente — `resolveMetricOn` é a ÚNICA
   validação do gatilho `on`; `value`/`labels` são cruzados direto contra
-  `types.Model` em `decl_metric.go` antes de aceitar qualquer texto Go).
+  `types.Model` em [decl_metric.go](../../../../codegen/decl_metric.go) antes de aceitar qualquer texto Go).
   Buckets de DURATION materializados em segundos em tempo de geração
   (`lower.DurationLiteralSeconds`). Fixture sintética `MetricsDemo`
   (counter `DepositVolume` sobre o wallet real + histogram
@@ -507,7 +507,7 @@
 - [x] **H4** Testes gerados de `*.test.ds`: `given`/`when`/`then` (`ThenClause`/
   `ThenAssert`), `mock … returns`, `fail step X with InfraError`, `property`,
   `Fixture` → testes Go (`testing`). _(REQ-31, §design 3.14)_
-  **Progresso parcial (1ª fatia, `gentest.go`):** cenário de Aggregate (§22.1) —
+  **Progresso parcial (1ª fatia, [gentest.go](../../../../codegen/gentest.go)):** cenário de Aggregate (§22.1) —
   um `Test` cujo `Name` resolve a um `*ast.AggregateDecl` do módulo (mesmo
   casamento por nome que `sema/rules_test_files.go:sagaSteps` já faz para
   Saga) vira `func TestX(t *testing.T)`: `given [eventos]`/`given state{...}`
@@ -515,7 +515,7 @@
   sobrescreve `active` depois da 1ª) semeia o Aggregate direto (Apply real
   quando existe; seed campo-a-campo por nome quando não, ex. `WalletCreated`
   antes desta task — nunca via `EventStore`+`LoadX`, que quebraria no bootstrap
-  de um VO com Operator como `Money`, ver a doc de `gentest.go`); `when
+  de um VO com Operator como `Money`, ver a doc de [gentest.go](../../../../codegen/gentest.go)); `when
   Action(...)` despacha o Handle de mesmo nome (nunca o Command homônimo,
   convenção Command↔Handle do wallet); `then [eventos]` (via
   `reflect.DeepEqual`)/`then error Name` (via `errors.Is`) verifica o
@@ -565,7 +565,7 @@
   "Fixture Nome { Subject from [eventos] }" vira "func fixture<Nome>(t
   *testing.T) *<AggType>" no MESMO "<pkg>_test.go" (`EmitTests` passa a
   receber também `[]*ast.FixtureDecl`; `emitFixtureDecl`/`emitFixtureBody`/
-  `resolveFixtureAggregate`, `gentest.go`): reusa a MESMA máquina de given de
+  `resolveFixtureAggregate`, [gentest.go](../../../../codegen/gentest.go)): reusa a MESMA máquina de given de
   §22.1 (`emitAggregateGivenEntity` — Apply real quando existe, seed
   campo-a-campo quando não, ver a doc do arquivo sobre "seed direto, não
   replay de EventStore") porque a gramática não tem NENHUMA forma de ligar
@@ -587,7 +587,7 @@
   (§22.3) — um `Test` cujo `Name` resolve a um `*ast.SagaDecl` do módulo
   (checado depois de Aggregate/UseCase, mesmo mapa nome->decl) vira `func
   TestX(t *testing.T)` que chama `<base>RunSteps` DIRETO em vez da entrada
-  pública gerada (`PurchaseTickets(ctx, cmd)`, `decl_saga.go`): a entrada
+  pública gerada (`PurchaseTickets(ctx, cmd)`, [decl_saga.go](../../../../codegen/decl_saga.go)): a entrada
   "await" só devolve `(*State, error)`, nenhuma forma pública expõe
   `runtime.SagaResult` (`Compensated`/`Unrecoverable`/`FinalState`), exatamente
   o que `saga compensated`/`compensated [...]` precisam observar - `RunSteps`
@@ -598,12 +598,12 @@
   documenta. `given state {...}` (a ÚNICA forma suportada - uma Saga não tem
   Event/EventStore) sobrescreve `state.<Campo>` direto, ANTES do seed
   automático de `when Cmd(...)` (que copia todo campo de `state` cujo nome
-  bate com um campo do Command - mecanismo preexistente de `decl_saga.go`,
+  bate com um campo do Command - mecanismo preexistente de [decl_saga.go](../../../../codegen/decl_saga.go),
   não novo nesta fatia); o `cmd` vence em caso de colisão de nome (não há um
   2º `given` para desempatar como em §22.1). `mock Target returns X` resolve
   Target a um Adapter do módulo e reatribui a var de pacote que
   `Call<Nome>`/`Notify<Nome>` invocam por baixo (`adapterCallVarName`,
-  `decl_io.go` - NOVO seam desta fatia: antes, `Call`/`Notify` chamavam o
+  [decl_io.go](../../../../codegen/decl_io.go) - NOVO seam desta fatia: antes, `Call`/`Notify` chamavam o
   leaf HTTP/FFI direto, sem nenhum ponto de interceptação) para uma closure
   que registra a chamada (`then { called Target }`) e SEMPRE sucede - `X` é
   construído e type-checked como Go real, mas não pode desviar o fluxo de
@@ -626,13 +626,13 @@
   um Adapter) exigiu passar `adapterByName` por `EmitSaga`/`EmitSagas`/
   `emitSagaDecl`/`emitSagaStepFuncs`/`emitSagaStepPhaseFunc` até
   `StmtLowerer.WithNotifyAdapters` (mesmo registry que `EmitPolicies`/
-  `EmitUseCases` já recebem - `decl_saga.go`), e o novo seam de
-  `decl_io.go` (`var send<Nome>Fn = send<Nome>` / `var
+  `EmitUseCases` já recebem - [decl_saga.go](../../../../codegen/decl_saga.go)), e o novo seam de
+  [decl_io.go](../../../../codegen/decl_io.go) (`var send<Nome>Fn = send<Nome>` / `var
   call<Nome>ForeignFn = call<Nome>Foreign`, com `Call<Nome>`/`Notify<Nome>`
   agora invocando a VAR em vez do leaf direto) precisou de golden files
   atualizados (`adapter_deposit_notification.go.golden`,
   `adapter_payment_request.go.golden`) e das asserções `strings.Contains`
-  correspondentes em `decl_io_test.go`, que ainda checavam a chamada direta
+  correspondentes em [decl_io_test.go](../../../../codegen/decl_io_test.go), que ainda checavam a chamada direta
   pré-seam. Dois achados corrigidos nesta fatia, sobre o Go de fato gerado
   (não hipóteses): (1) um cenário cujo ÚNICO `then` é `called Adapter` (o
   único verbo que não lê `res`) gerava `res declared and not used` - erro de
@@ -668,7 +668,7 @@
   (análogo ao `ucSubjects` de §22.2, mas para dentro de um passo de Saga),
   maior que o resto desta fatia; nenhuma fixture real (wallet/shop) tem uma
   Saga que emite eventos hoje.
-  **Progresso parcial (5ª fatia, `gentest_property.go`):** `property`
+  **Progresso parcial (5ª fatia, [gentest_property.go](../../../../codegen/gentest_property.go)):** `property`
   (§22.5, REQ-31.3) — um `Test` cujo `Name` resolve a um `*ast.AggregateDecl`
   e declara `t.Properties` (checado depois dos `t.Scenarios` do mesmo Test,
   mesmo mapa `used` de `scenarioFuncName` para nunca colidir num nome de
@@ -683,7 +683,7 @@
   os campos e chama `New<VO>` até `err == nil`, com um teto
   `propGenMaxAttempts` como defesa contra um `Valid` tão restritivo que o
   gerador nunca o satisfaça. `ast.PropertyDecl` NÃO tem `GivenClause`
-  nenhuma (confirmado em `ast/test.go`/`parser/parse_testfile.go`) — começar
+  nenhuma (confirmado em [test.go](../../../../ast/test.go)/[parse_testfile.go](../../../../parser/parse_testfile.go)) — começar
   de um Aggregate zero-value tornaria a property vazia na prática (ex.
   `state.active` ficaria `false`, e todo Handle que depende de
   `state.active == ActiveStatus(true)` falharia em TODA chamada, a
@@ -750,7 +750,7 @@
   etapas.**
 
   *Camadas 1-2 (infraestrutura, sessão anterior, commit separado antes desta
-  fatia):* `hoistQueryPredicate` (`codegen/lower/stmt.go`) redesenhou `where`
+  fatia):* `hoistQueryPredicate` ([stmt.go](../../../../codegen/lower/stmt.go)) redesenhou `where`
   de um bool solto avaliado uma única vez para um predicado POR ITEM de
   verdade — `func(item T) bool { return cond }` — vinculando o `Binding` da
   query (ou o nome sintético `"item"`) a um `TypeEnv`-filho só para a duração
@@ -759,11 +759,11 @@
   novo) deu ao runtime vendorado um seam `Add`/`List`/`Count` mínimo,
   espelhando `Repository[T]`; `ListCall`/`CountCall` (`lower/builtins.go`)
   passaram a rotear por TIPO via `BuiltinLowerer.store(typeName)` — o MESMO
-  mecanismo `WithPerAggregateStore` que o caminho 2PC de `decl_usecase.go`
+  mecanismo `WithPerAggregateStore` que o caminho 2PC de [decl_usecase.go](../../../../codegen/decl_usecase.go)
   (G1) já provê, reusado sem nenhuma mudança de forma.
 
   *Camada 3 + geração de teste (esta fatia):* **Parte A**
-  (`codegen/decl_policy.go`) conectou as duas pontas que faltavam para um
+  ([decl_policy.go](../../../../codegen/decl_policy.go)) conectou as duas pontas que faltavam para um
   corpo de Policy usar `list`/`count`/`emit` de verdade — (1)
   `policyCollectionTypeNames` varre CADA `PolicyDecl.Execute` do arquivo
   (`astutil.ForEachExprInBlock` + `*ast.QueryExpr` "list"/"count", mesmo
@@ -785,7 +785,7 @@
   `TestGenerateShopPolicyRegistersSubscriberAndCompiles`, sobre a Policy real
   do shop, continuam verdes sem alteração).
 
-  **Parte B** (`codegen/gentest.go`) implementou o cenário §22.4 em si:
+  **Parte B** ([gentest.go](../../../../codegen/gentest.go)) implementou o cenário §22.4 em si:
   `EmitTests` ganhou um parâmetro `policies map[string]*ast.PolicyDecl`
   (`policiesByName`, construído em `codegen.go:generateModuleFiles` no MESMO
   padrão de `aggregates`/`usecasesByName`/`sagasByName`) e um 4º ramo na
@@ -819,7 +819,7 @@
   só tem `emitted count N` não revelaria tipo nenhum sozinho) por
   `*ast.EmitStmt` e devolve os nomes de Event distintos emitidos
   estaticamente; `emitPolicyDispatcherSetup` reatribui `policyDispatcher`
-  (var de pacote de `decl_policy.go`) para um `runtime.NewDispatcher()`
+  (var de pacote de [decl_policy.go](../../../../codegen/decl_policy.go)) para um `runtime.NewDispatcher()`
   PRÓPRIO do cenário, com um `Subscribe` por nome apontando para o MESMO
   coletor (`published []runtime.Event`), instalado ANTES de invocar a Policy
   — só quando o cenário de fato usa `emitted` (guarda por SCENARIO, não só
@@ -843,7 +843,7 @@
   canônico do spec agrupa por `orderId` (3 tickets, 2 orders, 2
   `RefundRequested`) — exige `distinct`/agrupamento (§20), que este codegen
   NÃO implementa em lugar nenhum (confirmado: só citado como trabalho futuro
-  em `codegen/lower/env.go`/`expr.go`). A fixture desta fatia dá a CADA
+  em [env.go](../../../../codegen/lower/env.go)/[expr.go](../../../../codegen/lower/expr.go)). A fixture desta fatia dá a CADA
   ticket um `orderId` DISTINTO — "para cada Ticket casado pelo `where`, emite
   um `RefundRequested`" já produz, sem nenhuma lógica de dedup, um evento por
   ticket — e ajusta as contagens do `then` de acordo (4 tickets, 3 casam com
@@ -881,16 +881,16 @@
   [CLAUDE.md](../../../../CLAUDE.md) (back-end deixa de ser "fora de escopo") e os specs. _(NFR-13, DoD §5)_
 
   **Auditoria de determinismo/idempotência — gap encontrado e fechado.** Antes
-  desta task, `driver/generate_test.go` (`TestGenerateProjectIdempotentSameBytes`,
+  desta task, [generate_test.go](../../../../driver/generate_test.go) (`TestGenerateProjectIdempotentSameBytes`,
   `TestGenerateProjectRemovesOrphanFiles`, genéricos sobre projetos sintéticos) e
-  `driver/generate_e2e_wallet_test.go` (`TestGenerateWalletE2ERegenTwoDirsByteIdentical`,
+  [generate_e2e_wallet_test.go](../../../../driver/generate_e2e_wallet_test.go) (`TestGenerateWalletE2ERegenTwoDirsByteIdentical`,
   `TestGenerateWalletE2ESmokeCompile`, `TestGenerateWalletE2EGoModHasNoExternalRequire`,
   `TestGenerateWalletE2EBehavior`) cobriam o Wallet — mas **nenhum teste chamava
-  `GenerateProject` sobre `docs/examples/shop`**: `driver/shop_regression_test.go`
-  só exercita o front-end (`CheckProject`/diagnósticos), e `codegen/channel_test.go`
+  `GenerateProject` sobre `docs/examples/shop`**: [shop_regression_test.go](../../../../driver/shop_regression_test.go)
+  só exercita o front-end (`CheckProject`/diagnósticos), e [channel_test.go](../../../../codegen/channel_test.go)
   usa fixtures sintéticas só "inspiradas" na topologia do Shop. Isso era um gap
   genuíno contra a DoD §5.2, que cita `docs/examples/shop` explicitamente. Fechado
-  com `driver/generate_e2e_shop_test.go`, espelhando a estrutura do arquivo do
+  com [generate_e2e_shop_test.go](../../../../driver/generate_e2e_shop_test.go), espelhando a estrutura do arquivo do
   Wallet: `TestGenerateShopE2ELayout` (estrutura multi-service — dois
   `cmd/<service>/main.go`, um por Service da `topology.ds`, Sales e Delivery, não
   um `cmd/shop`; `contracts/events.go` para o `PublicEvent` compartilhado
@@ -898,12 +898,12 @@
   reais sobre a saída escrita em disco), `TestGenerateShopE2EGoModHasNoExternalRequire`
   e `TestGenerateShopE2ERegenTwoDirsByteIdentical`. Achado registrado no processo:
   `docs/examples/shop/orders/mod.ds` declara `Database MainDb { provider: "postgres" }`,
-  mas `codegen/sql_wiring.go` (G1) só reconhece `"sqlite"` (case-insensitive) como
+  mas [sql_wiring.go](../../../../codegen/sql_wiring.go) (G1) só reconhece `"sqlite"` (case-insensitive) como
   adapter SQL real — `"postgres"` é decorativo (mesmo achado já documentado em
-  `codegen/sql_adapter_test.go`) — e não há `Interface GRPC` nem `Telemetry` em
+  [sql_adapter_test.go](../../../../codegen/sql_adapter_test.go)) — e não há `Interface GRPC` nem `Telemetry` em
   nenhum `.ds` do Shop; logo o `go.mod` gerado do Shop, como o do Wallet, não tem
   nenhum `require` — provado empiricamente pelo teste, não só por leitura do
-  código, então uma regressão futura em `sql_wiring.go` quebraria o teste, não
+  código, então uma regressão futura em [sql_wiring.go](../../../../codegen/sql_wiring.go) quebraria o teste, não
   passaria em silêncio. Julgamento sobre teste comportamental: o único Policy do
   Shop é `execute { return }` (sem lógica observável) e o exemplo não tem
   `*.test.ds`; sintetizar uma fixture de negócio à parte (mesmo esforço que a
@@ -926,13 +926,13 @@
      o **front-end** também não as modela — não são gaps do gerador.
   2. **Atendido, e agora com paridade de evidência entre os dois exemplos.** Antes
      desta task o Wallet tinha cobertura E2E completa e o Shop só tinha cobertura
-     de front-end; o gap foi fechado por `generate_e2e_shop_test.go` (acima).
+     de front-end; o gap foi fechado por [generate_e2e_shop_test.go](../../../../driver/generate_e2e_shop_test.go) (acima).
   3. **Atendido.** `TestGenerateProjectIdempotentSameBytes` (mesmo `out`, duas
      rodadas, sem reescrita de arquivo inalterado — inclusive prova por `mtime`),
      `TestGenerateWalletE2ERegenTwoDirsByteIdentical` e
      `TestGenerateShopE2ERegenTwoDirsByteIdentical` (dois `out` distintos, bytes
      idênticos) — todos verdes.
-  5. **Atendido.** Todo pacote de emissores (`codegen/decl_*.go`, `http.go`,
+  5. **Atendido.** Todo pacote de emissores (`codegen/decl_*.go`, [http.go](../../../../codegen/http.go),
      `grpc.go`, `observ.go`, `gentest.go`, …) tem par de golden test (51 artefatos
      `.golden` sob `codegen/`); dependências externas (`sqlrt`, `grpcrt`, `otelrt`)
      isoladas em subpacotes próprios, referenciadas só quando o programa as exige
@@ -941,7 +941,7 @@
      `TestGenerateShopE2EGoModHasNoExternalRequire` prova que o `go.mod` de ambos
      os exemplos não tem `require`; o núcleo (`runtime/`) depende só da stdlib
      (REQ-16.2).
-  6. **Atendido.** `cmd/dsc/main_test.go`: `TestRunGenRefusesInvalidProject` (exit
+  6. **Atendido.** [main_test.go](../../../../cmd/dsc/main_test.go): `TestRunGenRefusesInvalidProject` (exit
      1, nada escrito) e `TestRunGenValidProjectWritesFiles` (gera de fato), mais
      `TestRunGenMissingOutFlagExitsTwo` (uso incorreto → exit 2) — no nível de CLI,
      não só de `driver.GenerateProject`.
@@ -957,7 +957,7 @@
   [README.md](../../README.md) e [CLAUDE.md](../../../../CLAUDE.md) (raiz) atualizados para descrever os dois estágios:
   pipeline com o estágio de geração, seção de back-end (`dsc gen`,
   `driver.GenerateProject`, o que é gerado, núcleo sem deps vs. deps opt-in),
-  CLI com o subcomando `gen` (verificado contra `cmd/dsc/main.go` antes de
+  CLI com o subcomando `gen` (verificado contra [main.go](../../../../cmd/dsc/main.go) antes de
   documentar), Estado cobrindo os dois ciclos com os dois Definition of Done.
   [CLAUDE.md](../../../../CLAUDE.md) ganhou uma seção "Back-end architecture invariants" (núcleo vs.
   deps opt-in, golden+smoke pareados, determinismo) e as entradas de pacote de

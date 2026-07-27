@@ -5,9 +5,9 @@
   dependência externa real por categoria é sqlite — o sistema gerado hoje
   **não é implantável contra infraestrutura real** além disso. Categorias em
   aberto: Database (spec pede Postgres §12; só `"sqlite"` é adapter real,
-  `"postgres"`/`"mongodb"` são rótulos decorativos — `codegen/sql_wiring.go`);
+  `"postgres"`/`"mongodb"` são rótulos decorativos — [sql_wiring.go](../../../codegen/sql_wiring.go));
   Canais (`grpc`/`http`/`stream` §11 → erro de geração; provider `rabbitmq`
-  não existe, só `direct`/`queue` in-memory — `codegen/channel_test.go`);
+  não existe, só `direct`/`queue` in-memory — [channel_test.go](../../../codegen/channel_test.go));
   Cache backend (`redis`/`layered` §15 → só in-memory); RateLimit backend
   (`redis` §16 → só in-memory); FileStorage (`"s3"` §12 → seam in-memory);
   Idempotency storage (`external` Redis/Dynamo §14 → só `same` in-memory,
@@ -27,8 +27,8 @@
   do recorte, para ciclos futuros.
 
   FECHADA PARCIALMENTE (Marco J concluído, J7.1): as 5 categorias do recorte
-  têm provider real — Postgres (J1, `codegen/pgrt` + `sql_wiring.go`),
-  RabbitMQ (J3, `codegen/channel_rabbitmq.go`), Redis Cache+RateLimit (J4,
+  têm provider real — Postgres (J1, `codegen/pgrt` + [sql_wiring.go](../../../codegen/sql_wiring.go)),
+  RabbitMQ (J3, [channel_rabbitmq.go](../../../codegen/channel_rabbitmq.go)), Redis Cache+RateLimit (J4,
   `codegen/redisrt`), S3 FileStorage (J5, `codegen/s3rt`), Outbox durável
   (J2, `runtime.DurableOutbox`/`sql_wiring.go:emitOutboxDatabaseWiring`) —
   todos opt-in, isolados atrás do seam existente, cobertos por golden +

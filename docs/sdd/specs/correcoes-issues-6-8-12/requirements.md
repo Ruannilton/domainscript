@@ -18,18 +18,18 @@
 Fechar o remanescente de três issues, cada uma corrigida na causa-raiz **já
 confirmada por reprodução**, até onde o escopo de codegen/runtime/sema alcança:
 
-- **REQ-55 (ISSUE-12, `codegen/decl_query.go` + `codegen/codegen.go` +
+- **REQ-55 (ISSUE-12, [decl_query.go](../../../../codegen/decl_query.go) + [codegen.go](../../../../codegen/codegen.go) +
   `codegen/rtsrc/`):** `list <Aggregate>` — enumerar instâncias de um Aggregate
   no Read Side — **não existe** no back-end, e é o que trava o `pizzeria` hoje.
   Somado a isso, o `pizzeria` bate em duas guardas de wiring de service. É o
   item de maior valor: fecha um gap de codegen genuíno *e* desbloqueia o
   exemplo inteiro (hoje em `KNOWN_UNGENERATABLE` no CI).
-- **REQ-56/57/58/59 (ISSUE-6, `codegen/gentest*.go`, `codegen/decl_saga.go`,
+- **REQ-56/57/58/59 (ISSUE-6, `codegen/gentest*.go`, [decl_saga.go](../../../../codegen/decl_saga.go),
   `codegen/lower/`, `codegen/rtsrc/`):** a fatia de semântica de teste que o
   Marco L não alcançou — `emit` em passo de Saga (hoje **miscompilação
   silenciosa**, não erro claro), `mock ... returns X` com valor efetivo,
   shrinking de `property`, e `rolledback` provando reversão real.
-- **REQ-60 (ISSUE-8, `sema/rules_warnings.go`):** o refino de cobertura §22.7
+- **REQ-60 (ISSUE-8, [rules_warnings.go](../../../../sema/rules_warnings.go)):** o refino de cobertura §22.7
   para granularidade **por ramo de `Error`** — que a análise de raiz deste ciclo
   mostrou **viável em `sema` sem re-arquitetura** — mais a reclassificação
   documentada dos itens que dependem do spec da linguagem.
@@ -86,7 +86,7 @@ O que já existe e **não** é trabalho deste ciclo:
   (`emitCombinedWireFunc`), o call site em `generateCmdMainFile`,
   `lowerAccessCondition` com `caller.hasRole(...)` puro, `emitApply` com
   `BuiltinLowerer`, e `then state { ... }` de Aggregate ponta a ponta
-  (`ast/test.go` → `parser/parse_testfile.go` → `codegen/gentest.go`).
+  ([test.go](../../../../ast/test.go) → [parse_testfile.go](../../../../parser/parse_testfile.go) → [gentest.go](../../../../codegen/gentest.go)).
 - **Read Side (Marco I):** `tryEmitListVO` (`list <VO>` correlacionado a um
   campo `AppendList<VO>` de um Aggregate), `emitLoadAsView`,
   `emitHoistedQueryReturn` e `emitHoistedJoinReturn` — o caminho de cláusulas
@@ -96,7 +96,7 @@ O que já existe e **não** é trabalho deste ciclo:
   no-op documentado; `runtime.Query[T]`/`collection.go.txt`.
 - **Geração de testes `*.test.ds`** (Marco H4 + L2.1), cobrindo §22.1–22.6 no
   caminho feliz.
-- **`checkHandleErrorCoverage`** (`sema/rules_warnings.go`, REQ-5.22) na
+- **`checkHandleErrorCoverage`** ([rules_warnings.go](../../../../sema/rules_warnings.go), REQ-5.22) na
   granularidade **por Handle**, com `handleRaisesError` já percorrendo cada
   `ensure … else <Error>` e `testedErrorHandles` já lendo `ThenClause.Error`.
 
@@ -150,7 +150,7 @@ where … orderBy … as KitchenTicketVW }` e ter o back-end gerado, em vez de
    afeta exclusivamente a forma `list <Aggregate>`, hoje um erro (NFR-31).
 7. THE SYSTEM SHALL suportar, em `generateCmdMainFile`, um service com **mais de
    um módulo produtor de canal de saída "queue"** — hoje um erro de geração
-   explícito (`codegen/codegen.go`, guarda F5).
+   explícito ([codegen.go](../../../../codegen/codegen.go), guarda F5).
 8. THE SYSTEM SHALL suportar, no MESMO service, um módulo produtor de canal de
    saída **e** um módulo que precisa de `Dispatcher` (Policy local, Query
    cacheada ou Metric) — hoje um erro de geração explícito (guarda F5/G3).
@@ -185,7 +185,7 @@ clara — nunca gere Go quebrado.
    `<Subject> emitted <Evento>(...)` no `then` de um Test de Saga (§22.3), hoje
    rejeitado pelo `default` de `emitSagaThenAssert`.
 5. THE SYSTEM SHALL manter **byte-idêntica** a saída de qualquer Saga que não
-   use `emit` em passo (wallet/shop e as fixtures de `gentest_saga_test.go`).
+   use `emit` em passo (wallet/shop e as fixtures de [gentest_saga_test.go](../../../../codegen/gentest_saga_test.go)).
 
 ### REQ-57 — `mock ... returns X` com valor efetivo (ISSUE-6)
 
@@ -201,7 +201,7 @@ valor ser construído e descartado.
 2. WHERE o contrato de REQ-57.1 for implementável sem nova gramática de
    front-end, THE SYSTEM SHALL suportar `result = call <Adapter>(...)` (§18.2,
    a forma do próprio exemplo de Saga do spec), hoje um erro explícito em
-   `codegen/lower/builtins.go` (`QueryExpr.Op "call"`).
+   [builtins.go](../../../../codegen/lower/builtins.go) (`QueryExpr.Op "call"`).
 3. WHERE REQ-57.2 for entregue, THE SYSTEM SHALL fazer o valor `X` de
    `mock <Target> returns X` ser o **retorno efetivo** do alvo mockado,
    substituindo o `_ = <expr>` de hoje em `emitSagaMock`.
@@ -224,7 +224,7 @@ completa.
 2. THE SYSTEM SHALL manter o shrinking **determinístico** (NFR-13): o mesmo
    programa e a mesma falha produzem o mesmo contra-exemplo mínimo, sobre a
    semente fixa derivada de `(Test.Name, Property.Name)` que
-   `gentest_property.go` já usa — nunca `time.Now`.
+   [gentest_property.go](../../../../codegen/gentest_property.go) já usa — nunca `time.Now`.
 3. WHEN uma `property` passa, THE SYSTEM SHALL não executar shrinking algum
    (sem custo no caminho verde).
 4. THE SYSTEM SHALL manter a saída gerada de uma `property` byte-idêntica no que
@@ -336,12 +336,12 @@ escopo de teste é o da task, não a suíte inteira; CI roda o resto.
 
 | Requisito | Tema | Issue | Pacote/arquivo-raiz | Marco |
 |---|---|---|---|---|
-| REQ-55 | `list <Aggregate>` + wiring de service + `pizzeria` | ISSUE-12 | `codegen/decl_query.go`, `codegen/codegen.go`, `codegen/rtsrc/eventstore.go.txt` | M1 |
-| REQ-56 | `emit` em passo de Saga | ISSUE-6 | `codegen/decl_saga.go`, `codegen/lower/stmt.go`, `codegen/gentest.go` | M2 |
-| REQ-57 | `mock … returns X` com valor efetivo | ISSUE-6 | `codegen/lower/builtins.go`, `codegen/decl_io.go`, `codegen/gentest.go` | M3 |
-| REQ-58 | Shrinking de `property` | ISSUE-6 | `codegen/gentest_property.go` | M4 |
-| REQ-59 | `rolledback` com staging | ISSUE-6 | `codegen/rtsrc/uow.go.txt`, `codegen/gentest.go` | M4 |
-| REQ-60 | Cobertura §22.7 por ramo de `Error` | ISSUE-8 | `sema/rules_warnings.go` | M5 |
+| REQ-55 | `list <Aggregate>` + wiring de service + `pizzeria` | ISSUE-12 | [decl_query.go](../../../../codegen/decl_query.go), [codegen.go](../../../../codegen/codegen.go), `codegen/rtsrc/eventstore.go.txt` | M1 |
+| REQ-56 | `emit` em passo de Saga | ISSUE-6 | [decl_saga.go](../../../../codegen/decl_saga.go), [stmt.go](../../../../codegen/lower/stmt.go), [gentest.go](../../../../codegen/gentest.go) | M2 |
+| REQ-57 | `mock … returns X` com valor efetivo | ISSUE-6 | [builtins.go](../../../../codegen/lower/builtins.go), [decl_io.go](../../../../codegen/decl_io.go), [gentest.go](../../../../codegen/gentest.go) | M3 |
+| REQ-58 | Shrinking de `property` | ISSUE-6 | [gentest_property.go](../../../../codegen/gentest_property.go) | M4 |
+| REQ-59 | `rolledback` com staging | ISSUE-6 | `codegen/rtsrc/uow.go.txt`, [gentest.go](../../../../codegen/gentest.go) | M4 |
+| REQ-60 | Cobertura §22.7 por ramo de `Error` | ISSUE-8 | [rules_warnings.go](../../../../sema/rules_warnings.go) | M5 |
 | REQ-61 | Delimitações e reclassificações | ISSUE-6, ISSUE-8, ISSUE-12 | [gaps.md](../codegen/gaps.md), `../../issues/` | M5 |
 
 ---

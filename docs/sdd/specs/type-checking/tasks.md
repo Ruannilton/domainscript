@@ -85,12 +85,12 @@
   **Conclusão:** compila; teste de identidade/igualdade de tipos.
   **Commit:** `feat(types): representação de Type e variantes`
 
-- [x] **C.2** `model.go`: `TypeOf(symbol)` e catálogo de membros por tipo
+- [x] **C.2** [model.go](../../../../types/model.go): `TypeOf(symbol)` e catálogo de membros por tipo
   (campos de VO/Aggregate/Event/Command, membros de Enum). _(REQ-11.1, §design 3.5)_
   **Conclusão:** teste que dado um Aggregate, `state`/`self` expõem seus campos.
   **Commit:** `feat(types): tipo de declaração e catálogo de membros`
 
-- [x] **C.3** `infer.go`: `Infer(expr, scope)` com propagação de `errorType` sem
+- [x] **C.3** [infer.go](../../../../types/infer.go): `Infer(expr, scope)` com propagação de `errorType` sem
   cascata. _(REQ-11.2/11.3, §design 3.5)_
   **Conclusão:** testes de inferência (literal, construção de VO, acesso, operador);
   teste de que subexpressão de erro produz `errorType` e **não** emite diagnóstico.
@@ -102,7 +102,7 @@
 
 > Fecha o bug `self.i`. Depende de C.
 
-- [x] **D.1** Regra de acesso a membro em `sema/rules_typecheck.go`: valida
+- [x] **D.1** Regra de acesso a membro em [rules_typecheck.go](../../../../sema/rules_typecheck.go): valida
   `X.nome` contra o catálogo do tipo de `X`; pula `errorType`; sugere membro mais
   próximo. _(REQ-12.1/12.2/12.3/12.4, §design 3.6)_
   **Conclusão (par de testes):** `self.i` (campo inexistente) dispara erro

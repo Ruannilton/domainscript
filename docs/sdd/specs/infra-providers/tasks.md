@@ -25,7 +25,7 @@
 ### Fase J0 — Registro de provider por categoria (peça transversal, REQ-46)
 
 - [x] **J0.1** Tipo e mapas do registro.
-  - a. `codegen/provider_registry.go` (novo): tipo `providerDep {module,
+  - a. [provider_registry.go](../../../../codegen/provider_registry.go) (novo): tipo `providerDep {module,
     version, minGo, adapterDir, ctor}` + mapas vazios `channelProviders`/
     `cacheProviders`/`rateLimitProviders`/`fileProviders`. (REQ-46.1, §design
     2.1).
@@ -37,7 +37,7 @@
   - d. Teste: registro vazio ⇒ `activeProviderDeps` vazio; dois mapas com o
     MESMO módulo/dir ⇒ uma entrada só.
 - [x] **J0.2** `EmitGoMod` consome o registro.
-  - a. `EmitGoMod` (`project.go`) itera `activeProviderDeps` além de
+  - a. `EmitGoMod` ([project.go](../../../../codegen/project.go)) itera `activeProviderDeps` além de
     `activeSQLProviders`; `require` ordenado por módulo. (REQ-46.2, §design 2.2).
   - b. `go` diretiva sobe para `maxGoVersion` de todos os ativos (reusa helper
     de I7.0).
@@ -71,7 +71,7 @@
     idêntico entre SqliteDialect e PostgresDialect (nenhum tipo que passe num e
     falhe no outro). (§design 3.1, R7).
   - d. Teste unit do dialeto (strings esperadas), reusando o padrão de
-    `sql_dialect_test.go` (o dialeto `$1` sobre sqlite já existe lá).
+    [sql_dialect_test.go](../../../../codegen/sql_dialect_test.go) (o dialeto `$1` sobre sqlite já existe lá).
 - [x] **J1.2** Driver + registro + go.mod.
   - a. `open_postgres.go.txt`: `Open(dsn) (*sql.DB, error)` via
     `sql.Open("pgx", dsn)`. (REQ-41.3).
@@ -133,12 +133,12 @@
     linha entregue roteia por `publisher.Publish` em vez dos handlers
     localmente assinados via `Subscribe` — decisão tomada UMA vez por
     instância (não por `event_type` dinamicamente; mesma exclusividade
-    mútua que `codegen.go` já impõe hoje entre dispatcher/canal por
+    mútua que [codegen.go](../../../../codegen/codegen.go) já impõe hoje entre dispatcher/canal por
     módulo). Só marca `delivered_at` após o `Publish` suceder; uma falha
     incrementa `attempts` e re-tenta (REQ-42.6, §design 3.2a).
   - b. **Reclassificado para J2.5:** "proibir publish direto no commit" é
-    uma decisão de WIRING (qual valor `codegen.go` passa como publisher de
-    `NewUnitOfWork`/qual `main.go` constrói) — pertence à task de
+    uma decisão de WIRING (qual valor [codegen.go](../../../../codegen/codegen.go) passa como publisher de
+    `NewUnitOfWork`/qual [main.go](../../../../cmd/dsc/main.go) constrói) — pertence à task de
     wiring/seleção (J2.5), não ao mecanismo do `DurableOutbox` em si. A
     garantia "crash entre commit e publish ⇒ evento re-entregue" já está
     provada nesta task no nível do relay (independe de qual publisher o
@@ -149,7 +149,7 @@
     entregues além da janela de retenção via `PurgeDelivered`. (REQ-42.7).
   - b. `NewDurableOutbox(db, dialect, dispatcher, publisher)` quando o módulo
     tem Database real, senão `NewOutbox(dispatcher)` de hoje; `Start(ctx)` do
-    relay e do cleanup no `main.go`. (REQ-42.5).
+    relay e do cleanup no [main.go](../../../../cmd/dsc/main.go). (REQ-42.5).
   - c. Golden + smoke; sem Database real ⇒ wiring byte-idêntico (NFR-21/23).
   - **Nota de escopo (ver ISSUE-9):** fechado o lado CONSUMIDOR (uma Policy
     AtLeastOnce local com Database real). O lado PRODUTOR (parar de publicar
@@ -178,9 +178,9 @@
     cada factory (provado pelo teste com um registry mesclado local+
     contracts). O CALL SITE que de fato monta `contracts.EventRegistry()` +
     o registry do módulo e o passa a `NewRabbitMQChannel` é wiring
-    (`decl_policy.go`/`generateCmdMainFile`), tarefa de **J3.4** — esta task
+    ([decl_policy.go](../../../../codegen/decl_policy.go)/`generateCmdMainFile`), tarefa de **J3.4** — esta task
     não seleciona nem constrói `rabbitmqChannel` a partir de nenhum `.ds`
-    ainda (`channel.go` continua sempre in-memory, NFR-21 intacto).
+    ainda ([channel.go](../../../../codegen/channel.go) continua sempre in-memory, NFR-21 intacto).
 - [x] **J3.2** **(R6)** Ordenação por partição + poison pill.
   - a. `orderBy` declarado ⇒ **exchange consistent-hash** por `hash(chave)` →
     N filas de partição, um consumidor por partição (ordem por chave, paralelo
@@ -205,7 +205,7 @@
     §design 3.3).
   - b. Teste unit: fechar o canal fake ⇒ o supervisor tenta reabrir.
 - [x] **J3.4** Seleção + wiring + integração.
-  - a. `channel.go`: `channelProvider(ch)` lê `provider` de `ch.Decl.Entries`
+  - a. [channel.go](../../../../codegen/channel.go): `channelProvider(ch)` lê `provider` de `ch.Decl.Entries`
     (R2); produtor/consumidor trocam `NewQueueChannel` por
     `NewRabbitMQChannel(url, cfg, keyFunc)` quando `"rabbitmq"`; sem provider ⇒
     in-memory; grpc/http/stream ⇒ erro de sempre. (REQ-43.2/43.7, R2).
@@ -247,7 +247,7 @@
   - c. Teste unit do script/chave + fallback (Redis fake com erro ⇒ usa local,
     não libera tudo); integração `REDIS_URL`.
 - [x] **J4.3** **(R2/R3)** Seleção + wiring.
-  - a. `decl_query_cache.go`/`ratelimit.go`: trocam construtor in-memory pelo
+  - a. [decl_query_cache.go](../../../../codegen/decl_query_cache.go)/[ratelimit.go](../../../../codegen/ratelimit.go): trocam construtor in-memory pelo
     redis quando `Cache{backend:redis}`/`RateLimit{backend:redis}` (lidos dos
     ConfigBlocks de módulo); URL de `env(...)`. (REQ-44.4, R1).
   - b. **(R3)** Teste de fixture confirma que `url:/connection: env(...)` nos
@@ -267,7 +267,7 @@
     REQ-45.3).
   - c. Teste unit da montagem de key/metadata/layout, sem infra.
 - [x] **J5.2** **(R2)** Seleção + wiring.
-  - a. `decl_filestorage.go`: `fileStorageProvider(fs)` lê `provider` de
+  - a. [decl_filestorage.go](../../../../codegen/decl_filestorage.go): `fileStorageProvider(fs)` lê `provider` de
     `fs.Decl.Entries` (R2); troca `NewMemoryFileStorage` por
     `NewS3FileStorage(bucket, region)` quando `"s3"`; bucket/região de
     `env(...)`, credenciais pela cadeia AWS padrão. (REQ-45.4, R1/R2).
@@ -287,7 +287,7 @@
   - c. Gera, builda **offline** (`go build -mod=vendor`) + `go vet`a com os
     cinco adapters e o `vendor/` presentes (golden + smoke, REQ-48.1, R10).
 - [x] **J6.2** **(R1)** Wiring multi-recurso fail-closed com `run() error`.
-  - a. O `main.go`-âncora gera o corpo num `func run() error` (cada passo
+  - a. O [main.go](../../../../cmd/dsc/main.go)-âncora gera o corpo num `func run() error` (cada passo
     `return err`, `defer Close()` no unwind, `main()` faz o `log.Fatal` único) —
     não vaza recurso já aberto se o próximo falhar. (REQ-47.2/47.3, §design 3.6).
   - b. Teste: smoke confirma a forma `run() error` + `defer Close()` por

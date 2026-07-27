@@ -67,7 +67,7 @@ alias opcional só é consumido se o `IDENT` candidato está na **mesma linha** 
 o token que o precede (o alvo/fonte já consumido). Se está numa linha nova, é o
 começo de outro statement — não um binding.
 
-- Novo helper de cursor (p.ex. `sameLineAsPrev()` em `parser.go`): compara
+- Novo helper de cursor (p.ex. `sameLineAsPrev()` em [parser.go](../../../../parser/parser.go)): compara
   `p.cur().Pos.Line` com `p.lastPos.Line`.
 - `parseQueryOp`: trocar
   `if p.at(token.IDENT) && !isClauseKw(p.cur().Lit)`
@@ -83,8 +83,8 @@ outros começos de statement; a régua de linha é mais geral e mais barata.
 
 ### 2.3. Arquivos e testes
 
-- `parser/parser.go` — helper `sameLineAsPrev()`.
-- `parser/parse_query.go` — guarda de linha no binding e no alias de `join`.
+- [parser.go](../../../../parser/parser.go) — helper `sameLineAsPrev()`.
+- [parse_query.go](../../../../parser/parse_query.go) — guarda de linha no binding e no alias de `join`.
 - Testes (`parser/…_test.go`, par NFR-4):
   - **positivo/regressão-do-bug:** duas atribuições consecutivas
     (`order = load Bar(id)` / `x = id`) parseiam sem diagnóstico e produzem dois
@@ -278,8 +278,8 @@ a conexão real (mesma `databaseConnectionGo`/`provider.openFunc` de
 `emitXADatabaseWiring`), montar o `EventStore` sql, e construir
 `sqlruntime.NewUnitOfWork(db, EventRegistry(), dialect, …)` em vez de
 `runtime.NewUnitOfWork(store)`. Isolar num helper análogo a `emitXADatabaseWiring`
-(p.ex. `emitSingleDatabaseWiring` em `sql_wiring.go`), acionado por uma nova
-marca de módulo (`moduleMarks.singleDatabase`, calculada em `codegen.go` quando o
+(p.ex. `emitSingleDatabaseWiring` em [sql_wiring.go](../../../../codegen/sql_wiring.go)), acionado por uma nova
+marca de módulo (`moduleMarks.singleDatabase`, calculada em [codegen.go](../../../../codegen/codegen.go) quando o
 módulo produtor tem exatamente 1 Database real e um canal de saída — sem 2PC).
 
 **(P2) Enfileirar o PublicEvent cross-service via `tx.EnqueueOutbox`**
@@ -303,7 +303,7 @@ após `fn` e **antes** de `Commit`, `tx.EnqueueOutbox(<apensados desse conjunto>
 os demais apensados (eventos de domínio internos) seguem só no stream, nunca no
 outbox nem no canal. Eventos locais de módulos sem canal seguem 100% inalterados.
   - Vantagem da rota (b): o corpo gerado do UseCase/Handle fica byte-idêntico —
-    a mudança é isolada na construção da UoW e no `main.go` (P1/P3/P4).
+    a mudança é isolada na construção da UoW e no [main.go](../../../../cmd/dsc/main.go) (P1/P3/P4).
   - Filtro (REQ-51.4): sem ele, um evento de domínio interno apensado junto
     (não-`PublicEvent`) seria serializado e enviado cross-process à toa. O
     publisher in-memory de hoje podia publicar tudo (o consumidor filtra por
@@ -317,8 +317,8 @@ outbox nem no canal. Eventos locais de módulos sem canal seguem 100% inalterado
 **(P4) DurableOutbox do produtor com o canal como publisher + relay/cleanup**
 (REQ-51.2/4). Construir `runtime.NewDurableOutbox(outboxStore, registry,
 channelTransport)` para o produtor (o 3º argumento já existe desde J2.4 e está
-testado por `sql_outbox_channel_test.go`) e emitir `StartOutboxRelay(ctx)` /
-`StartOutboxCleanup(ctx)` em `main.go` (mesma mecânica de J2.5, hoje só usada
+testado por [sql_outbox_channel_test.go](../../../../codegen/sql_outbox_channel_test.go)) e emitir `StartOutboxRelay(ctx)` /
+`StartOutboxCleanup(ctx)` em [main.go](../../../../cmd/dsc/main.go) (mesma mecânica de J2.5, hoje só usada
 pelo lado consumidor). O `registry` é montado com as factories dos `PublicEvent`
 que o canal carrega (via `contracts.EventRegistry()` mesclado, o mecanismo de
 R8/J3.1). Roteamento por `event_type` (REQ-51.4): no recorte (um canal de saída
@@ -336,7 +336,7 @@ por produtor), todo evento enfileirado vai para esse único canal — o relay co
   módulo — o recorte de REQ-51.4 (um canal) é o que o código já permite.
 - A Policy **consumidora** cross-service (info.channel != nil) continua usando
   `NewOutbox(<canal>)`, **não** o DurableOutbox (anotado em
-  `anchor_fixture_test.go`): REQ-51 é sobre o **produtor** alimentar o canal, não
+  [anchor_fixture_test.go](../../../../codegen/anchor_fixture_test.go)): REQ-51 é sobre o **produtor** alimentar o canal, não
   sobre o consumidor. As duas metades permanecem provadas separadamente, mas
   agora o produtor ganha a durabilidade que faltava.
 
@@ -356,28 +356,28 @@ por produtor), todo evento enfileirado vai para esse único canal — o relay co
 
 **Exerciser = fixture com `provider: "rabbitmq"`:**
 
-- A **fixture-âncora de J6** (`codegen/anchor_fixture_test.go`), cujo
+- A **fixture-âncora de J6** ([anchor_fixture_test.go](../../../../codegen/anchor_fixture_test.go)), cujo
   `AnchorOrders` é postgres + canal `queue provider: "rabbitmq"`, **passa a
   ativar** o caminho: suas asserções de wiring de `AnchorOrders` mudam
   deliberadamente (abre o Database, monta o OutboxStore, enfileira, sobe o
   relay em vez de `NewUnitOfWork(store, canal)`). É o exerciser pretendido, não
   uma regressão de exemplo publicado.
-- Uma **fixture sintética dedicada** (nova, `codegen/producer_outbox_test.go`,
-  espelhando como o lado consumidor ganhou `decl_policy_outbox_test.go`): 1
+- Uma **fixture sintética dedicada** (nova, [producer_outbox_test.go](../../../../codegen/producer_outbox_test.go),
+  espelhando como o lado consumidor ganhou [decl_policy_outbox_test.go](../../../../codegen/decl_policy_outbox_test.go)): 1
   módulo produtor (postgres + canal rabbitmq) + 1 consumidor — foco no wiring do
   produtor, isolado da complexidade multi-provider da âncora.
 - O teste comportamental fim-a-fim do "crash simulado" roda sobre **sqlite** real
-  + um `fakePublisher` (mesmo padrão de `sql_outbox_channel_test.go`), sem
+  + um `fakePublisher` (mesmo padrão de [sql_outbox_channel_test.go](../../../../codegen/sql_outbox_channel_test.go)), sem
   RabbitMQ vivo: o relay não abre broker em `go build`/`go vet` (só em runtime),
   e o `Publish` é substituído pelo `fakePublisher` que falha na 1ª tentativa.
 
 ### 4.5. Arquivos e testes
 
 Arquivos (rota (b) resolvida — corpo gerado do UseCase/Handle **não** muda):
-- `codegen/codegen.go` — detecção do produtor durável (`durableProducer`, §4.1:
+- [codegen.go](../../../../codegen/codegen.go) — detecção do produtor durável (`durableProducer`, §4.1:
   Database real + canal `provider:"rabbitmq"`); trocar o publisher da UoW; emitir
   o relay/cleanup do produtor em `generateCmdMainFile`.
-- `codegen/sql_wiring.go` — `emitSingleDatabaseWiring` (P1) + `OutboxStore` do
+- [sql_wiring.go](../../../../codegen/sql_wiring.go) — `emitSingleDatabaseWiring` (P1) + `OutboxStore` do
   produtor + resolução do conjunto de `event_type` carregados pelo canal.
 - `codegen/sqlrt/uow.go.txt` (+ `rtsrc/uow.go.txt` só para o parâmetro na
   interface, se necessário) — `NewUnitOfWork` do produtor recebe o conjunto de
@@ -385,14 +385,14 @@ Arquivos (rota (b) resolvida — corpo gerado do UseCase/Handle **não** muda):
   `tx.EnqueueOutbox` **antes** do `Commit`, em vez de publicá-los pós-commit
   (P2/REQ-51.4). O caminho sem esse conjunto (todos os outros módulos) fica
   byte-idêntico.
-- **NÃO tocados:** `codegen/lower/stmt.go` (emit) e o corpo do UseCase — a rota
+- **NÃO tocados:** [stmt.go](../../../../codegen/lower/stmt.go) (emit) e o corpo do UseCase — a rota
   (b) os deixa intactos; golden/e2e de `wallet` e `shop` — byte-idênticos (§4.4).
-- Fixtures de teste atualizadas: `codegen/anchor_fixture_test.go` (asserções de
-  `AnchorOrders`, exerciser real) + nova `codegen/producer_outbox_test.go`.
+- Fixtures de teste atualizadas: [anchor_fixture_test.go](../../../../codegen/anchor_fixture_test.go) (asserções de
+  `AnchorOrders`, exerciser real) + nova [producer_outbox_test.go](../../../../codegen/producer_outbox_test.go).
 
 Testes (par NFR-4):
 - **wiring (positivo do produtor durável):** fixture sintética dedicada (produtor
-  Database real + canal `queue provider:"rabbitmq"`) — `main.go` abre a conexão,
+  Database real + canal `queue provider:"rabbitmq"`) — [main.go](../../../../cmd/dsc/main.go) abre a conexão,
   monta o OutboxStore, constrói `NewDurableOutbox(store, registry, <canal>)`,
   **não** passa o canal para `NewUnitOfWork`, e sobe `StartOutboxRelay`/
   `StartOutboxCleanup`; a UoW do produtor recebe o conjunto de `event_type` do
@@ -406,7 +406,7 @@ Testes (par NFR-4):
   um evento de domínio interno NÃO vai ao outbox — REQ-51.4); um `Publish` que
   falha na 1ª tentativa deixa a linha não entregue (`attempts++`); o `Tick`
   seguinte re-publica — nenhum evento cross-service perdido (estende
-  `sql_outbox_channel_test.go` para o caminho gerado do produtor, não só o seam
+  [sql_outbox_channel_test.go](../../../../codegen/sql_outbox_channel_test.go) para o caminho gerado do produtor, não só o seam
   manual).
 
 ### 4.6. Alternativa rejeitada

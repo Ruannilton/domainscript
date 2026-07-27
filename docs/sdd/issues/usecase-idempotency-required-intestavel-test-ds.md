@@ -12,7 +12,7 @@
   `TestE2ESeedGivenEventThenPerformDepositWiresThroughRealStore`).
   O RUNTIME já sabe receber a chave — `runtime.WithIdempotencyKey(ctx, ...)`
   existe e é testada (`rtsrc/runtime_test.go.txt:TestWithIdempotencyKeyFrom`);
-  quem não sabe EMITI-LA é o gerador de testes (`codegen/gentest.go`), que
+  quem não sabe EMITI-LA é o gerador de testes ([gentest.go](../../../codegen/gentest.go)), que
   monta o ctx do cenário sem nenhuma chave. É a MESMA natureza do gap de
   "cenário de acesso NEGADO" (L2.6/REQ-53.7) e do `given caller` inexistente:
   o cenário não consegue descrever o *contexto de chamada*, só o estado e a

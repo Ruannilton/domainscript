@@ -189,8 +189,8 @@ ref = store cmd.document
 Renomeando a variável, **todo o resto da §2.5 funciona**: `store`,
 `load File(...)`, `signed_url(..., expires:)`, `delete file(...)`, roteamento
 de campo `FileRef` para uma `FileStorage` do bloco `storage` — tudo
-implementado (`codegen/lower/builtins.go`,
-`codegen/decl_aggregate_storage.go`). A divergência é só a colisão do nome.
+implementado ([builtins.go](../../../codegen/lower/builtins.go),
+[decl_aggregate_storage.go](../../../codegen/decl_aggregate_storage.go)). A divergência é só a colisão do nome.
 
 **Correção:** esta é uma **contradição interna da spec**, não uma escolha da
 implementação — a §5.1 exige `ref` como keyword e a §2.5 o usa como
@@ -421,7 +421,7 @@ dsc: codegen: mod.ds Cache.backend: backend: esperava um literal string, veio *a
 
 Curiosamente os demais campos enumerados do mesmo bloco aceitam identificador
 nu — o defeito é específico de `backend`, em
-`codegen/decl_query_cache.go` (~l.295-352) e `codegen/ratelimit.go` (~l.264).
+[decl_query_cache.go](../../../codegen/decl_query_cache.go) (~l.295-352) e [ratelimit.go](../../../codegen/ratelimit.go) (~l.264).
 
 **Correção:** aceitar o identificador nu. É defeito de código puro, sem lacuna
 de spec envolvida — issue
@@ -479,7 +479,7 @@ canônica para isso — `Valid { true }` (§2.2, `ValueObject ActiveStatus`).
 **Estado:** os 8 usos nos exemplos empacotados já foram migrados para
 `Valid { true }` (auditoria dos exemplos, seção G) — nenhum `.ds` do
 repositório depende mais do sentinela. Falta só remover `ok` do
-`resolver/receivers.go` e do `codegen/decl_value.go`, o que agora é deleção,
+[receivers.go](../../../resolver/receivers.go) e do [decl_value.go](../../../codegen/decl_value.go), o que agora é deleção,
 não migração.
 
 ### F-2. Receptor `value` (é o outro lado de A-1)
@@ -568,7 +568,7 @@ código antes de a spec ser atualizada:
 **Depois, o que já é implementável contra o texto atual**, em ordem:
 
 1. **A-1 + F-1 + F-2 (`self` em corpos de VO).** A menor mudança de todas —
-   uma tabela em `resolver/receivers.go` — mas ela **substitui** `value`/`ok`,
+   uma tabela em [receivers.go](../../../resolver/receivers.go) — mas ela **substitui** `value`/`ok`,
    então arrasta a migração dos três exemplos empacotados e dos goldens. Não
    dá para fazer antes do catálogo de métodos (o bloqueio acima), senão só
    troca `nome não declarado` por `método embutido desconhecido`.
@@ -591,7 +591,7 @@ código antes de a spec ser atualizada:
    a maior superfície de spec fechável sem mexer em nenhuma fase existente.
 
 6. **§14 `tenant.*` (B-3)** é pequeno e desbloqueia a §17 por tier lida do
-   domínio: um receptor a mais em `resolver/receivers.go` e um shape com
+   domínio: um receptor a mais em [receivers.go](../../../resolver/receivers.go) e um shape com
    `id`/`tier`/`exists` no `types.Model`. `provision tenant()` e as estratégias
    `schema`/`database_per_tenant` são bem maiores e podem esperar.
 

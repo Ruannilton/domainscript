@@ -27,14 +27,14 @@
 
   **Evidência de código** (a implementação reflete fielmente essa lacuna, não
   a criou): `Call<Nome>` é emitido hoje só como `func Call<Nome>(ctx, n
-  <Notif>) error` (`codegen/decl_io.go`) — sem canal de valor de retorno.
-  `codegen/lower/builtins.go` recusa `result = call Adapter(...)`
+  <Notif>) error` ([decl_io.go](../../../codegen/decl_io.go)) — sem canal de valor de retorno.
+  [builtins.go](../../../codegen/lower/builtins.go) recusa `result = call Adapter(...)`
   explicitamente:
   ```go
   case "call":
       return "", fmt.Errorf("codegen: QueryExpr.Op %q (chamada síncrona via Adapter/Notification) não é suportado — fora do escopo de G1a", n.Op)
   ```
-  E `codegen/gentest.go` (`emitSagaMock`) hoje descarta o valor de `mock ...
+  E [gentest.go](../../../codegen/gentest.go) (`emitSagaMock`) hoje descarta o valor de `mock ...
   returns X` (`_ = <expr>`) — o mock nunca influencia o fluxo do passo
   seguinte.
 

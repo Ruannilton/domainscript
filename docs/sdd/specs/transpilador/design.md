@@ -100,8 +100,8 @@ ds/
     └── driver.go              # REQ-8: orquestra o pipeline, API pública
 ```
 
-A baseline atual (pacote `main` chato) migra para esse layout: `token.go` →
-`token/`, `lexer.go` → `lexer/`, etc. Decisão de design: **um pacote por
+A baseline atual (pacote `main` chato) migra para esse layout: [token.go](../../../../token/token.go) →
+`token/`, [lexer.go](../../../../lexer/lexer.go) → `lexer/`, etc. Decisão de design: **um pacote por
 responsabilidade**, dependências apontando sempre "para baixo" (driver → sema →
 resolver → parser → lexer → ast/token/diag).
 
@@ -211,7 +211,7 @@ EOF. **Nunca consome** o token de parada nem `}`/EOF — o nível de cima fecha 
 próprio bloco. (Bug corrigido na baseline: versão anterior consumia o token de
 parada e podia comer o `}` de fechamento.)
 
-**Sync sets por nível** (`sync_sets.go`, REQ-3.4): cada nível define seu conjunto
+**Sync sets por nível** ([sync_sets.go](../../../../parser/sync_sets.go), REQ-3.4): cada nível define seu conjunto
 de parada **incluindo os conjuntos ancestrais**, para o pânico nunca furar para
 fora da estrutura:
 
@@ -236,7 +236,7 @@ avança o cursor, "abrindo" a janela para o próximo erro real).
 p.pos` e força `advance()` se `p.pos == before` ao fim da iteração. Rede de
 segurança redundante com os sync sets.
 
-**Estrutura modular** (NFR-5): `parse_decl.go` tem um `switch` na keyword de topo;
+**Estrutura modular** (NFR-5): [parse_decl.go](../../../../parser/parse_decl.go) tem um `switch` na keyword de topo;
 adicionar um construto = adicionar um `case` + uma função `parseX`, reusando
 `parseExpr`, `parseBlock` e o recovery. `parse_config.go` e `parse_test.go`
 isolam as gramáticas dos arquivos não-`.ds`.
@@ -293,18 +293,18 @@ a símbolos (REQ-7.3).
 
 ### 3.9. Checker (`sema/`) — REQ-5
 
-Orquestrador (`checker.go`) que roda famílias de regras sobre a AST resolvida.
+Orquestrador ([checker.go](../../../../sema/checker.go)) que roda famílias de regras sobre a AST resolvida.
 Cada regra é uma função `func(ctx *Context) ` que percorre os nós relevantes e
 emite diagnósticos. Distribuição por arquivo:
 
 | Arquivo | Regras (§23 / REQ-5) |
 |---|---|
-| `rules_types.go` | primitivo no Write Side (1); `remove/clear` em AppendList (4) |
-| `rules_flow.go` | `match` exaustividade/wildcard (5); `Nop` em Handle/UseCase (6); `break/continue` fora de `for` (7) |
-| `rules_domain.go` | `Handle` sem `access` (2); `Notification` sem `Adapter` (3); `Policy` cross-module sobre `Event` privado (8) |
-| `rules_program.go` | cross-db sem XA / cross-service sem Saga (9); JOIN cross-db (10); módulos sem canal (11); cross-tenant sem opt-in (12); upcast sem default (13) |
-| `rules_warnings.go` | todos os ⚠️ (16–23): `orderBy`, Saga await sobre queue, upcast→default, VO→Enum, cache alta cardinalidade, cross-tenant declarado, cobertura de erro, exposição |
-| (teste) `rules_test_files.go` | validações de `*.test.ds` (14) e assinatura FFI (15) |
+| [rules_types.go](../../../../sema/rules_types.go) | primitivo no Write Side (1); `remove/clear` em AppendList (4) |
+| [rules_flow.go](../../../../sema/rules_flow.go) | `match` exaustividade/wildcard (5); `Nop` em Handle/UseCase (6); `break/continue` fora de `for` (7) |
+| [rules_domain.go](../../../../sema/rules_domain.go) | `Handle` sem `access` (2); `Notification` sem `Adapter` (3); `Policy` cross-module sobre `Event` privado (8) |
+| [rules_program.go](../../../../sema/rules_program.go) | cross-db sem XA / cross-service sem Saga (9); JOIN cross-db (10); módulos sem canal (11); cross-tenant sem opt-in (12); upcast sem default (13) |
+| [rules_warnings.go](../../../../sema/rules_warnings.go) | todos os ⚠️ (16–23): `orderBy`, Saga await sobre queue, upcast→default, VO→Enum, cache alta cardinalidade, cross-tenant declarado, cobertura de erro, exposição |
+| (teste) [rules_test_files.go](../../../../sema/rules_test_files.go) | validações de `*.test.ds` (14) e assinatura FFI (15) |
 
 Decisões:
 

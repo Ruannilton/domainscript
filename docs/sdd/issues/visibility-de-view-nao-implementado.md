@@ -2,7 +2,7 @@
 - SPEC: codegen
 - TASK: gaps.md §G-5 (Field-Level Security de View)
 - DESCRIPTION: O bloco `visibility` de View (spec §6.2) é **parseado**
-  (`ast.ViewDecl.Visibility`, `parser/parse_decl.go`) mas **nenhum arquivo do
+  (`ast.ViewDecl.Visibility`, [parse_decl.go](../../../parser/parse_decl.go)) mas **nenhum arquivo do
   codegen consome `Visibility`** — a omissão condicional de campos na
   serialização não acontece. É a lacuna "silenciosa" mais arriscada do
   inventário (cheiro de segurança que falha em silêncio): o programa compila,

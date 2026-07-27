@@ -3,7 +3,7 @@
 - TASK: M1.1
 - DESCRIPTION: [design.md](../specs/correcoes-issues-6-8-12/design.md) §5.1 ("Como `aggregateType` chega a `Append`
   (decisão de M1.1)") registra a decisão do usuário — carimbar `ctx` UMA vez,
-  em `codegen/decl_usecase.go`, imediatamente antes de `uow.Run(ctx, ...)` —
+  em [decl_usecase.go](../../../codegen/decl_usecase.go), imediatamente antes de `uow.Run(ctx, ...)` —
   mas condiciona explicitamente essa rota a uma premissa: "Isso só é seguro
   se uma única `Tx.Run()` **nunca** grava eventos de mais de um
   `aggregateType`... **M1.1 deve confirmar essa premissa por leitura**... Se

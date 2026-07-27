@@ -29,7 +29,7 @@
 
   `codegen/gentest_test.go:TestEmitTestsWalletGolden` (linha 122) chama
   `gentest.Golden(t, "testdata/tests_wallet.go.golden", got)` — comparação
-  **byte a byte** contra esse arquivo. Nem `codegen/gentest_test.go` nem
+  **byte a byte** contra esse arquivo. Nem [gentest_test.go](../../../codegen/gentest_test.go) nem
   `codegen/testdata/tests_wallet.go.golden` estão em `target_files` de
   M4.1 — e o agente `task-implementer` não pode nem editar arquivo fora de
   `target_files` ("Precisar de um arquivo fora dessa lista é empecilho, não
@@ -56,7 +56,7 @@
   Não implementei nada — nem parcialmente — para não deixar o `TestEmitTestsWalletGolden`
   quebrado sem chance de correção dentro do escopo desta task. [M4.1.md](../specs/correcoes-issues-6-8-12/tasks/M4.1.md)
   precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
-  `codegen/gentest_test.go` em `target_files` (para reconciliar as
+  [gentest_test.go](../../../codegen/gentest_test.go) em `target_files` (para reconciliar as
   asserções `strings.Contains` daquele teste com o novo formato de
   `t.Fatalf`, se ele mudar) antes de esta task poder ser reaberta — ou uma
   decisão explícita de design sobre como isolar a mudança da forma já

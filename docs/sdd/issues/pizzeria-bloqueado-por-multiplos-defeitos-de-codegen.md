@@ -83,7 +83,7 @@
        `Kitchen.MainDb` usa `provider: "mongodb"` (DECORATIVO,
        `kitchen/mod.ds:9-13`) — sem um provider real, o Read Side de Kitchen
        cai no seam in-memory (`runtime.Query[T]`), cujo suporte de "list
-       <VO/Aggregate>" (E8.1, `codegen/decl_query.go` cabeçalho) exige
+       <VO/Aggregate>" (E8.1, [decl_query.go](../../../codegen/decl_query.go) cabeçalho) exige
        correlacionar o VO a um campo `AppendList<VO>` de um ÚNICO Aggregate
        conhecido — listar o PRÓPRIO Aggregate (`KitchenTicket`) diretamente,
        sem provider real por trás, não é uma forma coberta.
@@ -93,7 +93,7 @@
     diferença entre a Query de Kitchen (falha) e a de Sales (funciona).
     **Não é.** Trocar o provider de Kitchen NÃO mudou o erro (confirmado
     empiricamente, inclusive numa fixture mínima isolada com `"sqlite"` E
-    `"postgres"`). A causa raiz de verdade, lida em `codegen/decl_query.go`
+    `"postgres"`). A causa raiz de verdade, lida em [decl_query.go](../../../codegen/decl_query.go)
     (`tryEmitListVO`, ~linha 461): `if _, ok :=
     qc.env.TypeOfName(voName).(*types.VOType); !ok { return false, nil }` —
     a função SÓ reconhece `list <nome>` quando `<nome>` resolve a um
@@ -123,12 +123,12 @@
     independentes (F5/G3 + os quatro acima), nenhum deles dentro do escopo de
     REQ-52 (Wire unificado) — REQ-52.7 pede exatamente isto: registrar como
     issue nova em vez de ampliar o escopo da task. **L1.2 fecha normalmente**
-    (seu próprio escopo — o call site de `main.go` + esta confirmação — está
+    (seu próprio escopo — o call site de [main.go](../../../cmd/dsc/main.go) + esta confirmação — está
     completo); **L1.3 fica BLOQUEADA** até esta issue (ou uma investigação
     dedicada) resolver os cinco pontos, e provavelmente precisa de um recorte
     NOVO (talvez até uma fixture-alvo diferente de `pizzeria`, ou correções
     em `pizzeria` + em pelo menos dois pacotes de codegen distintos:
-    `decl_aggregate.go`/`lower/` para os itens 1/2, `decl_query.go`/E8.1 para
+    [decl_aggregate.go](../../../codegen/decl_aggregate.go)/`lower/` para os itens 1/2, [decl_query.go](../../../codegen/decl_query.go)/E8.1 para
     o item 4, e a guarda F5/G3 em si). Este registro é INDEPENDENTE da issue
     sobre a colisão de Wire (que L1.1 já fechou); não considerar aquela issue
     totalmente resolvida enquanto esta (o bloqueio real e maior de

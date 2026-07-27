@@ -31,7 +31,7 @@
   **Impacto.** A §14 exige que o opt-in cross-tenant venha acompanhado de role
   privilegiada ("Cross-tenant opt-in: `tenancy: cross_tenant` + role
   privilegiada + auditoria automática + warning"). A regra de compilação do
-  opt-in existe (`checkCrossTenantOptIn`, `sema/rules_crossfile.go`) e o
+  opt-in existe (`checkCrossTenantOptIn`, [rules_crossfile.go](../../../sema/rules_crossfile.go)) e o
   warning de auditoria também (`checkCrossTenantAudit`), mas **a sintaxe que
   expressaria a exigência de role não existe** — hoje só dá para declarar o
   opt-in, não a proteção que a spec pede junto.

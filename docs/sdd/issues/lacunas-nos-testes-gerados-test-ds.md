@@ -3,7 +3,7 @@
 - TASK: gaps.md §G-7 (lacunas dos testes gerados, Marco H4)
 - DESCRIPTION: `*.test.ds` → Go tests cobre o caminho feliz, mas várias formas
   do spec §22 têm semântica reduzida (cada uma registrada nas fatias de H4
-  em [tasks.md](../specs/codegen/tasks.md)/`codegen/gentest.go`): `then state { ... }` (asserção de estado
+  em [tasks.md](../specs/codegen/tasks.md)/[gentest.go](../../../codegen/gentest.go)): `then state { ... }` (asserção de estado
   StateStored, §22.1) → erro de geração claro; cenário de acesso NEGADO (§22)
   → não expressável (a gramática não tem "como o caller X"); `mock ... returns
   X` desviando fluxo (§22.3) → mock sempre sucede, `X` é construído mas não

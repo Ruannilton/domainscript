@@ -18,7 +18,7 @@
 
   Verifiquei as duas rotas por leitura de código; nenhuma existe hoje dentro
   de `target_files` (`codegen/rtsrc/eventstore.go.txt`,
-  `codegen/rtsrc/rtsrc_test.go`):
+  [rtsrc_test.go](../../../codegen/rtsrc/rtsrc_test.go)):
 
   **Rota 1 — "registro já disponível" não existe.**
   - `Event` (`codegen/rtsrc/event.go.txt:6-18`) só expõe `EventType() string`
@@ -37,7 +37,7 @@
     (`codegen/rtsrc/`). Importar esse registro de volta para `runtime`
     criaria um ciclo (`kitchen` já importa `runtime`); hoje ele só é
     entregue a `sqlrt.NewEventStore`/`NewUnitOfWork` pelo wiring gerado
-    (`cmd/<service>/main.go`, `codegen/codegen.go`) — fora de
+    (`cmd/<service>/main.go`, [codegen.go](../../../codegen/codegen.go)) — fora de
     `target_files` de M1.1.
   - `grep -rn "AggregateType\|aggregateType"` em todo o repositório (fora
     desta spec) não devolve nenhuma ocorrência em código Go ou `rtsrc/*.txt`
@@ -98,7 +98,7 @@
 - SOLVED: [decisão do usuário — opção 1 (thread via `ctx`, mesmo padrão de
   `tenantID`) — registrada em [design.md](../specs/correcoes-issues-6-8-12/design.md) §5.1/§7.2 e em [M1.1.md](../specs/correcoes-issues-6-8-12/tasks/M1.1.md)
   (`status` volta a `pending`, `target_files` ampliado com
-  `contextkeys.go.txt` e `decl_usecase.go`, que é o call site real de
+  `contextkeys.go.txt` e [decl_usecase.go](../../../codegen/decl_usecase.go), que é o call site real de
   `uow.Run(ctx, ...)` — `lower/stmt.go`, citado nesta issue, não é. A
   implementação da rota fica condicionada a M1.1 confirmar, por leitura,
   que uma `Tx.Run()` nunca grava eventos de mais de um `aggregateType`;

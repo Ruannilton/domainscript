@@ -46,10 +46,10 @@ correções pequenas e de baixo risco primeiro.
   roteamento opcional para um `publisher`/`ChannelTransport` (J2.4,
   `NewDurableOutbox(store, registry, publisher)`), e o transporte real RabbitMQ
   (`codegen/amqprt`, J3). **O seam do produtor existe e está testado
-  isoladamente** (`codegen/sql_outbox_channel_test.go`) — o que falta é o
+  isoladamente** ([sql_outbox_channel_test.go](../../../../codegen/sql_outbox_channel_test.go)) — o que falta é o
   **codegen ligar os dois lados**.
 - O wiring do adapter `database/sql` para o caminho **2PC** (`emitXADatabaseWiring`,
-  `sql_wiring.go`) e para o **outbox consumidor** (`emitOutboxDatabaseWiring`,
+  [sql_wiring.go](../../../../codegen/sql_wiring.go)) e para o **outbox consumidor** (`emitOutboxDatabaseWiring`,
   J2.5). O que **não** existe ainda é o wiring sql para um Database **único**
   não-2PC (hoje um UseCase de banco único "degenera em commit local" sobre a
   store in-memory, §design codegen 3.8) — pré-condição de REQ-51 (ver design).
@@ -214,8 +214,8 @@ que REQ-42.6 promete.
    publicação no canal **não perde** o evento — a linha fica no outbox, não
    entregue (`attempts++`), e o próximo `Tick` a publica (teste comportamental
    sobre sqlite real + `fakePublisher`, mesmo padrão de
-   `sql_outbox_channel_test.go`, exercitando o **caminho gerado do produtor**); e
-   um teste de **wiring** confirmando que `main.go`/o código gerado passam a
+   [sql_outbox_channel_test.go](../../../../codegen/sql_outbox_channel_test.go), exercitando o **caminho gerado do produtor**); e
+   um teste de **wiring** confirmando que [main.go](../../../../cmd/dsc/main.go)/o código gerado passam a
    enfileirar+relay em vez de publicar direto (NFR-4).
 
 ## 3. Requisitos Não-Funcionais
@@ -231,7 +231,7 @@ que REQ-42.6 promete.
   e mantém `runtime.NewUnitOfWork(store, ordersChannel)` como hoje.
   `driver.TestGenerateWalletE2E*`/`TestGenerateShopE2E*` seguem sem regressão.
 - **Atualização esperada de fixture de TESTE (não de exemplo real):** a
-  fixture-âncora de J6 (`codegen/anchor_fixture_test.go`), cujo `AnchorOrders` é
+  fixture-âncora de J6 ([anchor_fixture_test.go](../../../../codegen/anchor_fixture_test.go)), cujo `AnchorOrders` é
   postgres + canal `rabbitmq`, **passa a ativar** o caminho produtor-durável —
   suas asserções de wiring de `AnchorOrders` são atualizadas deliberadamente
   (é o exerciser pretendido, não uma regressão de exemplo publicado).
@@ -255,9 +255,9 @@ import de `database/sql` nem de amqp.
 
 | Issue | REQ | Pacote/arquivo-raiz | Marco de origem |
 |---|---|---|---|
-| ISSUE-11 | REQ-49 | `parser/parse_query.go` (+ `parse_stmt.go`) | transpilador (front-end) |
+| ISSUE-11 | REQ-49 | [parse_query.go](../../../../parser/parse_query.go) (+ [parse_stmt.go](../../../../parser/parse_stmt.go)) | transpilador (front-end) |
 | ISSUE-10 | REQ-50 | `codegen/rtsrc/querycache.go.txt` | codegen G3 |
-| ISSUE-9  | REQ-51 | `codegen/codegen.go`, `sql_wiring.go`, `decl_policy.go`, lowering de `emit` | infra-providers (Marco J, resíduo) |
+| ISSUE-9  | REQ-51 | [codegen.go](../../../../codegen/codegen.go), [sql_wiring.go](../../../../codegen/sql_wiring.go), [decl_policy.go](../../../../codegen/decl_policy.go), lowering de `emit` | infra-providers (Marco J, resíduo) |
 
 ## 5. Critérios de Pronto (Definition of Done)
 

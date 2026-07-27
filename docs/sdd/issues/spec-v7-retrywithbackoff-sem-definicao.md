@@ -18,6 +18,6 @@
   nome da "Uma Forma Canônica" da §1.1 — hoje a linguagem tem duas grafias para
   configurar retry.
   Nota de escopo: o `unrecoverable` de `down { unrecoverable }` (mesma §19.2)
-  **está** implementado (`codegen/decl_saga.go`), então a lacuna é só do
+  **está** implementado ([decl_saga.go](../../../codegen/decl_saga.go)), então a lacuna é só do
   `onInfraError`.
 - SOLVED: FALSE

@@ -44,7 +44,7 @@ lado real atrás dele, não desenhá-lo:
   dele). O adapter sqlite (`open_sqlite.go.txt`, `eventstore.go.txt`,
   `uow.go.txt`, `twophase.go.txt`, `collection.go.txt`) é o modelo a espelhar.
 - **Canais:** seam `runtime.ChannelTransport` (`codegen/rtsrc/channel.go.txt`)
-  — `direct`/`queue` in-memory prontos; `codegen/channel.go` já lê
+  — `direct`/`queue` in-memory prontos; [channel.go](../../../../codegen/channel.go) já lê
   `orderBy`/`workers`/`timeout`/`circuitBreaker` e monta o transporte. Um
   provider real "entra atrás desta MESMA seam: um futuro `NewXxxChannel` com o
   shape idêntico" (doc do próprio arquivo). `via: queue` + `provider:
@@ -52,14 +52,14 @@ lado real atrás dele, não desenhá-lo:
 - **Cache:** seam `runtime.QueryCache` (`codegen/rtsrc/querycache.go.txt`) —
   `memory` pronto, com fail-open e request-coalescing já no shape da interface
   ("a future real (networked) backend failing is modeled as Get reporting
-  hit=false"). `codegen/decl_query_cache.go` dirige o seam.
+  hit=false"). [decl_query_cache.go](../../../../codegen/decl_query_cache.go) dirige o seam.
 - **RateLimit:** seam `runtime.Limiter`/`CheckRateLimits`
   (`codegen/rtsrc/ratelimit.go.txt`) — três algoritmos in-memory
   (token_bucket/sliding/fixed) atrás de UMA interface, transport-agnóstica.
-  `codegen/ratelimit.go` compila as dimensões de rota para `[]RateLimitCheck`.
+  [ratelimit.go](../../../../codegen/ratelimit.go) compila as dimensões de rota para `[]RateLimitCheck`.
 - **FileStorage:** seam `runtime.FileStorage` (`codegen/rtsrc/filestorage.go.txt`)
   — `memoryFileStorage` pronto; `store`/`signed_url`/`delete file`/`load
-  File(ref)` (`codegen/lower/builtins.go`) já rodam atrás dele. "Um backend
+  File(ref)` ([builtins.go](../../../../codegen/lower/builtins.go)) já rodam atrás dele. "Um backend
   real (S3/GCS/Azure Blob/...) entra atrás desta MESMA interface" (doc).
 - **Outbox:** seam `runtime.Outbox` (`codegen/rtsrc/outbox.go.txt`) —
   `memoryOutbox` (stopgap, **não durável**) forwarda ao Dispatcher. A própria
@@ -67,7 +67,7 @@ lado real atrás dele, não desenhá-lo:
   (backed by the event store or a dedicated outbox table) behind this SAME
   interface — generated code that calls Outbox.Subscribe today does not
   change".
-- **go.mod opt-in:** `EmitGoMod` (`codegen/project.go`) já exige o driver de
+- **go.mod opt-in:** `EmitGoMod` ([project.go](../../../../codegen/project.go)) já exige o driver de
   cada provider SQL ativo via `activeSQLProviders` — o padrão a estender para
   as outras categorias.
 - **Padrão de adapter opt-in:** `codegen/sqlrt/`, `codegen/grpcrt/`,
@@ -133,14 +133,14 @@ implantar o serviço em produção sem mudar o domínio.
    tabela de `Collection[T]`, e a forma de paginação (`LIMIT n OFFSET m`) —
    **nenhuma string SQL específica de Postgres fora dessa classe** (REQ-40.1).
 2. THE SYSTEM SHALL acrescentar UMA entrada em `sqlProviders`
-   (`codegen/sql_wiring.go`) para `"postgres"` (módulo do driver, versão,
+   ([sql_wiring.go](../../../../codegen/sql_wiring.go)) para `"postgres"` (módulo do driver, versão,
    versão mínima de Go, construtor do `Dialect`) — e **nenhuma** outra mudança
    em lowering, `decl_*.go` ou no runtime núcleo (REQ-40.2). A partir daí,
    `activeSQLProviders`/`programNeedsSQLAdapter`/`EmitGoMod` reconhecem
    postgres automaticamente.
 3. THE SYSTEM SHALL abrir a conexão real (`sqlruntime.Open` para postgres) a
    partir do DSN declarado, e montar o EventStore com o registry de eventos do
-   módulo — o MESMO wiring de `emitXADatabaseWiring`/`decl_usecase.go` que hoje
+   módulo — o MESMO wiring de `emitXADatabaseWiring`/[decl_usecase.go](../../../../codegen/decl_usecase.go) que hoje
    serve sqlite, parametrizado pelo `dialectCtor` do provider (já é).
 4. THE SYSTEM SHALL mapear os tipos que o gerador emite (id `TEXT`, payload
    JSON) para os tipos Postgres corretos (`text`/`jsonb` ou `text`, decisão do
@@ -201,7 +201,7 @@ para que a topologia do spec §11 funcione num deploy real distribuído.
    RabbitMQ real — entrega **cross-process** de verdade (fecha a "known,
    documented Marco F limitation" de `channel.go.txt`).
 2. THE SYSTEM SHALL, no lado produtor (`cmd/<service>/main.go`,
-   `generateCmdMainFile`) e no consumidor (`decl_policy.go`,
+   `generateCmdMainFile`) e no consumidor ([decl_policy.go](../../../../codegen/decl_policy.go),
    `emitPolicyWireFunc`), construir a instância RabbitMQ a partir da URL de
    conexão declarada no canal (`connection: env(...)`), mantendo o wiring de
    produtor/consumidor que já existe para `queue`.
@@ -211,7 +211,7 @@ para que a topologia do spec §11 funcione num deploy real distribuído.
    chave preservada, concorrência = `workers.concurrency` entre partições); sem
    `orderBy` ⇒ work-queue com prefetch = concurrency (sem ordem). Ordem estrita
    só por chave, nunca global (§design 3.3). `timeout`/`circuitBreaker`
-   reusam a leitura de `channel.go`, sem reinterpretar o `.ds`.
+   reusam a leitura de [channel.go](../../../../codegen/channel.go), sem reinterpretar o `.ds`.
 4. THE SYSTEM SHALL fazer `ack` após sucesso do handler; numa falha, `nack
    requeue=false` para uma DLX+retry-queue(TTL) que reencaminha (o broker
    incrementa `x-death`), e após esgotar `circuitBreaker.threshold` a mensagem
@@ -246,10 +246,10 @@ que a cota e a invalidação valham para o cluster inteiro, não por processo.
    (RateLimit §16) com contagem **atômica** cross-réplica (ex. `INCR`+`EXPIRE`
    ou script Lua para token_bucket/sliding/fixed), preservando o contrato
    `CheckRateLimits` (AND multi-dimensão) e as dimensões
-   `perIp/perUser/perTenant/perApiKey/global` que `codegen/ratelimit.go` já
+   `perIp/perUser/perTenant/perApiKey/global` que [ratelimit.go](../../../../codegen/ratelimit.go) já
    compila.
 3. THE SYSTEM SHALL manter a política "retry idempotente não consome cota"
-   (spec §14/§16) inalterada — a decisão continua em `codegen/http.go` (peek do
+   (spec §14/§16) inalterada — a decisão continua em [http.go](../../../../codegen/http.go) (peek do
    replay antes de `CheckRateLimits`); o backend Redis só troca o `Limiter`, não
    essa lógica de borda.
 4. THE SYSTEM SHALL selecionar o backend Redis quando (e só quando) `mod.ds`
@@ -271,7 +271,7 @@ domínio persistam fora do processo.
 **Critérios de aceitação:**
 
 1. THE SYSTEM SHALL fornecer uma implementação de `runtime.FileStorage` sobre
-   S3 que implementa as operações que `codegen/lower/builtins.go` já emite:
+   S3 que implementa as operações que [builtins.go](../../../../codegen/lower/builtins.go) já emite:
    `store(File) → FileRef`, `load File(ref) → File`, `signed_url(ref, ttl) →
    string`, `delete file(ref)` — preservando as structs `File`/`FileRef`
    (metadados no objeto, bytes no corpo).
@@ -281,7 +281,7 @@ domínio persistam fora do processo.
    `memoryFileStorage`; desduplicação por hash de conteúdo é outra semântica,
    fora do recorte — ver §design 3.5).
 3. THE SYSTEM SHALL suportar o caminho de `FileStream` (upload/download
-   chunk-a-chunk) **na medida em que** `builtins.go` o exercite hoje (G1a cobre
+   chunk-a-chunk) **na medida em que** [builtins.go](../../../../codegen/lower/builtins.go) o exercite hoje (G1a cobre
    só `File`/`FileRef`); ampliar para `FileStream` só se o lowering já o
    emitir, senão fica registrado como desvio.
 4. THE SYSTEM SHALL selecionar o backend S3 quando (e só quando) o programa
@@ -304,7 +304,7 @@ banco, o 2º broker) seja barato e localizado.
    + construtor do adapter). Adicionar um provider a uma categoria = uma entrada
    + a implementação do adapter — zero mudanças em lowering/`decl_*.go`/runtime
    núcleo.
-2. THE SYSTEM SHALL estender `EmitGoMod` (`codegen/project.go`) para exigir o
+2. THE SYSTEM SHALL estender `EmitGoMod` ([project.go](../../../../codegen/project.go)) para exigir o
    módulo externo de cada provider **ativo** de qualquer categoria
    (deduplicado, ordenado — determinismo NFR-23), do mesmo jeito que
    `activeSQLProviders` já faz para SQL — e **nada** para categorias sem
@@ -349,9 +349,9 @@ alcançável, para nunca rodar meio-configurado.
    `context.Background()`.
 3. THE SYSTEM SHALL fechar os recursos (conexões, canais) ordenadamente no
    shutdown do serviço (defer/Close), sem vazar conexão — na medida do wiring
-   de `main.go` gerado.
+   de [main.go](../../../../cmd/dsc/main.go) gerado.
 4. THE SYSTEM SHALL manter o wiring in-memory intacto quando nenhum provider
-   real é declarado: `main.go` continua byte-idêntico ao de hoje (NFR-21/23).
+   real é declarado: [main.go](../../../../cmd/dsc/main.go) continua byte-idêntico ao de hoje (NFR-21/23).
 
 ### REQ-48 — Estratégia de teste em três camadas
 
@@ -412,7 +412,7 @@ SQL.
 ### NFR-23 — Determinismo com provider ativo
 Regenerar o mesmo programa com provider(es) real(is) ativo(s) produz saída
 byte-idêntica: ordenação estável de entradas de `go.mod`, imports, fontes de
-adapter e wiring em `main.go`. Extensão de NFR-13.
+adapter e wiring em [main.go](../../../../cmd/dsc/main.go). Extensão de NFR-13.
 
 ### NFR-24 — Integração real nunca no caminho default
 `go build ./...` e `go test ./...` do compilador — e o smoke-compile dos

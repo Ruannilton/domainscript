@@ -24,7 +24,7 @@ M3.2/M3.3 CANCELADAS em consequência (REQ-57.4); issue de revisão de spec:
 [spec-v7-adapter-sem-contrato-de-resposta](issues/spec-v7-adapter-sem-contrato-de-resposta.md). M2.3 (`emit` em
 passo de Saga) segue `blocked`: o mecanismo normativo de [design.md](specs/correcoes-issues-6-8-12/design.md) §4.4
 (rota i) nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
-(`codegen/decl_policy.go`) como quem atribui `sagaDispatcher = d`, e não
+([decl_policy.go](../../codegen/decl_policy.go)) como quem atribui `sagaDispatcher = d`, e não
 decide o caso de um módulo só-Saga (sem Policy/UseCase, sem `func Wire` para
 estender) — nenhum dos arquivos necessários está em `target_files` de M2.3.
 Issue: [m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files](issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md);

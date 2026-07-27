@@ -24,8 +24,8 @@
   bloco `cache`, outro com rota sob `rateLimit`); os demais campos enumerados
   do mesmo bloco (`algorithm`, `onBackendFailure`, `storage`, `strategy`)
   aceitam identificador nu normalmente — o defeito é específico de `backend`.
-  Onde mora: os leitores de config de `codegen/decl_query_cache.go`
-  (`cacheBackendKind` e vizinhança, ~l.295-352) e `codegen/ratelimit.go`
+  Onde mora: os leitores de config de [decl_query_cache.go](../../../codegen/decl_query_cache.go)
+  (`cacheBackendKind` e vizinhança, ~l.295-352) e [ratelimit.go](../../../codegen/ratelimit.go)
   (~l.264), que exigem `*ast.Literal` de kind STRING.
 
   **Impacto nos exemplos.** `testdata/projects/wallet/mod.ds` usa a forma com

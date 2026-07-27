@@ -152,7 +152,7 @@ falha em `Query GetBoardTickets` com:
 > `return: forma não suportada por EmitQuery (E8.1) … list … em posição de
 > expressão pura não é suportado por Lowerer.Expr`
 
-O caminho: `emitReturn` (`decl_query.go`) vê `Op == "list"`, tenta
+O caminho: `emitReturn` ([decl_query.go](../../../../codegen/decl_query.go)) vê `Op == "list"`, tenta
 `tryEmitListVO`, que devolve `handled=false` porque `Target` **não** resolve a um
 `*types.VOType` (resolve ao Aggregate); cai em `tryEmitHoistedQueryReturn`, que
 exige `Op == "load"` e devolve `false`; cai no fallback `qc.l.Expr(ret.Value)`,
@@ -190,7 +190,7 @@ denota, e é o que `projectFieldAssignments` já sabe projetar para uma View
 
 ### 4.3. Wiring de service: as duas guardas (Atende REQ-55.7/55.8)
 
-**Análise de raiz (verificada).** `generateCmdMainFile` (`codegen/codegen.go`)
+**Análise de raiz (verificada).** `generateCmdMainFile` ([codegen.go](../../../../codegen/codegen.go))
 tem **duas** recusas explícitas, e o `pizzeria` bate nas **duas** — a spec do
 Marco L só mapeou uma:
 
@@ -216,7 +216,7 @@ Marco K (item 4 abaixo, achado desta task). Mecanismo concreto:
 1. **Publisher único do lado "em memória".** Sempre que o service tem QUALQUER
    módulo que precise de Dispatcher (Policy — local OU cross-service, Query
    cacheada G3, Metric H3) OU qualquer módulo produtor NÃO-durável (fora de
-   `durableProducer`), `main.go` constrói `dispatcher :=
+   `durableProducer`), [main.go](../../../../cmd/dsc/main.go) constrói `dispatcher :=
    runtime.NewDispatcher()` e a UoW COMPARTILHADA desses módulos publica
    sempre nele: `uow := runtime.NewUnitOfWork(store, dispatcher)` — contrato
    de `UnitOfWork`/`Publisher` intocado (um único argumento `Publisher`, hoje
@@ -224,7 +224,7 @@ Marco K (item 4 abaixo, achado desta task). Mecanismo concreto:
 2. **Cada canal de saída não-durável assina o Dispatcher, em vez de ser o
    publisher da UoW.** Para cada módulo produtor cujo canal NÃO é durável
    (`durableProducer` devolve `false`), depois de construir o canal
-   (`emitChannelTransportVar`, como hoje) o `main.go` gerado emite
+   (`emitChannelTransportVar`, como hoje) o [main.go](../../../../cmd/dsc/main.go) gerado emite
    `dispatcher.Subscribe(<eventType>, <canal>.Publish)` — um `Subscribe` por
    `PublicEvent` do módulo produtor (`buckets[producerModule].pubEvents`, o
    MESMO conjunto ordenado que já alimenta `producerOutboxEventTypes`, NFR-13).
@@ -252,12 +252,12 @@ Marco K (item 4 abaixo, achado desta task). Mecanismo concreto:
    `sqlruntime.NewOutboxUnitOfWork` continua enfileirando via
    `tx.EnqueueOutbox` só os `PublicEvent` do canal (`outboxEventTypes`),
    publicados depois pelo relay do `DurableOutbox` — nada disso muda
-   (REQ-51/REQ-42.6 preservados byte a byte para `producer_outbox_test.go`/
-   `anchor_fixture_test.go` de Marco K, que não declaram Dispatcher). A
+   (REQ-51/REQ-42.6 preservados byte a byte para [producer_outbox_test.go](../../../../codegen/producer_outbox_test.go)/
+   [anchor_fixture_test.go](../../../../codegen/anchor_fixture_test.go) de Marco K, que não declaram Dispatcher). A
    extensão: `NewOutboxUnitOfWork` (`codegen/sqlrt/uow.go.txt`) ganha um
    `publisher ...runtime.Publisher` OPCIONAL, no MESMO padrão variádico de
    `NewUnitOfWork` — quando o serviço TAMBÉM tem `dispatcher` (item 1),
-   `main.go` passa esse `dispatcher` como publisher; `Run` publica nele,
+   [main.go](../../../../cmd/dsc/main.go) passa esse `dispatcher` como publisher; `Run` publica nele,
    pós-commit, exatamente os apensados que NÃO estão em `outboxEventTypes`
    (eventos privados do módulo — no `pizzeria`, `MenuItemCreated`/
    `MenuItemPriceUpdated` de `Sales`, que `WireQueryCache` precisa ver para
@@ -305,8 +305,8 @@ Marco K (item 4 abaixo, achado desta task). Mecanismo concreto:
 
 **Achado adicional, FORA do escopo de REQ-55.7/55.8 (registrado como issue
 própria, não ampliando REQ-55 — REQ-55.11).** A leitura de
-`emitSingleDatabaseWiring`/`newMux` (`codegen/sql_wiring.go`,
-`codegen/codegen.go`) mostra que TODA rota de Query do serviço lê da MESMA
+`emitSingleDatabaseWiring`/`newMux` ([sql_wiring.go](../../../../codegen/sql_wiring.go),
+[codegen.go](../../../../codegen/codegen.go)) mostra que TODA rota de Query do serviço lê da MESMA
 `store` em memória (`runtime.NewMemoryEventStore()`), nunca do banco real do
 produtor durável — [design.md](../correcoes-issues-9-10-11/design.md) §4.1 já documentava
 essa `store` como "não o Database declarado" para o produtor, mas nunca
@@ -329,7 +329,7 @@ antes ou junto de M1.6.
 
 **Análise de raiz (verificada — a premissa do Marco L estava errada).** ISSUE-6
 afirmava "erro de geração claro". **Não é.** `emitSagaStepPhaseFunc`
-(`codegen/decl_saga.go`) monta o `StmtLowerer` com `.WithNotifyAdapters(...)`
+([decl_saga.go](../../../../codegen/decl_saga.go)) monta o `StmtLowerer` com `.WithNotifyAdapters(...)`
 mas **sem** `.WithEmitDispatch(...)`. Sem `emitDispatch`, `StmtLowerer.emitStmt`
 (`lower/stmt.go`) cai no ramo:
 
@@ -367,11 +367,11 @@ graph LR
 
 Verificado no runtime: `Step[S]` tem `Up/Down/OnInfraError func(ctx, state *S)
 error` — `state` é o **único** receptor, sem `Tx` nem `EventStore` (o próprio
-`decl_saga.go` documenta que `storeGoName` fica vazio por isso). O `SagaStore` de
+[decl_saga.go](../../../../codegen/decl_saga.go) documenta que `storeGoName` fica vazio por isso). O `SagaStore` de
 `mode async` guarda `SagaStatus`, não eventos.
 
 **Decisão (M2.2): rota (i) — Dispatcher publish-only.** Mecanismo concreto,
-cópia do que `emitPolicyDeclsAndVars`/`emitPolicyDecl` (`decl_policy.go`) já
+cópia do que `emitPolicyDeclsAndVars`/`emitPolicyDecl` ([decl_policy.go](../../../../codegen/decl_policy.go)) já
 fazem para uma Policy que usa `emit` (`policyDispatcher` + `WithEmitDispatch`):
 
 - `checkNoEmitInSagaStepBlock` (M2.1) deixa de barrar `emit`
@@ -453,7 +453,7 @@ cancelamento — só (iii) cancelaria M2.3/M2.4.
 **`mock … returns X` (REQ-57) — três camadas ausentes, verificadas:**
 
 1. **Sem canal de valor.** `Call<Nome>` é emitido como
-   `func Call<Nome>(ctx, n <Notif>) error` (`decl_io.go`) — só `error`.
+   `func Call<Nome>(ctx, n <Notif>) error` ([decl_io.go](../../../../codegen/decl_io.go)) — só `error`.
 2. **Sem forma que consuma o valor.** `result = call Adapter(...)` (§18.2 — está
    no **exemplo de Saga do próprio spec**) passa o front-end e falha a geração:
    `QueryExpr.Op "call" … não é suportado` (`lower/builtins.go`). Nunca foi
@@ -499,7 +499,7 @@ por número):
 - **(c) Delimitar — ESCOLHIDA.** Sem (a) e com (b) fora de escopo, não sobra
   opção implementável neste ciclo. `Call<Nome>` continua **exatamente** como
   hoje — `func Call<Nome>(ctx context.Context, n <Notif>) error`
-  (`codegen/decl_io.go`), sem canal de valor de retorno.
+  ([decl_io.go](../../../../codegen/decl_io.go)), sem canal de valor de retorno.
 
 **Consequência (REQ-57.4): M3.2 e M3.3 ficam canceladas.** `result = call
 <Adapter>(...)` (§19.2, a forma literal do exemplo de Saga do spec) e `mock
@@ -513,7 +513,7 @@ linguagem defina o contrato de resposta de `Adapter`/`Notification`; sem essa
 definição, nenhum ciclo futuro consegue retomar REQ-57.2/57.3 sem repetir o
 mesmo salto que subdimensionou a task original do Marco L.
 
-**Shrinking (REQ-58).** `gentest_property.go` já é determinístico por
+**Shrinking (REQ-58).** [gentest_property.go](../../../../codegen/gentest_property.go) já é determinístico por
 construção: `rand.New(rand.NewSource(propertySeed(t.Name, pr.Name)))`, semente
 derivada do par de nomes, nunca de `time.Now`. O contra-exemplo hoje é a
 sequência **completa** (`dsPropStep`), e o cabeçalho do arquivo já documenta a
@@ -623,15 +623,15 @@ e `tx.ctx` é fixado uma única vez, na chamada a `UnitOfWork.Run(ctx, fn)` — 
 sem parâmetro de contexto, por design: "already bound to the context.Context
 the unit of work was started with"). `Run(ctx, fn)` é invocado pelo código
 gerado em `codegen/decl_usecase.go:346` (`uow.Run(ctx, func(tx runtime.Tx)
-error {...})`), não em `codegen/lower/stmt.go` como a issue original supunha —
-é `decl_usecase.go` quem decide o `ctx` que entra na transação.
+error {...})`), não em [stmt.go](../../../../codegen/lower/stmt.go) como a issue original supunha —
+é [decl_usecase.go](../../../../codegen/decl_usecase.go) quem decide o `ctx` que entra na transação.
 
 Isso só é seguro se uma única `Tx.Run()` **nunca** grava eventos de mais de um
 `aggregateType` — carimbar uma vez, antes do `Run`, seria incorreto para uma
 transação que gravasse dois tipos de Aggregate diferentes. **M1.1 deve
-confirmar essa premissa por leitura** (`decl_usecase.go`, e a geração de Saga,
+confirmar essa premissa por leitura** ([decl_usecase.go](../../../../codegen/decl_usecase.go), e a geração de Saga,
 que pode combinar múltiplos Aggregates numa mesma transação) antes de
-carimbar. Se a premissa se confirmar: `codegen/decl_usecase.go` (adicionado a
+carimbar. Se a premissa se confirmar: [decl_usecase.go](../../../../codegen/decl_usecase.go) (adicionado a
 `target_files`) chama `ctx = runtime.WithAggregateType(ctx, "<Tipo>")`
 imediatamente antes de `uow.Run(ctx, ...)`, e `memoryEventStore.Append`
 (`eventstore.go.txt`) lê `AggregateTypeFrom(ctx)` para carimbar `tenantStream`
@@ -699,7 +699,7 @@ graph TD
   `go build`/`go vet` sobre os bytes em disco, e só então a limpeza do CI.
 - **Escopo de teste por task, nunca a suíte inteira** ([CLAUDE.md](../../../../CLAUDE.md)): rodar
   `go test ./codegen/ -run TestX`, não `go test ./...`. CI roda o resto na PR.
-- **Testes comportamentais do runtime** (`rtsrc_test.go`) são a guarda de M4.2:
+- **Testes comportamentais do runtime** ([rtsrc_test.go](../../../../codegen/rtsrc/rtsrc_test.go)) são a guarda de M4.2:
   o staging não pode quebrar a durabilidade do commit.
 
 ---
@@ -716,7 +716,7 @@ graph TD
 | `EventStore` não enumera | leitura de `rtsrc/eventstore.go.txt` | **Confirmado** — só `Append`/`Load` por id; stream não guarda tipo |
 | `pizzeria` bate em **uma** guarda de wiring | leitura de `generateCmdMainFile` + `topology.ds` | **REFUTADO** — bate em **duas** (múltiplos produtores E produtor+Dispatcher); o Marco L só mapeou a segunda |
 | `emit` em passo de Saga dá "erro claro" | leitura de `emitSagaStepPhaseFunc` + `emitStmt` | **REFUTADO** — é miscompilação silenciosa (`undefined: events`) |
-| `mock returns X` é "trocar o retorno do stub" | leitura de `emitSagaMock`/`decl_io.go`/`builtins.go` | **REFUTADO** — faltam 3 camadas: contrato de resposta, `result = call …`, e só então o stub |
+| `mock returns X` é "trocar o retorno do stub" | leitura de `emitSagaMock`/[decl_io.go](../../../../codegen/decl_io.go)/[builtins.go](../../../../codegen/lower/builtins.go) | **REFUTADO** — faltam 3 camadas: contrato de resposta, `result = call …`, e só então o stub |
 | (M3.1) Contrato de resposta "sai da declaração que já existe" (opção a) | leitura de [09-notifications-adapters](../../steerings/domainscript-spec-v7/09-notifications-adapters.md)/[10-ffi.md](../../steerings/domainscript-spec-v7/10-ffi.md)/[19-transactions-sagas](../../steerings/domainscript-spec-v7/19-transactions-sagas.md)/[24-testing.md](../../steerings/domainscript-spec-v7/24-testing.md) | **REFUTADO** — `Notification` só declara campos de entrada; nem `Adapter` Nível 1 (`body {}`) nem Nível 2 (`function "Nome"` sem `-> Tipo`) carregam forma de resposta; `PaymentResult` do exemplo não é declarado em lugar nenhum |
 | §22.7 por ramo exige re-arquitetura de `sema` | leitura de `handleRaisesError`/`testedErrorHandles`/`ast.ThenClause` | **REFUTADO** — os nomes de `Error` já estão nos dois lados; é trocar `bool` por conjunto |
 | `property` já é determinístico | leitura de `propertySeed` | **Confirmado** — semente derivada de `(Test, Property)`, nunca `time.Now` |
@@ -728,7 +728,7 @@ graph TD
 |---|---|---|
 | Enumeração como **interface opcional** (`StreamLister`) + type assertion | Adicionar `ListStreams` a `EventStore` | Quebraria `sqlrt.EventStore` e todos os dublês de teste de `codegen/` (NFR-32); o repo já usa opt-in por interface em outros seams |
 | Corrigir `list <Aggregate>` no **codegen** | Reescrever as Queries do `pizzeria` para a forma já suportada | Rota testada e rejeitada no Marco L: é gap de codegen genuíno, provider-agnóstico, que afeta `sales/read.ds` também. Contornar no fixture esconde o defeito |
-| Reusar `hoistQueryPredicate`/`hoistOrderBy`/`SelectSlice` | Reimplementar filtro/ordenação em `decl_query.go` | A máquina de cláusulas do Marco I já é a única fonte de verdade; duplicá-la divergiria em `where`/`orderBy` |
+| Reusar `hoistQueryPredicate`/`hoistOrderBy`/`SelectSlice` | Reimplementar filtro/ordenação em [decl_query.go](../../../../codegen/decl_query.go) | A máquina de cláusulas do Marco I já é a única fonte de verdade; duplicá-la divergiria em `where`/`orderBy` |
 | `ListStreams` **ordena** antes de devolver | Devolver na ordem do `map` | Iteração de `map` em Go é aleatória → Query sem `orderBy` ficaria não-determinística (NFR-13) e o smoke do `pizzeria` flaky |
 | `emit` em Saga: **erro claro primeiro** (M2.1), semântica depois (M2.2+) | Implementar a semântica direto | M2.1 tem valor imediato e independe de qualquer decisão de design; deixar a miscompilação de pé enquanto se discute a rota é o pior dos mundos |
 | `emit` em passo de Saga (M2.2): rota **(i) Dispatcher publish-only** — var de pacote `sagaDispatcher` reatribuível pelo `Wire`, mesmo mecanismo de `policyDispatcher` | (ii) dar `Tx`/`UnitOfWork` ao passo, mudando `Step[S]`/`RunSaga`; (iii) delimitar por completo, sem implementar nada além de M2.1 | (ii) mexe no núcleo transacional reusado por toda Saga (`rtsrc/saga.go.txt`) sem fixture nenhuma exercitando o caminho (NFR-30) e reabre a questão de granularidade de commit por passo, fora do espaço deste ciclo; (iii) descartaria valor real e de baixo custo que (i) entrega de graça, reusando infraestrutura já provada. **Trade-off aceito:** (i) não cobre `<Subject> emitted <Evento>(...)` (o exemplo literal `Order emitted OrderCancelled`, §24.3) — só `emitted <Evento>(...)`/`emitted count N` sem `Subject`, que M2.4 implementa; um `then` com `Subject` em Test de Saga produz erro de geração claro |
@@ -742,7 +742,7 @@ graph TD
 | `NewOutboxUnitOfWork` ganha `publisher ...runtime.Publisher` **opcional** (variádico, como `NewUnitOfWork`) | Delimitar: produtor durável nunca combina com Dispatcher local (manter a fronteira de Marco K) | O `pizzeria` exige exatamente essa combinação (`Sales` é produtor durável E dono de `GetAvailableMenu` com `cache`, G3) — delimitar aqui reabriria a guarda F5/G3 pela porta dos fundos. A extensão é aditiva: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos de hoje (byte-idêntico, NFR-31) |
 | Cada `wireTarget` recebe **sua própria instância de `uow`** (não uma variável de serviço única) | Manter uma única variável `uow` para todo o service, como hoje | Um serviço pode combinar um módulo produtor durável (UoW SQL) com módulos que só têm a UoW compartilhada (memória + dispatcher) — as duas nunca são a MESMA instância; a versão anterior desta seção não distinguia isso |
 | Mismatch de leitura do produtor durável (Query lê `store` em memória, nunca o banco real): **registrar issue própria, fora de REQ-55.7/55.8** | Resolver dentro de M1.4/M1.5 | É um bloqueio ADICIONAL e INDEPENDENTE (REQ-55.11): é sobre o Read Side de um módulo com banco real, não sobre quem publica no Dispatcher — amplia REQ-55 silenciosamente se resolvido aqui sem uma task própria |
-| `aggregateType` chega a `Append` via **`ctx`** (`WithAggregateType`/`AggregateTypeFrom`, mesmo padrão de `tenantID`), carimbado em `codegen/decl_usecase.go` antes de `uow.Run(ctx, ...)` — decisão explícita do usuário, condicionada a M1.1 confirmar que uma `Tx.Run()` nunca mistura `aggregateType`s | `aggregateID` prefixado (`"<Tipo>:<id>"`); outra rota não considerada | Opção 1 do pedido de decisão registrado em [m1-1-aggregatetype-nao-chega-a-eventstore-append](../../issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md) — reusa o mecanismo já validado de `tenantID` em vez de mudar o formato do id armazenado (que arriscaria REQ-55.6, byte-identidade de Queries já suportadas) |
+| `aggregateType` chega a `Append` via **`ctx`** (`WithAggregateType`/`AggregateTypeFrom`, mesmo padrão de `tenantID`), carimbado em [decl_usecase.go](../../../../codegen/decl_usecase.go) antes de `uow.Run(ctx, ...)` — decisão explícita do usuário, condicionada a M1.1 confirmar que uma `Tx.Run()` nunca mistura `aggregateType`s | `aggregateID` prefixado (`"<Tipo>:<id>"`); outra rota não considerada | Opção 1 do pedido de decisão registrado em [m1-1-aggregatetype-nao-chega-a-eventstore-append](../../issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md) — reusa o mecanismo já validado de `tenantID` em vez de mudar o formato do id armazenado (que arriscaria REQ-55.6, byte-identidade de Queries já suportadas) |
 
 ---
 
@@ -751,9 +751,9 @@ graph TD
 | Risco | Mitigação |
 |---|---|
 | A rota de fan-out no Dispatcher (§4.3) se revelar inviável ao implementar | **Fechado por M1.4**: confirmada por leitura (`ChannelTransport`/`Dispatcher` já têm a mesma forma), com a extensão de `NewOutboxUnitOfWork` (item 4 de §4.3) registrada para o caso produtor-durável + Dispatcher local |
-| A extensão de M1.4 a `NewOutboxUnitOfWork` (`publisher` opcional) quebrar o recorte original de Marco K | O parâmetro é variádico: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos — `producer_outbox_test.go`/`anchor_fixture_test.go` (Marco K) ficam byte-idênticos (NFR-31), a validar em M1.5 |
+| A extensão de M1.4 a `NewOutboxUnitOfWork` (`publisher` opcional) quebrar o recorte original de Marco K | O parâmetro é variádico: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos — [producer_outbox_test.go](../../../../codegen/producer_outbox_test.go)/[anchor_fixture_test.go](../../../../codegen/anchor_fixture_test.go) (Marco K) ficam byte-idênticos (NFR-31), a validar em M1.5 |
 | O mismatch de leitura do produtor durável (`store` em memória vs. banco real, achado por M1.4) bloquear a prova e2e do `pizzeria` (M1.6) | Registrado como issue própria (REQ-55.11), fora do escopo de REQ-55.7/55.8 — a resolver antes ou junto de M1.6, nunca ampliando REQ-55 silenciosamente |
-| Staging quebrar a durabilidade do commit ou o carimbo de `Sequence` | M4.2 mantém os testes comportamentais de `rtsrc_test.go` verdes e valida explicitamente dois `Append` ao mesmo stream no mesmo `Run` (§4.5) |
+| Staging quebrar a durabilidade do commit ou o carimbo de `Sequence` | M4.2 mantém os testes comportamentais de [rtsrc_test.go](../../../../codegen/rtsrc/rtsrc_test.go) verdes e valida explicitamente dois `Append` ao mesmo stream no mesmo `Run` (§4.5) |
 | `list <Aggregate>` ficar não-determinístico e deixar o CI flaky | `ListStreams` ordena (§5.1); o e2e do `pizzeria` (M1.6) gera duas vezes e compara bytes |
 | A enumeração O(n) degradar uma Query real | Aceito e documentado (§5.1): store in-process, mesma natureza de `SelectSlice`. Prefiltro fica para o ciclo de providers reais (G-4) |
 | Descobrir, no `pizzeria`, um bloqueio **além** dos mapeados | REQ-55.11: registrar nova issue (`issue-generator`) e **não** ampliar REQ-55 — a regra que o Marco L usou bem quando achou ISSUE-12 |

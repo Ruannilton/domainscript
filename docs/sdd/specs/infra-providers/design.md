@@ -57,9 +57,9 @@ decidido pelo registro de provider (REQ-46).
 
 ### 2.1. Forma
 
-`sqlProviders` (`sql_wiring.go`) já é o modelo: `map[string]sqlProvider` com
+`sqlProviders` ([sql_wiring.go](../../../../codegen/sql_wiring.go)) já é o modelo: `map[string]sqlProvider` com
 `{driverModule, driverVersion, minGoVersion, dialectCtor}`. Generalizamos para
-uma forma comum por categoria em `codegen/provider_registry.go` (novo):
+uma forma comum por categoria em [provider_registry.go](../../../../codegen/provider_registry.go) (novo):
 
 ```go
 // providerDep é o que uma categoria precisa saber de um provider real para
@@ -176,7 +176,7 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   não entregues, chama o(s) handler(s) inscrito(s) por `event_type`, e num
   sucesso marca `delivered_at`; numa falha incrementa `attempts` e re-tenta
   (at-least-once, REQ-42.2). O relay roda como um Worker de serviço (mesma casa
-  de `StartIdempotencyCleanup`, G2) — um `Start(ctx)` no wiring de `main.go`.
+  de `StartIdempotencyCleanup`, G2) — um `Start(ctx)` no wiring de [main.go](../../../../cmd/dsc/main.go).
 - **Lote exclusivo entre réplicas (múltiplas instâncias do mesmo service):** a
   seleção do lote **não** pode ser um `SELECT ... WHERE delivered_at IS NULL`
   nu — duas réplicas rodando o relay pegariam as MESMAS linhas e entregariam
@@ -205,7 +205,7 @@ copiadas verbatim para `<dir>/*.go` no projeto gerado.
   transporte certo — Dispatcher/Outbox in-process para uma Policy do mesmo
   service, **ou o `ChannelTransport` (RabbitMQ) para um destino cross-service**.
   O `publisher` injetado no `NewDurableOutbox` é justamente esse transporte de
-  saída (o mesmo que o produtor montaria em `main.go`), agora acionado *de
+  saída (o mesmo que o produtor montaria em [main.go](../../../../cmd/dsc/main.go)), agora acionado *de
   dentro do relay* em vez de direto no commit. Assim a entrega cross-service
   herda a durabilidade at-least-once do outbox: só marca `delivered_at` depois
   que o `Publish` no broker teve sucesso.
@@ -306,7 +306,7 @@ canal com provider real — exatamente o cenário da fixture-âncora.
 - **Wiring:** produtor (`generateCmdMainFile`) e consumidor
   (`emitPolicyWireFunc`) trocam `NewQueueChannel(cfg, keyFunc)` por
   `NewRabbitMQChannel(url, cfg, keyFunc)` quando o canal declara `provider:
-  "rabbitmq"` (REQ-43.2/5). `channel.go` decide via um `channelProviderKind(ch)`
+  "rabbitmq"` (REQ-43.2/5). [channel.go](../../../../codegen/channel.go) decide via um `channelProviderKind(ch)`
   novo, análogo a `channelViaKind`, consultando `channelProviders`. `via:
   queue` sem provider reconhecido segue in-memory; `grpc/http/stream` seguem
   `unsupportedChannelKindError`.
@@ -336,7 +336,7 @@ canal com provider real — exatamente o cenário da fixture-âncora.
 - **`redisrt/ratelimit.go.txt`:** `redisLimiter` implementa `Limiter` com
   contagem atômica: `token_bucket`/`sliding`/`fixed` via script Lua (atômico
   cross-réplica, REQ-44.2). `CheckRateLimits` (AND multi-dimensão,
-  `ratelimit.go`) é reusado como está — ele só compõe `Limiter.Allow`.
+  [ratelimit.go](../../../../codegen/ratelimit.go)) é reusado como está — ele só compõe `Limiter.Allow`.
 - **Fail semantics (REQ-44.5):** cache fail-**open** sempre (§15). Rate limit —
   decisão: **fallback local**, não fail-open puro. Quando o Redis está
   indisponível, o `redisLimiter` degrada para o `Limiter` in-memory local
@@ -346,7 +346,7 @@ canal com provider real — exatamente o cenário da fixture-âncora.
   `Limiter` in-memory como fallback e roteia para ele ao detectar erro de
   Redis; quando o Redis volta, retoma a contagem global. Melhor esforço, nunca
   desligado.
-- **Seleção:** `decl_query_cache.go`/`ratelimit.go` consultam
+- **Seleção:** [decl_query_cache.go](../../../../codegen/decl_query_cache.go)/[ratelimit.go](../../../../codegen/ratelimit.go) consultam
   `cacheProviders`/`rateLimitProviders` para trocar o construtor
   `NewMemoryQueryCache`/in-mem-limiter por `NewRedisQueryCache(url)`/
   `NewRedisLimiter(url)` quando `backend: redis`. URL de `env(...)`.
@@ -367,14 +367,14 @@ canal com provider real — exatamente o cenário da fixture-âncora.
   "determinística" era imprecisa e foi corrigida para "única".
 - **Config:** bucket/região de `env(...)`; credenciais via cadeia padrão do
   AWS SDK (`config.LoadDefaultConfig`) — nunca hardcoded (REQ-47.1).
-- **FileStream (REQ-45.3):** só se `builtins.go` já emitir ops sobre
+- **FileStream (REQ-45.3):** só se [builtins.go](../../../../codegen/lower/builtins.go) já emitir ops sobre
   `FileStream` hoje (não emite — G1a cobre só File/FileRef); então fica
   registrado como desvio, o adapter cobre File/FileRef igual ao in-memory.
 
 ### 3.6. Config por ambiente + fail-closed (REQ-47)
 
 Padrão único: cada construtor de adapter recebe a URL/DSN como string, resolvida
-por `os.Getenv` no `main.go` gerado (o lowering de `env("X")` já produz
+por `os.Getenv` no [main.go](../../../../cmd/dsc/main.go) gerado (o lowering de `env("X")` já produz
 `os.Getenv("X")`). O startup abre cada conexão e **falha fechado** se qualquer
 uma falhar.
 
@@ -384,7 +384,7 @@ recurso — não há nada aberto antes que precise ser fechado. Com os cinco
 providers, o startup abre vários recursos em sequência (DB, canal AMQP, cliente
 Redis, cliente S3); um `log.Fatal` no meio chama `os.Exit(1)` e **pula todos os
 `defer Close()`** dos recursos já abertos, vazando conexões. Por isso o
-`main.go`-âncora gera o corpo num `func run() error` — cada passo faz `if err
+[main.go](../../../../cmd/dsc/main.go)-âncora gera o corpo num `func run() error` — cada passo faz `if err
 != nil { return err }` (os `defer Close()` acima dele rodam no unwind), e o
 `main()` fica `if err := run(); err != nil { log.Fatal(err) }` (o `Fatal`
 único, depois que todo `defer` já executou). Fail-closed preservado
@@ -422,7 +422,7 @@ proteger) — o padrão `run() error` entra no wiring novo multi-recurso.
   (`SetMaxOpenConns`/`MaxIdleConns`/`ConnMaxLifetime` — o adapter usa defaults
   sãos, tuning fino fora do recorte), observabilidade dos adapters (liga com
   G-6, telemetria — métricas de retry/reconexão/latência de driver).
-- `FileStream` real (depende de o lowering de `builtins.go` emitir ops de
+- `FileStream` real (depende de o lowering de [builtins.go](../../../../codegen/lower/builtins.go) emitir ops de
   stream — hoje não emite).
 - **Oportunidade adjacente barata (registrada, não neste ciclo):** com Postgres
   presente **e** o seam `runtime.Tx` já estendido para o outbox (R4/J2.1),
@@ -446,7 +446,7 @@ Três camadas, por provider:
 2. **Unit de dialeto/serialização (sem infra, NFR-22 parcial):** PostgresDialect
    emite `$1`/`jsonb`/`->>'campo'` corretos (reusa o padrão do segundo dialeto
    de teste, REQ-40.3 — o dialeto `$1` sobre sqlite já existe em
-   `sql_dialect_test.go`); envelope AMQP round-trip (serialize→deserialize via
+   [sql_dialect_test.go](../../../../codegen/sql_dialect_test.go)); envelope AMQP round-trip (serialize→deserialize via
    EventRegistry); chave/geração Redis; key/layout S3; DDL/SQL da tabela outbox
    em ambos os dialetos.
 3. **Integração opt-in (com infra, NFR-22 total / NFR-24):** arquivos
@@ -463,13 +463,13 @@ a `TestSharedCollectionTypeDeterministic`.
 
 ## 7. Riscos e pré-condições de implementação (auditados no código antes de fatiar)
 
-Levantados cruzando o design com o código real (`program/graph.go`,
+Levantados cruzando o design com o código real ([graph.go](../../../../program/graph.go),
 `codegen/*.go`, `codegen/sqlrt/*`) — cada um vira uma subtask explícita em
 [tasks.md](tasks.md) para não ser descoberto no meio da implementação:
 
 - **R1 — `Database.DSN` é `""` quando a conexão é `env(...)`.**
   `program.Database.DSN` só carrega literais estáticos (doc do próprio campo);
-  `emitXADatabaseWiring` (`sql_wiring.go`) faz `strconv.Quote(db.DSN)`. Para
+  `emitXADatabaseWiring` ([sql_wiring.go](../../../../codegen/sql_wiring.go)) faz `strconv.Quote(db.DSN)`. Para
   Postgres com `connection: env("PG_URL")` isso emitiria uma **string vazia**.
   O wiring de provider real tem que **lowerizar `env(...)` a partir do
   `Decl.Entries`** (não usar `db.DSN`). Já existe o helper de forma:
@@ -489,7 +489,7 @@ Levantados cruzando o design com o código real (`program/graph.go`,
 - **R3 — Config `env(...)` em Cache/RateLimit/FileStorage: bloco aceita a
   chave?** Os blocos de módulo são `*ast.ConfigBlock` free-form
   (`moduleRateLimitBlock` lê `b.Kind == "RateLimit"`; o `Cache{}` de módulo já
-  é lido para o fallback de ttl em `decl_query.go`). Uma `url:`/`connection:
+  é lido para o fallback de ttl em [decl_query.go](../../../../codegen/decl_query.go)). Uma `url:`/`connection:
   env(...)` a mais nesses blocos é só mais uma entry — o parser a aceita (config
   é genérica). **Pré-condição:** confirmar num teste de fixture que a entry
   chega em `Decl.Entries` (deve chegar); se não chegar, é o ÚNICO ponto que

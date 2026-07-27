@@ -39,7 +39,7 @@ isoladamente com ASTs sintéticas.
   programa válido) são bugs, tratados defensivamente (REQ-14.4).
 - **Determinismo (NFR-3 → NFR-13):** toda iteração sobre mapas é ordenada; a ordem
   de declarações segue a ordem de origem (a AST preserva ordem de arquivo) e o
-  conjunto de arquivos é ordenado por caminho (o `program` já ordena — `program.go`
+  conjunto de arquivos é ordenado por caminho (o `program` já ordena — [program.go](../../../../program/program.go)
   ordena `sources` e `Build` ordena `paths`).
 - **Anti-cascata / tolerância a erro (REQ-4.5):** subárvores com nós de erro são
   puladas; como o gerador só roda sobre programa válido, isso é rede de segurança.
@@ -132,7 +132,7 @@ compila (NFR-14). Decisão registrada em §6.
 
 ## 3. Componentes
 
-### 3.1. Orquestrador (`codegen/codegen.go`) — REQ-14
+### 3.1. Orquestrador ([codegen.go](../../../../codegen/codegen.go)) — REQ-14
 
 ```go
 type Options struct {
@@ -152,7 +152,7 @@ Fluxo:
 1. **Pré-condição (REQ-14.1):** se `bag.HasErrors()` → retorna `ErrHasDiagnostics`,
    sem gerar. O `driver` decide imprimir os diagnósticos.
 2. **Runtime (REQ-16):** emite `runtime/*.go` a partir de `rtsrc/` (verbatim) e
-   `go.mod` (REQ-14.5, `project.go`).
+   `go.mod` (REQ-14.5, [project.go](../../../../codegen/project.go)).
 3. **Por módulo (REQ-14.5):** o `program` não expõe um helper "arquivos do módulo
    X"; o gerador agrupa `prog.Files` (um `map[path]*ast.File`) por
    `prog.ModuleOf(path)`, **iterando os caminhos em ordem alfabética** (o mapa não
@@ -160,7 +160,7 @@ Fluxo:
    as `Decl` dos seus arquivos, roteando por tipo para o emissor correspondente
    (`decl_*.go`), na ordem de origem. Arquivos com `ModuleOf == ""` (fora de módulo:
    `topology.ds`, `versions/`) são tratados à parte pelas bordas/wiring.
-4. **Bordas e wiring:** gera HTTP (`http.go`), gRPC (`grpc.go`), observabilidade e o
+4. **Bordas e wiring:** gera HTTP ([http.go](../../../../codegen/http.go)), gRPC ([grpc.go](../../../../codegen/grpc.go)), observabilidade e o
    `cmd/<service>/main.go` por service (a partir de `prog.Services`).
 5. Ordena os `File` por `Path` antes de retornar (NFR-13).
 
@@ -218,7 +218,7 @@ Mapeamento DomainScript → identificador Go, determinístico e idiomático:
 | Receptor de VO | **não é `self`** | `value`→o valor embrulhado (wrapper) ou o próprio receptor (composto); campos do VO composto por **nome nu** (`amount`→`m.Amount`); `ok`→sentinela "validação passa" (ver abaixo) |
 | Colisão com keyword Go | sufixo `_` determinístico | `type`→`type_`, `range`→`range_`, `func`→`func_` |
 
-**Receptores de VO (alinhados ao front-end, `resolver/receivers.go`).** O front-end
+**Receptores de VO (alinhados ao front-end, [receivers.go](../../../../resolver/receivers.go)).** O front-end
 **não** semeia `self` em corpos de VO: `Valid` vê `value` e `ok`; `Operator` e
 `coerce` veem `value`; num VO composto os campos são nomes nus. A tabela §3.3 do
 front-end é o contrato — o lowering **espelha exatamente** esses nomes, senão o Go
@@ -234,10 +234,10 @@ linguagem; §6.)*
 conter um `Aggregate Wallet`: o pacote Go é `wallet` (minúsculo) e o tipo é `Wallet`
 (exportado) — não colidem. Mas um `Command Deposit` e um `Handle Deposit` coexistem:
 viram, respectivamente, o tipo `Deposit` e o método `(*Wallet).Deposit`, também sem
-colisão. `names.go` só desambigua contra **palavras-reservadas Go** e contra dois
+colisão. [names.go](../../../../codegen/goname/names.go) só desambigua contra **palavras-reservadas Go** e contra dois
 símbolos que mapeariam ao mesmo identificador exportado no mesmo pacote. **Colisão
 intra-pacote:** aplica-se um sufixo **numérico determinístico** na ordem estável de
-declaração (o 2º símbolo vira `Nome2`, etc.). **Refs cross-pacote:** `names.go`
+declaração (o 2º símbolo vira `Nome2`, etc.). **Refs cross-pacote:** [names.go](../../../../codegen/goname/names.go)
 integra com `emit.Import` para produzir referências **qualificadas por pacote**
 (`contracts.OrderPlaced`, `orders.Wallet`) — necessário para os `PublicEvent` do
 pacote `contracts/` (§3.4) e para dependências entre módulos. *(§6.)*
@@ -265,7 +265,7 @@ suas structs vêm de um **template fixo do runtime** (§3.6), não do modelo.
 Nomes de arquivo gerados seguem `snake_case` do construto (`aggregate_wallet.go`,
 `events.go`, `usecases.go`).
 
-### 3.4. Layout do projeto gerado (`codegen/project.go`) — REQ-14.5
+### 3.4. Layout do projeto gerado ([project.go](../../../../codegen/project.go)) — REQ-14.5
 
 ```
 <out>/
@@ -337,7 +337,7 @@ O lowering desce recursivamente sobre `ast.Expr`/`ast.Stmt`, consultando o
 `types.Model` **através do `TypeEnv` (§3.6a)** para decidir a forma Go. Regras
 principais:
 
-**Expressões (`expr.go`):**
+**Expressões ([expr.go](../../../../codegen/lower/expr.go)):**
 
 - `*ast.Literal` → literal Go (INT/FLOAT/STRING; DURATION→`time.Duration`;
   SIZE→bytes; booleanos).
@@ -361,7 +361,7 @@ principais:
   `switch`).
 - `*ast.QueryExpr` (`load`/`list`/`count`/`store`/`exists`/`delete`) → §3.9.
 
-**Statements (`stmt.go`):**
+**Statements ([stmt.go](../../../../codegen/lower/stmt.go)):**
 
 - `*ast.EnsureStmt` (REQ-22.1): `if !cond { <ação> }`. Ação por contexto:
   `Error` → `return zero, ErrX`; `Nop` → `continue`/no-op; `break`/`break all`/
@@ -377,7 +377,7 @@ principais:
 - `*ast.ReturnStmt`, `*ast.AssignStmt`, `*ast.LogStmt` → `return`, `:=`/`=`, chamada
   de log do runtime (`slog` com trace context — REQ-22.8/REQ-30.1).
 
-**Built-ins (`builtins.go`, REQ-22.7):** duas famílias, com marcos distintos.
+**Built-ins ([builtins.go](../../../../codegen/lower/builtins.go), REQ-22.7):** duas famílias, com marcos distintos.
 
 - **Núcleo (Marco E), sem dep externa:** `now()`→`runtime.Now(ctx)`,
   `uuid()`→`runtime.UUID()`, `random`/`random_str`→helpers do runtime,
@@ -392,7 +392,7 @@ principais:
 **Métodos embutidos sobre primitivos/coleções.** Corpos usam métodos que não são
 built-ins de topo nem operadores de VO: `value.length()` (string→`len`),
 `state.entries.add(x)` (`AppendList.Add`), `list.distinct(lambda)`, `list.sum(lambda)`,
-`state.items.focus(id)` (§20). `builtins.go` mantém uma **tabela `(tipo-receptor,
+`state.items.focus(id)` (§20). [builtins.go](../../../../codegen/lower/builtins.go) mantém uma **tabela `(tipo-receptor,
 método) → emissão Go`** para esses casos; um par ausente é erro de geração (apanhado
 no smoke), não Go arbitrário.
 
@@ -400,7 +400,7 @@ no smoke), não Go arbitrário.
 `ensure`, coerção, `load`) geram o padrão `x, err := …; if err != nil { return … }`.
 Nunca `panic` no caminho de negócio (NFR-15).
 
-### 3.6a. Ambiente de tipos local do lowering (`codegen/lower/env.go`) — REQ-22.6
+### 3.6a. Ambiente de tipos local do lowering ([env.go](../../../../codegen/lower/env.go)) — REQ-22.6
 
 O lowering decide a forma Go de muitos nós a partir do **tipo estático** do
 receptor/operandos (`a + b` é `a.Add(b)` ou `a + b` nativo — §4.2; `x.campo` exige a
@@ -414,18 +414,18 @@ corpo — porque **o front-end não o entrega pronto**:
 - `types.Model.Infer(module, e, sc)` cobre literal, ident, membro, chamada,
   binário/unário, índice e lista, mas devolve `ErrorType` para `*ast.QueryExpr`
   (`load`/`list`/`count`/`store`/`exists`), `*ast.MatchExpr` e `*ast.LambdaExpr`
-  (`types/infer.go`, ramo `default`). São exatamente as formas que introduzem locais
+  ([infer.go](../../../../types/infer.go), ramo `default`). São exatamente as formas que introduzem locais
   em corpos de UseCase/Query/Policy.
 - Nem o resolver nem o checker registram o **tipo** de um local de atribuição: o
-  resolver guarda só o *nome* (`Binding`, `resolver/resolve_body.go`) e o checker de
+  resolver guarda só o *nome* (`Binding`, [resolve_body.go](../../../../resolver/resolve_body.go)) e o checker de
   membro semeia apenas receptores + parâmetros e é deliberadamente conservador
-  (`sema/rules_typecheck.go`) — suficiente para validar (anti-cascata), insuficiente
+  ([rules_typecheck.go](../../../../sema/rules_typecheck.go)) — suficiente para validar (anti-cascata), insuficiente
   para gerar (que precisa de uma forma Go concreta para **todo** nó).
 
 Portanto o `TypeEnv` implementa `types.Scope` e:
 
 1. semeia os receptores contextuais **com o mesmo mapeamento do front-end**
-   (`resolver/receivers.go`): Handle→`self`/`state`/`caller`; Apply→`state`/`event`;
+   ([receivers.go](../../../../resolver/receivers.go)): Handle→`self`/`state`/`caller`; Apply→`state`/`event`;
    Access→`self`/`caller`; UseCase.execute→`cmd`/`caller`; Policy.execute→`event`/
    `caller`; VO `Valid`→`value`/`ok`; VO `Operator`→`value` + campos do VO por nome
    nu; `coerce`→`value`; Saga step→`state`;
@@ -443,7 +443,7 @@ só a geração precisa. Onde o tipo for genuinamente desconhecido, o lowering *
 explicitamente** (bug de geração, apanhado no smoke/golden — NFR-14), em vez de emitir
 Go arbitrário.
 
-### 3.7. Aggregates: StateStored vs EventSourced (`decl_aggregate.go`) — REQ-19
+### 3.7. Aggregates: StateStored vs EventSourced ([decl_aggregate.go](../../../../codegen/decl_aggregate.go)) — REQ-19
 
 ```go
 type Wallet struct {
@@ -558,7 +558,7 @@ O `mod.ds` (`ast.ModuleDecl` + `program.Module`/`Database`) vira **wiring**: o
   aplica o filtro conforme a estratégia; `cross_tenant` gera o caminho sem filtro +
   auditoria (REQ-27.3).
 
-### 3.12. Bordas HTTP e gRPC (`http.go`, `grpc.go`) — REQ-28/29
+### 3.12. Bordas HTTP e gRPC ([http.go](../../../../codegen/http.go), [grpc.go](../../../../codegen/grpc.go)) — REQ-28/29
 
 - **HTTP (REQ-28):** `net/http` (stdlib). Cada `ast.Route` → registro num
   `http.ServeMux` (Go 1.22+ suporta padrões `METHOD /path/{param}`). O handler
@@ -593,7 +593,7 @@ O `mod.ds` (`ast.ModuleDecl` + `program.Module`/`Database`) vira **wiring**: o
   pacote à parte: as duas bordas (HTTP/gRPC) já compartilham esse arquivo, e um
   pacote extra só faria sentido isolado por service, o que colidiria de nome
   entre services num programa multi-serviço. Reusa o MESMO dispatch de domínio
-  que a borda HTTP chama (`resolveRouteTarget`/`findCommandInBuckets`, `http.go`)
+  que a borda HTTP chama (`resolveRouteTarget`/`findCommandInBuckets`, [http.go](../../../../codegen/http.go))
   — nunca uma segunda cópia da lógica de negócio. Tenant/rate-limit/versionamento
   (G4-G6) não têm equivalente na borda gRPC ainda — fora do escopo de REQ-29,
   registrado aqui de propósito para não travar a extensão futura.
@@ -610,7 +610,7 @@ fontes, na ordem: o span OTel ATIVO em `ctx` (quando o adapter opt-in está
 instalado, ver abaixo) e, na ausência de um, o id stdlib simples carregado
 por `runtime.WithTrace` — um hex de 128 bits (`runtime.NewTraceID`,
 `crypto/rand`) mintado uma vez por requisição/RPC de entrada na borda
-(`emitCallerAndIdempotency`, `http.go`; o equivalente em `grpc.go`), logo
+(`emitCallerAndIdempotency`, [http.go](../../../../codegen/http.go); o equivalente em [grpc.go](../../../../codegen/grpc.go)), logo
 depois do `caller`. Este mecanismo é deliberadamente **não-W3C**: correlaciona
 logs *dentro* de um mesmo processo/request, não propaga um `traceparent`
 entre serviços — decisão de escopo, não uma limitação temporária (ver riscos,
@@ -628,8 +628,8 @@ nunca uma ramificação no código gerado por programa. Pontos de chamada de
 para todo construto exaustivamente — decisão de escopo documentada):
 
 - a borda HTTP/gRPC, em torno do despacho do UseCase/Query alvo da rota/rpc
-  (`emitUseCaseRoute`/`emitQueryRoute`, `http.go`; `emitGRPCUseCaseHandlerBody`/
-  `emitGRPCQueryHandlerBody`, `grpc.go`) — nomeado `"UseCase.<Nome>"`/
+  (`emitUseCaseRoute`/`emitQueryRoute`, [http.go](../../../../codegen/http.go); `emitGRPCUseCaseHandlerBody`/
+  `emitGRPCQueryHandlerBody`, [grpc.go](../../../../codegen/grpc.go)) — nomeado `"UseCase.<Nome>"`/
   `"Query.<Nome>"`;
 - o `Dispatcher` núcleo, em torno de CADA invocação de handler de Policy
   (`memoryDispatcher.Publish`, `rtsrc/dispatcher.go.txt`) — nomeado
@@ -641,13 +641,13 @@ Worker/Saga/Upcast-Downcast de versão não ganham span nesta task (mas
 Worker/Saga JÁ têm `ctx` em escopo, então seus `log` ganham `trace_id` do
 mecanismo default acima).
 
-**Adapter OTel opt-in (REQ-30.2), `codegen/otelrt` + `decl_telemetry.go`.**
+**Adapter OTel opt-in (REQ-30.2), `codegen/otelrt` + [decl_telemetry.go](../../../../codegen/decl_telemetry.go).**
 `Module X { Telemetry { exporter: "otlp", endpoint: env(...), traces {
 sampler, sampleRate } } }` (spec §12) é o único gatilho: `programNeedsOTel`
 decide, uma vez por programa, se `otelruntime/*.go` (vendorado a partir de
 `codegen/otelrt/*.go.txt`, mesmo mecanismo `.go.txt`+`//go:embed` de
 `sqlrt`/`grpcrt`) e o `require` de 4 módulos OTel entram no `go.mod`
-(`EmitGoMod`, `project.go`); ausente em qualquer outro caso (NFR-12,
+(`EmitGoMod`, [project.go](../../../../codegen/project.go)); ausente em qualquer outro caso (NFR-12,
 wallet/shop incluídos). `groupTelemetryBlock` resolve, por `cmd/<service>`, o
 (no máximo um) módulo do grupo que declara o bloco — dois no mesmo grupo é
 erro de geração claro (um processo só tem um Observer). Quando presente,
@@ -673,7 +673,7 @@ H3, fora desta task).
 
 **Nota de escopo — Handle/Apply sem `ctx` (limitação preexistente, não
 introduzida por H2).** `§3.1a` já previa "um Handle recebe … o ctx quando seu
-corpo precisa (`now()`/`load`/log)", mas `decl_aggregate.go` nunca chegou a
+corpo precisa (`now()`/`load`/log)", mas [decl_aggregate.go](../../../../codegen/decl_aggregate.go) nunca chegou a
 implementar isso: `emitHandle`/`emitApply` não têm parâmetro `ctx` nem
 `BuiltinLowerer` anexado hoje — `now()`/`load` dentro de um Handle já eram
 "não suportados" antes de H2, independente de log. Estender Handle para
@@ -692,9 +692,9 @@ esquemas de trace id divergentes ao mesmo tempo: com o adapter instalado,
 stdlib continua sendo escrito (idempotente, nunca lido nesse caso) só para
 não exigir um `if` no gerador sobre se o Observer é real.
 
-### 3.14. Testes gerados (`gentest.go`) — REQ-31
+### 3.14. Testes gerados ([gentest.go](../../../../codegen/gentest.go)) — REQ-31
 
-### 3.14. Testes gerados (`gentest.go`) — REQ-31
+### 3.14. Testes gerados ([gentest.go](../../../../codegen/gentest.go)) — REQ-31
 
 Cada `ast` de `*.test.ds` (`Test`, `scenario`, `given`/`when`/`then`, `mock`,
 `fail step`, `property`, `Fixture`) vira um teste Go `func TestX(t *testing.T)`:
@@ -830,7 +830,7 @@ de `Interface GRPC`/`Telemetry` ⇒ nenhum código com dep externa é gerado.
 | Inferência do front-end não cobre locais de `load`/`list`/`match`/`lambda` | `TypeEnv` do `codegen` estende a inferência (§3.6a); implementado e testado **antes** do lowering de corpos (task E5.0) |
 | Exemplo wallet: `Money` usa `+`/`-`/`>=` **sem** declarar operadores → Go não compila | **Resolvido** em E0.3 (operadores declarados). Fixtures não são fonte de verdade (§6): o smoke semeia estado via `given` ou construção completa, não depende de o exemplo ser canônico |
 | `ok`/`value` de VO sem semântica de geração fixada | **Decidido** (§3.3/§6): `value` = valor embrulhado (wrapper) / o receptor (composto); `ok` = sentinela "validação passa" → `NewX` sem erro |
-| Colisão de nomes com keywords Go | Estratégia determinística de sufixo em `names.go` (REQ-15.2) |
+| Colisão de nomes com keywords Go | Estratégia determinística de sufixo em [names.go](../../../../codegen/goname/names.go) (REQ-15.2) |
 | Escopo enorme trava a entrega | Marcos E→H; núcleo transacional runnable primeiro (§5 requirements) |
 | Dep externa vaza pro núcleo | Seam por interface; ausência do recurso ⇒ nenhum import externo (NFR-12, §4.4) |
 | Runtime vendorado diverge e não compila | Teste que compila `rtsrc/` isoladamente (NFR-17) |

@@ -5,7 +5,7 @@
   ainda não gera — `dsc gen` falha com "UseCase e Policy no mesmo módulo ainda
   não têm wiring combinado suportado (cada um gera seu próprio Wire —
   colidiriam); ver a doc de decl_policy.go". `generateModuleFiles`
-  (`codegen/codegen.go`) emitiria dois `func Wire(...)` no mesmo pacote Go
+  ([codegen.go](../../../codegen/codegen.go)) emitiria dois `func Wire(...)` no mesmo pacote Go
   (um de `emitUOWWireFunc`, outro de `emitPolicyWireFunc`), que colidem. Nem
   wallet nem shop exercitavam essa combinação; o módulo `Kitchen` do exemplo
   pizzeria (Claim/Finish via HTTP **e** criação reativa via Policy sobre

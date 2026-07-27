@@ -26,7 +26,7 @@ Decisão de fronteira:
   vive no `resolver/`, estendendo a passagem de resolução existente.
 - **Tipos, membro e compatibilidade (REQ-11/12/13)** precisam do modelo de tipos →
   vivem num novo subsistema `types/` consumido por uma nova regra no `sema/`
-  (`rules_typecheck.go`). Mantém o invariante de dependências (`sema → resolver →
+  ([rules_typecheck.go](../../../../sema/rules_typecheck.go)). Mantém o invariante de dependências (`sema → resolver →
   … → ast`): `types/` depende só de `ast`/`symbols`/`token`.
 
 ### 1.2. Invariantes preservados (do front-end)
@@ -62,15 +62,15 @@ sema/
 └── rules_typecheck.go       # NOVO — acesso a membro (REQ-12) + compat (REQ-13)
 ```
 
-Dependências: `resolver/scope.go` e `resolve_body.go` dependem de `ast`/`symbols`;
-`types/` depende de `ast`/`symbols`/`token`; `sema/rules_typecheck.go` depende de
+Dependências: [scope.go](../../../../resolver/scope.go) e [resolve_body.go](../../../../resolver/resolve_body.go) dependem de `ast`/`symbols`;
+`types/` depende de `ast`/`symbols`/`token`; [rules_typecheck.go](../../../../sema/rules_typecheck.go) depende de
 `types/` e `symbols/`. Nenhuma seta nova aponta "para cima".
 
 ---
 
 ## 3. Componentes
 
-### 3.1. Modelo de Escopo (`resolver/scope.go`) — REQ-9.2/9.5
+### 3.1. Modelo de Escopo ([scope.go](../../../../resolver/scope.go)) — REQ-9.2/9.5
 
 ```go
 type Scope struct {
@@ -91,7 +91,7 @@ func (s *Scope) Lookup(name string) (Binding, bool)  // sobe a cadeia
 - Fallback final: símbolos do módulo via `symbols.SymbolTable.Lookup` (e o nível
   público, como o resolver já faz). Membros de Enum acessíveis por nome entram aqui.
 
-### 3.2. Receptores Contextuais (`resolver/receivers.go`) — REQ-9.3
+### 3.2. Receptores Contextuais ([receivers.go](../../../../resolver/receivers.go)) — REQ-9.3
 
 Tabela construto → nomes implícitos semeados no `Scope` raiz:
 
@@ -110,7 +110,7 @@ Esta tabela é o **único** ponto a editar quando um construto novo ganha um rec
 (NFR-5). Os receptores são `Binding`s com o tipo já apontado para o §3.3, para que a
 checagem de membro (REQ-12) os use direto.
 
-### 3.3. Resolução de Corpos (`resolver/resolve_body.go`) — REQ-9.1/9.4/9.6
+### 3.3. Resolução de Corpos ([resolve_body.go](../../../../resolver/resolve_body.go)) — REQ-9.1/9.4/9.6
 
 Para cada `Decl`, obtém os blocos via `declBlocks(d)` (já existe em `sema/walk.go`;
 mover/exportar para reuso — ver §5). Para cada bloco:
@@ -128,7 +128,7 @@ Cuidado de precisão: distinguir **uso** de **definição**. `t => t.x` define `
 idents a resolver. O percurso só resolve `*ast.Ident` que estão em posição de valor;
 nomes de campo de `Arg.Name` e chaves de `match`-pattern são tratados à parte.
 
-### 3.4. Refs de Configuração (`resolver/resolve_config.go`) — REQ-10
+### 3.4. Refs de Configuração ([resolve_config.go](../../../../resolver/resolve_config.go)) — REQ-10
 
 Catálogo declarativo (config ref → `Kind` esperado):
 
@@ -143,7 +143,7 @@ Catálogo declarativo (config ref → `Kind` esperado):
 | `VersionUpcast`/`Downcast` | `Target` | Command \| View |
 
 > Correção vs. o rascunho inicial: `ChannelDef.From/To` resolve a **Module**, não a
-> Service. O front-end modela canais como ligações módulo→módulo (`program/graph.go`:
+> Service. O front-end modela canais como ligações módulo→módulo ([graph.go](../../../../program/graph.go):
 > um service agrupa módulos; os canais ligam módulos que vivem em services
 > distintos). Resolver From/To contra services produziria falsos positivos contra a
 > própria topologia válida do projeto.
@@ -174,16 +174,16 @@ type FuncType  struct{ Params []Type; Result Type }  // Operator/Query/método
 type errorType struct{}                              // sentinela anti-cascata (REQ-11.3)
 ```
 
-- **`model.go`**: `TypeOf(sym *symbols.Symbol) Type` constrói o tipo de uma
+- **[model.go](../../../../types/model.go)**: `TypeOf(sym *symbols.Symbol) Type` constrói o tipo de uma
   declaração e seu **catálogo de membros** (nome → tipo do membro). Para um
   Aggregate, os membros de `self`/`state` são os campos de `state`.
-- **`infer.go`**: `Infer(e ast.Expr, sc *Scope) Type` desce na expressão:
+- **[infer.go](../../../../types/infer.go)**: `Infer(e ast.Expr, sc *Scope) Type` desce na expressão:
   literal → primitivo; `Ident` → tipo do `Binding`; `CallExpr` de um VO → o VOType;
   `MemberExpr` → tipo do membro (via catálogo); operador → tipo do resultado.
   Qualquer subexpressão `errorType` ⇒ resultado `errorType`, sem diagnóstico
   (REQ-11.3 / NFR-9).
 
-### 3.6. Acesso a Membro e Compatibilidade (`sema/rules_typecheck.go`) — REQ-12/13
+### 3.6. Acesso a Membro e Compatibilidade ([rules_typecheck.go](../../../../sema/rules_typecheck.go)) — REQ-12/13
 
 - **Membro (REQ-12):** para cada `*ast.MemberExpr`, computa `Infer(X)`; se for
   `errorType`, ignora (REQ-12.4); senão consulta o catálogo de membros do tipo. Não
@@ -201,7 +201,7 @@ type errorType struct{}                              // sentinela anti-cascata (
 
 As mensagens novas seguem o padrão acionável (esperado vs. encontrado) de REQ-6.8.
 Esta etapa é a oportunidade de **começar a preencher o campo `diag.Code`** hoje
-reservado (`diag/diagnostic.go`): atribuir códigos estáveis às novas famílias
+reservado ([diagnostic.go](../../../../diag/diagnostic.go)): atribuir códigos estáveis às novas famílias
 (ex.: `E100` nome em corpo, `E101` ref de config, `E102` membro inexistente, `E103`
 incompatibilidade de tipo). Catálogo de códigos definido junto com as tasks.
 

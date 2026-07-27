@@ -28,10 +28,10 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 - [x] **K1.1** Guarda de fim-de-linha no **binding** de operação de domínio.
   (REQ-49.1/49.2/49.4, §design 2.2)
-  - `parser/parser.go`: helper `sameLineAsPrev()` — compara `p.cur().Pos.Line`
+  - [parser.go](../../../../parser/parser.go): helper `sameLineAsPrev()` — compara `p.cur().Pos.Line`
     com `p.lastPos.Line` (o último token consumido; validado que após
     `parsePostfix` do alvo, `lastPos` é o fim do alvo — ex. o `)` de `Bar(id)`).
-  - `parser/parse_query.go`: adicionar `&& p.sameLineAsPrev()` à guarda do
+  - [parse_query.go](../../../../parser/parse_query.go): adicionar `&& p.sameLineAsPrev()` à guarda do
     `binding` em `parseQueryOp`. Comentário apontando a causa-raiz (ISSUE-11:
     DomainScript separa statements por linha; o binding opcional não pode cruzar
     essa fronteira e roubar o identificador do statement seguinte).
@@ -45,7 +45,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
     `go build ./...` limpo.
 
 - [x] **K1.2** Mesma guarda no **alias de `join`**. (REQ-49.3, §design 2.1/2.2)
-  - `parser/parse_query.go`: adicionar `&& p.sameLineAsPrev()` à guarda do
+  - [parse_query.go](../../../../parser/parse_query.go): adicionar `&& p.sameLineAsPrev()` à guarda do
     `alias` no `case "join"` de `parseOneClause` (o outro ponto com a mesma
     heurística gananciosa de identificador opcional).
   - **Testes pareados:** `… join Foo` numa linha + `x = …` na seguinte → não
@@ -95,7 +95,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 - [x] **K3.1** Detecção do produtor durável (predicado puro, sem emissão).
   (REQ-51 condição de ativação, §design 4.1)
-  - `codegen/codegen.go` (ou `sql_wiring.go`): função `durableProducer(prog,
+  - [codegen.go](../../../../codegen/codegen.go) (ou [sql_wiring.go](../../../../codegen/sql_wiring.go)): função `durableProducer(prog,
     module)` — true sse o módulo tem 1 Database real (`recognizedSQLProvider`) E
     um canal de saída com `channelProviderKind(ch) == "rabbitmq"`
     (`producerChannelFor`). Sem 2PC, sem Dispatcher local no mesmo service
@@ -109,17 +109,17 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 - [x] **K3.2** `emitSingleDatabaseWiring`: store `database/sql` para o produtor de
   banco único (só a troca de store; publisher inalterado). (REQ-51.5,
   §design 4.2-P1)
-  - `codegen/sql_wiring.go`: `emitSingleDatabaseWiring` (análogo a
+  - [sql_wiring.go](../../../../codegen/sql_wiring.go): `emitSingleDatabaseWiring` (análogo a
     `emitXADatabaseWiring`, sem 2PC) — abre a conexão
     (`databaseConnectionGo`/`provider.openFunc`), monta o `EventStore` sql, wira
     `sqlruntime.NewUnitOfWork(db, <pkg>.EventRegistry(), dialect, <canal>)`
     (publisher = canal, **como hoje** — a troca de publisher é K3.3).
-  - `codegen/codegen.go`: `generateCmdMainFile` usa `durableProducer` (K3.1) para
+  - [codegen.go](../../../../codegen/codegen.go): `generateCmdMainFile` usa `durableProducer` (K3.1) para
     escolher `emitSingleDatabaseWiring` em vez de `NewUnitOfWork(store, canal)`.
   - **Testes pareados:** paridade comportamental (in-memory ↔ sql, NFR-22) sobre
     a fixture do produtor; um produtor não-qualificante segue in-memory,
     byte-idêntico (NFR-25). Atualizar as asserções da âncora de J6 (`AnchorOrders`
-    agora abre o Database no `main.go`) — mudança deliberada de fixture de teste.
+    agora abre o Database no [main.go](../../../../cmd/dsc/main.go)) — mudança deliberada de fixture de teste.
   - DoD: escopo verde; `wallet`/`shop` byte-idênticos; `go build`/`go vet`/`gofmt`
     limpos.
 
@@ -135,12 +135,12 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
     **antes** do `Commit`, `tx.EnqueueOutbox(<apensados desse conjunto>)` e
     **deixa de publicá-los** pós-commit (os demais apensados, se houver, seguem
     só no stream). Filtro de REQ-51.4.
-  - `codegen/codegen.go`/`sql_wiring.go`: em `main.go`, montar o `OutboxStore`,
+  - [codegen.go](../../../../codegen/codegen.go)/[sql_wiring.go](../../../../codegen/sql_wiring.go): em [main.go](../../../../cmd/dsc/main.go), montar o `OutboxStore`,
     construir `runtime.NewDurableOutbox(outboxStore, <registry dos PublicEvent do
     canal, via contracts.EventRegistry()>, <canalTransport>)`, **não** passar o
     canal para `NewUnitOfWork`, e emitir `StartOutboxRelay(ctx)`/
     `StartOutboxCleanup(ctx)` do produtor.
-  - **Testes pareados (wiring):** `main.go` do produtor durável constrói
+  - **Testes pareados (wiring):** [main.go](../../../../cmd/dsc/main.go) do produtor durável constrói
     `NewDurableOutbox(…, <canal>)`, não passa o canal para `NewUnitOfWork`, e sobe
     relay/cleanup; produtor não-qualificante byte-idêntico (NFR-25). Atualizar
     novamente as asserções de `AnchorOrders`.
@@ -149,7 +149,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 - [x] **K3.4** Fixture dedicada + comportamental de crash simulado fim-a-fim.
   (REQ-51.7, §design 4.4/4.5)
-  - Nova `codegen/producer_outbox_test.go` (fixture sintética mínima: 1 produtor
+  - Nova [producer_outbox_test.go](../../../../codegen/producer_outbox_test.go) (fixture sintética mínima: 1 produtor
     postgres + canal rabbitmq + 1 consumidor), espelhando `decl_policy_outbox_
     test.go` do lado consumidor.
   - **Teste comportamental** sobre **sqlite** real + `fakePublisher` (sem broker):
@@ -157,7 +157,7 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
     evento de domínio interno NÃO vai ao outbox — REQ-51.4); `Publish` que falha
     na 1ª tentativa deixa a linha não entregue (`attempts++`); o `Tick` seguinte
     re-publica — nenhum evento perdido. Exercita o **caminho gerado do produtor**,
-    não só o seam manual de `sql_outbox_channel_test.go`.
+    não só o seam manual de [sql_outbox_channel_test.go](../../../../codegen/sql_outbox_channel_test.go).
   - DoD: escopo verde; smoke compile limpo.
 
 - [x] **K3.5** Docs + consolidação (fechamento de REQ-51). (§design 4.4, NFR-25)

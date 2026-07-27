@@ -139,7 +139,7 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
   **Commit:** `feat(parser): cursor e expect com recovery`
 
 - [x] **3.2** `synchronize` que nunca consome o token de parada nem `}`/EOF;
-  arquivo `sync_sets.go` com `topLevelStop` (todas as keywords de topo) e sets por
+  arquivo [sync_sets.go](../../../../parser/sync_sets.go) com `topLevelStop` (todas as keywords de topo) e sets por
   nível. _(REQ-3.4/3.7, §design 3.5)_
   **Conclusão:** teste de sincronização que não come o `}` de fechamento.
   **Commit:** `feat(parser): synchronize e sync sets por nível`

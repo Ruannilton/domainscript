@@ -47,10 +47,10 @@
 - M2.3 — Implementar o caminho de `emit` escolhido em M2.2 (rota (i)
   Dispatcher publish-only, [design.md](design.md) §4.4). Bloqueada: o mecanismo
   normativo nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
-  (`codegen/decl_policy.go`) como quem atribui `sagaDispatcher = d`, e não
+  ([decl_policy.go](../../../../codegen/decl_policy.go)) como quem atribui `sagaDispatcher = d`, e não
   decide o caso de um módulo só-Saga (sem Policy/UseCase, sem `func Wire`
   nenhum para estender) — nenhum dos arquivos necessários
-  (`codegen/decl_policy.go`, `codegen/codegen.go`) está em `target_files`.
+  ([decl_policy.go](../../../../codegen/decl_policy.go), [codegen.go](../../../../codegen/codegen.go)) está em `target_files`.
   [m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files](../../issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md).
   [design.md](design.md) §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
   desta task precisa ganhar os arquivos necessários antes de reabrir.
@@ -61,13 +61,13 @@
   estendida, clausura de replay, mensagem de `t.Fatalf` — quebrando
   `codegen/testdata/tests_wallet.go.golden` via a comparação byte a byte de
   `codegen/gentest_test.go:TestEmitTestsWalletGolden`. Nenhum dos dois
-  arquivos está em `target_files` de M4.1 (só `codegen/gentest_property.go`
+  arquivos está em `target_files` de M4.1 (só [gentest_property.go](../../../../codegen/gentest_property.go)
   e `codegen/gentest_property_test.go`), e o agente não pode nem tocá-los
   fora da lista nem rodar `go test`/`UPDATE_GOLDEN=1` para regenerar o
   golden. Issue:
   [m4-1-shrinking-de-property-muda-golden-fora-de-target-files](../../issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md).
   [M4.1.md](tasks/M4.1.md) precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
-  `codegen/gentest_test.go` em `target_files` (ou uma decisão de design que
+  [gentest_test.go](../../../../codegen/gentest_test.go) em `target_files` (ou uma decisão de design que
   isole a mudança) antes de reabrir.
 
 ## CANCELLED TASKS:

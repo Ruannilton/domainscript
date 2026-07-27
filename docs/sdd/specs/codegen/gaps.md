@@ -37,7 +37,7 @@ traduzido para SQL real (hoje materializa in-memory mesmo no backend SQL) e
 **Estado real:** o front-end parseia todas as cláusulas (`ast.QueryClause`),
 mas o codegen só gera as duas formas mínimas exercitadas pelo wallet:
 `load X(id) as V` e `list <VO>` sem cláusula nenhuma. Documentado em
-`codegen/decl_query.go` (cabeçalho: "Cláusulas SQL-like NÃO aparecem em
+[decl_query.go](../../../../codegen/decl_query.go) (cabeçalho: "Cláusulas SQL-like NÃO aparecem em
 nenhuma das duas Queries reais — não implementadas por esta task"); `list
 <VO>` com cláusula é **erro de geração** explícito. `join` e o operador `in`
 não têm lowering algum (nenhuma referência em `codegen/lower/`). As Queries
@@ -71,8 +71,8 @@ permite, mas entra só quando houver medição que justifique
 `.distinct(t => t.orderId)`, paginação nativa de `AppendList<T>`.
 
 **Estado real:** inexistentes. Só aparecem como trabalho futuro em
-comentários (`codegen/lower/expr.go` — o lowering de `LambdaExpr` existe
-justamente esperando por eles; `codegen/lower/env.go`). Quebra em cascata:
+comentários ([expr.go](../../../../codegen/lower/expr.go) — o lowering de `LambdaExpr` existe
+justamente esperando por eles; [env.go](../../../../codegen/lower/env.go)). Quebra em cascata:
 a Policy `RefundAllOnEventCancelled` do spec §7 usa `.distinct`, e o exemplo
 canônico de teste §22.4 depende dela — a fatia H4 precisou **adaptar a
 fixture** (um `orderId` distinto por Ticket) exatamente por isso (registrado
@@ -109,9 +109,9 @@ ATUAL, pós-Marco J:
 
 | Categoria | Spec pede | Implementado | Onde está documentado |
 |---|---|---|---|
-| Database | `"Postgres"` (§12) | `"sqlite"` **e** `"postgres"` são adapters reais (REQ-41) — outros bancos (MySQL, SQL Server, Mongo, Cassandra) seguem rótulo decorativo | `codegen/sql_wiring.go`/`codegen/sqlrt/`; J1 em [tasks.md](../infra-providers/tasks.md) |
-| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **produtor→canal cross-service fechado** (REQ-42.6/REQ-51, ciclo `correcoes-issues-9-10-11`/Marco K, K3.1-K3.4): um módulo com Database real + canal `provider:"rabbitmq"` enfileira o `PublicEvent` cross-service no outbox atomicamente com a tx de negócio, e o relay do `DurableOutbox` (com o canal como `publisher`) publica de verdade — nunca mais publish direto no commit | `codegen/sql_wiring.go`/`codegen/rtsrc/outbox.go.txt`/`codegen/sqlrt/uow.go.txt`; J2 em [tasks.md](../infra-providers/tasks.md); K3 em [tasks.md](../correcoes-issues-9-10-11/tasks.md); ISSUE-9 ([open-issues.md](../../issues/open-issues.md), RESOLVED) |
-| Canais | `direct`/`queue`/`grpc`/`http`/`stream` (§11) | `queue` ganhou o provider `"rabbitmq"` real (cross-process, ordenação por chave, reconexão, DLQ — REQ-43); `direct` continua in-memory (não precisa de provider); `grpc`/`http`/`stream` continuam erro de geração | `codegen/channel_rabbitmq.go`; J3 em [tasks.md](../infra-providers/tasks.md) |
+| Database | `"Postgres"` (§12) | `"sqlite"` **e** `"postgres"` são adapters reais (REQ-41) — outros bancos (MySQL, SQL Server, Mongo, Cassandra) seguem rótulo decorativo | [sql_wiring.go](../../../../codegen/sql_wiring.go)/`codegen/sqlrt/`; J1 em [tasks.md](../infra-providers/tasks.md) |
+| Outbox | durabilidade real (§12) | tabela SQL transacional real (REQ-42) — atômico com a tx de negócio, retry/backoff, cleanup de retenção; **produtor→canal cross-service fechado** (REQ-42.6/REQ-51, ciclo `correcoes-issues-9-10-11`/Marco K, K3.1-K3.4): um módulo com Database real + canal `provider:"rabbitmq"` enfileira o `PublicEvent` cross-service no outbox atomicamente com a tx de negócio, e o relay do `DurableOutbox` (com o canal como `publisher`) publica de verdade — nunca mais publish direto no commit | [sql_wiring.go](../../../../codegen/sql_wiring.go)/`codegen/rtsrc/outbox.go.txt`/`codegen/sqlrt/uow.go.txt`; J2 em [tasks.md](../infra-providers/tasks.md); K3 em [tasks.md](../correcoes-issues-9-10-11/tasks.md); ISSUE-9 ([open-issues.md](../../issues/open-issues.md), RESOLVED) |
+| Canais | `direct`/`queue`/`grpc`/`http`/`stream` (§11) | `queue` ganhou o provider `"rabbitmq"` real (cross-process, ordenação por chave, reconexão, DLQ — REQ-43); `direct` continua in-memory (não precisa de provider); `grpc`/`http`/`stream` continuam erro de geração | [channel_rabbitmq.go](../../../../codegen/channel_rabbitmq.go); J3 em [tasks.md](../infra-providers/tasks.md) |
 | Cache backend | `memory`/`redis`/`layered` (§15) | `redis` real (REQ-44) — `layered` segue fora de escopo | `codegen/redisrt/`; J4 em [tasks.md](../infra-providers/tasks.md) |
 | RateLimit backend | `redis` (§16) | real, com fallback local em falha do Redis (REQ-44.5) | `codegen/redisrt/`; J4 em [tasks.md](../infra-providers/tasks.md) |
 | FileStorage | `"s3"` (§12) | `"s3"` real (REQ-45) — GCS/Azure Blob seguem fora de escopo | `codegen/s3rt/`; J5 em [tasks.md](../infra-providers/tasks.md) |
@@ -150,13 +150,13 @@ futuro):**
 
 **Fechar o restante exige:** para os bancos/canais/backends fora do recorte
 de Marco J, o modelo "implementar `Dialect`/adapter + 1 entrada de
-registro" que Marco J já generalizou (REQ-46, `codegen/provider_registry.go`)
+registro" que Marco J já generalizou (REQ-46, [provider_registry.go](../../../../codegen/provider_registry.go))
 reduz o custo significativamente — cada categoria nova é, estruturalmente, o
 mesmo trabalho que Postgres/RabbitMQ/Redis/S3 já fizeram.
 
 ### G-5. Field-Level Security de View: bloco `visibility` (spec §6.2)
 
-**Estado real:** parseado (`ast.ViewDecl.Visibility`, `parser/parse_decl.go`)
+**Estado real:** parseado (`ast.ViewDecl.Visibility`, [parse_decl.go](../../../../parser/parse_decl.go))
 mas **nenhum arquivo do codegen consome `Visibility`** — a omissão de campos
 na serialização não acontece. É a lacuna "silenciosa" mais arriscada do
 inventário: o programa compila, o bloco é aceito e ignorado. Atenuantes: o
@@ -178,13 +178,13 @@ silêncio.
 Traces OTel reais e opt-in via `Telemetry` (H2). Mas o adapter **não exporta
 métricas nem logs OTel** — `Metric` vive num registry in-memory próprio
 (`rtsrc/metrics.go.txt`, H3) e logs são `slog` com trace id. Documentado em
-`codegen/decl_telemetry.go` (cabeçalho). O spec promete "instrumentação
+[decl_telemetry.go](../../../../codegen/decl_telemetry.go) (cabeçalho). O spec promete "instrumentação
 OpenTelemetry automática" para os três sinais.
 
 ### G-7. Lacunas dos testes gerados (spec §22)
 
 Cada uma registrada nas fatias de H4 em [tasks.md](tasks.md) e/ou em
-`codegen/gentest.go`:
+[gentest.go](../../../../codegen/gentest.go):
 
 | Lacuna | Spec | Estado |
 |---|---|---|

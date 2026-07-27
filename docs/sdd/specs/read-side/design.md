@@ -10,7 +10,7 @@
 ### 1.1. Onde o trabalho mora
 
 **Nenhuma fase do front-end muda.** O parser já produz `ast.QueryExpr{Op,
-Target, Binding, Clauses}` com toda cláusula (`parser/parse_query.go`) e o
+Target, Binding, Clauses}` com toda cláusula ([parse_query.go](../../../../parser/parse_query.go)) e o
 operador `in` já é um `BinaryExpr(token.IN)` comum. O trabalho é inteiro em:
 
 ```
@@ -129,9 +129,9 @@ envolvida — a fonte é a coleção já materializada do state. `AppendList<T>`
 slice interno; a "paginação sem cópia integral" de REQ-37.4 é `skip`/`take`
 por reslicing pós-ordenação (sem ordenação, reslicing direto — custo zero).
 
-### 3.5. `decl_query.go`: fim do "mínimo de E8.1" (REQ-33, REQ-34)
+### 3.5. [decl_query.go](../../../../codegen/decl_query.go): fim do "mínimo de E8.1" (REQ-33, REQ-34)
 
-O fast-path de return-expr de `decl_query.go` deixa de recusar cláusulas:
+O fast-path de return-expr de [decl_query.go](../../../../codegen/decl_query.go) deixa de recusar cláusulas:
 `return <QueryExpr com cláusulas>` delega ao mesmo hoisting de corpo
 (`StmtLowerer`) e retorna a variável materializada. A projeção `as V`
 (REQ-34) reusa a rotina de mapeamento campo-a-campo de `load X(id) as V`
@@ -219,7 +219,7 @@ in-memory nesta fase com o seam pronto para descer depois (REQ-38.4 permite).
 
 Hoje o SQL do sqlite está inline no adapter (placeholders `?` nas queries de
 `eventstore.go.txt`, DDL em `ensureSchema`) e o provider é reconhecido por
-string em DOIS pontos (`sql_wiring.go` + o módulo do driver em `project.go`).
+string em DOIS pontos ([sql_wiring.go](../../../../codegen/sql_wiring.go) + o módulo do driver em [project.go](../../../../codegen/project.go)).
 Antes de descer as cláusulas (§3.9), o adapter é reorganizado no modelo de
 dialeto dos ORMs:
 
@@ -297,7 +297,7 @@ continua falha explícita (contrato de E5.0).
   (ordem semântica, estabilidade do sort, skip/take nas bordas, erro de
   predicado abortando, `WhereEq`/`OrderField` ignorados pelo in-memory).
 - **Lowering:** testes sintéticos por cláusula/método em `codegen/lower/`
-  (mesmo padrão de `builtins_test.go`), incluindo os erros de geração de
+  (mesmo padrão de [builtins_test.go](../../../../codegen/lower/builtins_test.go)), incluindo os erros de geração de
   NFR-20 (um teste por mensagem).
 - **Golden + smoke pareados** (NFR-17) por fatia, como sempre.
 - **Comportamentais-âncora (§1.4 dos requirements):** fixtures de

@@ -25,11 +25,11 @@ preservada pelo mesmo seam.
 ### 1.2. Baseline (o que JÁ existe — nada disso é trabalho deste ciclo)
 
 - **Front-end completo para todas as formas.** O parser reconhece todas as
-  cláusulas (`parser/parse_query.go`: `join`/`on`/`where`/`orderBy` com
+  cláusulas ([parse_query.go](../../../../parser/parse_query.go): `join`/`on`/`where`/`orderBy` com
   direção/`skip`/`take`/`as`, binding de alias) e o operador `in` no nível dos
-  comparativos (`parser/parse_expr.go`). Métodos de coleção com lambda
+  comparativos ([parse_expr.go](../../../../parser/parse_expr.go)). Métodos de coleção com lambda
   (`.distinct(t => t.orderId)`) passam pelo checker sem erro — o catálogo de
-  membros só valida shapes (`sema/rules_typecheck.go`), coleções são
+  membros só valida shapes ([rules_typecheck.go](../../../../sema/rules_typecheck.go)), coleções são
   permissivas por design. **Nenhuma mudança de front-end é esperada**; se uma
   se mostrar necessária, é desvio a registrar no design.
 - **`runtime.Collection[T]`** (H4): seam in-process com `Add`/`List`/`Count` e
@@ -39,7 +39,7 @@ preservada pelo mesmo seam.
   `where` já vira `func(item T) bool { ... }` com o binding tipado em
   escopo-filho — mas recusa condição que precise de hoisting (G-8) e só
   alimenta `List`/`Count`.
-- **`decl_query.go` mínimo** (E8.1): só `load X(id) as V` e `list <VO>` sem
+- **[decl_query.go](../../../../codegen/decl_query.go) mínimo** (E8.1): só `load X(id) as V` e `list <VO>` sem
   cláusulas; qualquer cláusula em `list <VO>` é erro de geração.
 - **Adapter SQL opt-in** (G1, sqlite) atrás de `runtime.Store`; o núcleo
   in-memory compila sem deps (NFR-12).
@@ -243,7 +243,7 @@ dos ORMs — e não editar strings SQL espalhadas pelo adapter.
    string → módulo do driver p/ `go.mod` + import + construtor do `Dialect`):
    adicionar um banco = implementar `Dialect` + uma entrada no registro —
    zero mudanças em lowering, `decl_*.go` ou no runtime núcleo. (Hoje o
-   "sqlite" está hardcoded em `sql_wiring.go` E `project.go` — dois pontos.)
+   "sqlite" está hardcoded em [sql_wiring.go](../../../../codegen/sql_wiring.go) E [project.go](../../../../codegen/project.go) — dois pontos.)
 3. A prova de plugabilidade SHALL ser dupla, sem dep externa nova: (a) o
    sqlite reescrito sobre `Dialect` sem regressão; (b) um **segundo dialeto
    de teste** com estilo de placeholder posicional (`$1`) exercitado contra o
