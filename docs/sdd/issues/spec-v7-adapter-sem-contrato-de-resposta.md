@@ -1,6 +1,8 @@
 # Spec v7: nenhuma seção define o contrato de resposta de `Adapter`/`Notification` — pedido de revisão da especificação
-- SPEC: domainscript-spec-v7 (revisão da especificação)
-- TASK: correcoes-issues-6-8-12/TASK-M3.1 (REQ-57.1/57.4)
+- SPEC: [domainscript-spec-v7](../steerings/domainscript-spec-v7/README.md)
+  (revisão da especificação)
+- TASK: [correcoes-issues-6-8-12/M3.1](../specs/correcoes-issues-6-8-12/tasks/M3.1.md)
+  (REQ-57.1/57.4)
 - DESCRIPTION: `result = call PaymentRequest(...)` aparece em dois lugares da
   spec — [19-transactions-sagas](../steerings/domainscript-spec-v7/19-transactions-sagas.md) §19.2 (o exemplo canônico de Saga) e
   [09-notifications-adapters](../steerings/domainscript-spec-v7/09-notifications-adapters.md) §9.2 — e `mock PaymentRequest returns
@@ -28,13 +30,13 @@
   **Evidência de código** (a implementação reflete fielmente essa lacuna, não
   a criou): `Call<Nome>` é emitido hoje só como `func Call<Nome>(ctx, n
   <Notif>) error` ([decl_io.go](../../../codegen/decl_io.go)) — sem canal de valor de retorno.
-  [builtins.go](../../../codegen/lower/builtins.go) recusa `result = call Adapter(...)`
+  [builtins.go:340](../../../codegen/lower/builtins.go#L340) recusa `result = call Adapter(...)`
   explicitamente:
   ```go
   case "call":
       return "", fmt.Errorf("codegen: QueryExpr.Op %q (chamada síncrona via Adapter/Notification) não é suportado — fora do escopo de G1a", n.Op)
   ```
-  E [gentest.go](../../../codegen/gentest.go) (`emitSagaMock`) hoje descarta o valor de `mock ...
+  E [gentest.go:1330](../../../codegen/gentest.go#L1330) (`emitSagaMock`) hoje descarta o valor de `mock ...
   returns X` (`_ = <expr>`) — o mock nunca influencia o fluxo do passo
   seguinte.
 
@@ -52,10 +54,13 @@
      §24.3), ou substituí-lo por um exemplo que use um tipo já declarado em
      outra parte da spec.
 
-  Sem essa definição, `TASK-M3.2` ("Implementar `result = call
-  Adapter(...)`") e `TASK-M3.3` ("`mock ... returns X` injeta X como retorno
-  do stub") da spec `correcoes-issues-6-8-12` (REQ-57.2/57.3) ficam
-  canceladas nesta revisão — ver [design.md](../specs/correcoes-issues-6-8-12/design.md)
+  Sem essa definição,
+  [`M3.2`](../specs/correcoes-issues-6-8-12/tasks/M3.2.md) ("Implementar
+  `result = call Adapter(...)`") e
+  [`M3.3`](../specs/correcoes-issues-6-8-12/tasks/M3.3.md) ("`mock ...
+  returns X` injeta X como retorno do stub") da spec `correcoes-issues-6-8-12`
+  (REQ-57.2/57.3) ficam canceladas nesta revisão — ver
+  [design.md](../specs/correcoes-issues-6-8-12/design.md)
   §4.5/§7.2 para o registro completo da decisão de delimitar em vez de
   adivinhar o contrato.
 - SOLVED: FALSE

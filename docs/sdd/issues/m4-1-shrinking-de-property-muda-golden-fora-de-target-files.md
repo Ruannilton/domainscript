@@ -1,8 +1,10 @@
 # M4.1: shrinking do contra-exemplo de `property` muda `tests_wallet.go.golden`/`gentest_test.go`, ambos fora de `target_files`
-- SPEC: correcoes-issues-6-8-12
-- TASK: M4.1
+- SPEC: [correcoes-issues-6-8-12](../specs/correcoes-issues-6-8-12/requirements.md)
+- TASK: [M4.1](../specs/correcoes-issues-6-8-12/tasks/M4.1.md)
 - DESCRIPTION: [M4.1.md](../specs/correcoes-issues-6-8-12/tasks/M4.1.md) restringe `target_files` a
-  `codegen/gentest_property.go` e `codegen/gentest_property_test.go`.
+  [`codegen/gentest_property.go`](../../../codegen/gentest_property.go) e
+  `codegen/gentest_property_test.go` (ainda não existe — arquivo a criar por
+  esta task).
   Implementar REQ-58 (shrinking determinístico do contra-exemplo de
   `property`, §22.5) como a task descreve — Step 1 (encolher a sequência por
   remoção/bissecção, re-executando cada candidata), Step 2 (reusar o mesmo
@@ -18,18 +20,20 @@
   falhar em tempo de execução — o golden compara o texto fonte, não o
   comportamento em runtime.
 
-  `testdata/projects/wallet/wallet.test.ds` já declara uma `property`
-  (linha 52, `"saldo nunca fica negativo"`, `Test Wallet`), e
-  `codegen/testdata/tests_wallet.go.golden` já contém a emissão completa
-  dessa property: o `type dsPropStep struct` (linhas 12-19),
-  `TestWallet_SaldoNuncaFicaNegativo` (linha 144 em diante), com o `trail`
-  atual (linhas 202-261, ex. `trail = append(trail, dsPropStep{Handle:
-  "Deposit", Args: []any{v13, v16}, Err: err})`). Qualquer implementação fiel
-  de REQ-58 muda esse trecho.
+  [`testdata/projects/wallet/wallet.test.ds`](../../../testdata/projects/wallet/wallet.test.ds)
+  já declara uma `property` (linha 52, `"saldo nunca fica negativo"`,
+  `Test Wallet`), e
+  [`codegen/testdata/tests_wallet.go.golden`](../../../codegen/testdata/tests_wallet.go.golden)
+  já contém a emissão completa dessa property: o `type dsPropStep struct`
+  (linhas 12-19), `TestWallet_SaldoNuncaFicaNegativo` (linha 144 em diante),
+  com o `trail` atual (linhas 202-261, ex. `trail = append(trail,
+  dsPropStep{Handle: "Deposit", Args: []any{v13, v16}, Err: err})`). Qualquer
+  implementação fiel de REQ-58 muda esse trecho.
 
-  `codegen/gentest_test.go:TestEmitTestsWalletGolden` (linha 122) chama
-  `gentest.Golden(t, "testdata/tests_wallet.go.golden", got)` — comparação
-  **byte a byte** contra esse arquivo. Nem [gentest_test.go](../../../codegen/gentest_test.go) nem
+  [`codegen/gentest_test.go`](../../../codegen/gentest_test.go):`TestEmitTestsWalletGolden`
+  (linha 87 hoje; 122 à época do registro) chama `gentest.Golden(t,
+  "testdata/tests_wallet.go.golden", got)` — comparação **byte a byte**
+  contra esse arquivo. Nem [gentest_test.go](../../../codegen/gentest_test.go) nem
   `codegen/testdata/tests_wallet.go.golden` estão em `target_files` de
   M4.1 — e o agente `task-implementer` não pode nem editar arquivo fora de
   `target_files` ("Precisar de um arquivo fora dessa lista é empecilho, não

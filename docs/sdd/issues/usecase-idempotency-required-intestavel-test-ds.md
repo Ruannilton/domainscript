@@ -1,7 +1,11 @@
 # UseCase com `idempotency { required: true }` é intestável via `*.test.ds` (ex-ISSUE-13)
-- SPEC: (nenhuma — achado ao atualizar `testdata/projects/wallet` para infra real)
+- SPEC: (nenhuma — achado ao atualizar
+  [`testdata/projects/wallet`](../../../testdata/projects/wallet) para infra
+  real)
 - TASK: atualização do exemplo wallet (Postgres + Redis)
-- DESCRIPTION: um `UseCase` com `idempotency { required: true, ... }` (§14)
+- DESCRIPTION: um `UseCase` com `idempotency { required: true, ... }` (§14 em
+  numeração v6, hoje
+  [`15-idempotency.md`](../steerings/domainscript-spec-v7/15-idempotency.md))
   fica **intestável pelo formato nativo `*.test.ds`**: a gramática de cenário
   não tem como fornecer uma `Idempotency-Key`, então todo cenário que exercita
   esse UseCase falha com "an Idempotency-Key is required for this operation"
@@ -11,7 +15,8 @@
   `TestPerformDeposit_CarteiraNuncaCriadaFalhaENaoCommita`,
   `TestE2ESeedGivenEventThenPerformDepositWiresThroughRealStore`).
   O RUNTIME já sabe receber a chave — `runtime.WithIdempotencyKey(ctx, ...)`
-  existe e é testada (`rtsrc/runtime_test.go.txt:TestWithIdempotencyKeyFrom`);
+  existe e é testada
+  ([`rtsrc/runtime_test.go.txt:TestWithIdempotencyKeyFrom`](../../../codegen/rtsrc/runtime_test.go.txt#L615));
   quem não sabe EMITI-LA é o gerador de testes ([gentest.go](../../../codegen/gentest.go)), que
   monta o ctx do cenário sem nenhuma chave. É a MESMA natureza do gap de
   "cenário de acesso NEGADO" (L2.6/REQ-53.7) e do `given caller` inexistente:

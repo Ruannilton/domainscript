@@ -1,13 +1,16 @@
 # `Cache`/`RateLimit` `backend:` exige string literal, contra a forma da §13
-- SPEC: codegen
-- TASK: descoberto ao auditar `docs/examples/` contra a v7 (review-v7.md §A-8)
-- DESCRIPTION: A §13 (`mod.ds`) escreve o valor de `backend:` como
-  **identificador nu**, não como string: `Cache { backend: layered }`,
-  `RateLimit { backend: redis }` — coerente com o resto do bloco, que só
-  aspa valores opacos (`provider: "Postgres"`, `backoff: "exponential"`,
-  `exporter: "otlp"`) e deixa nus os valores enumerados (`storage: same`,
-  `algorithm: token_bucket`, `onBackendFailure: open`, `strategy: row_level`).
-  A §16 reforça, listando os backends como `memory`, `distributed`, `layered`.
+- SPEC: [codegen](../specs/codegen/requirements.md)
+- TASK: descoberto ao auditar `docs/examples/` contra a v7
+  ([review-v7.md §A-8](../steerings/review-v7.md))
+- DESCRIPTION: A [§13](../steerings/domainscript-spec-v7/13-module-infra.md)
+  (`mod.ds`) escreve o valor de `backend:` como **identificador nu**, não
+  como string: `Cache { backend: layered }`, `RateLimit { backend: redis }`
+  — coerente com o resto do bloco, que só aspa valores opacos
+  (`provider: "Postgres"`, `backoff: "exponential"`, `exporter: "otlp"`) e
+  deixa nus os valores enumerados (`storage: same`, `algorithm:
+  token_bucket`, `onBackendFailure: open`, `strategy: row_level`). A
+  [§16](../steerings/domainscript-spec-v7/16-cache.md) reforça, listando os
+  backends como `memory`, `distributed`, `layered`.
   O gerador aceita **apenas** a forma com aspas e falha na forma do spec:
 
   ```

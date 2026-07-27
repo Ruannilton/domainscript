@@ -1,6 +1,6 @@
 # Lacunas nos testes gerados a partir de `*.test.ds` (ex-ISSUE-6)
-- SPEC: codegen
-- TASK: gaps.md §G-7 (lacunas dos testes gerados, Marco H4)
+- SPEC: [codegen](../specs/codegen/requirements.md)
+- TASK: [gaps.md §G-7](../specs/codegen/gaps.md) (lacunas dos testes gerados, Marco H4)
 - DESCRIPTION: `*.test.ds` → Go tests cobre o caminho feliz, mas várias formas
   do spec §22 têm semântica reduzida (cada uma registrada nas fatias de H4
   em [tasks.md](../specs/codegen/tasks.md)/[gentest.go](../../../codegen/gentest.go)): `then state { ... }` (asserção de estado
@@ -15,8 +15,11 @@
   ciclo read-side, REQ-39.1/I6.2, e não entra aqui.) Oportunista: fechar cada
   um quando o vizinho for tocado.
 
-  EM ANDAMENTO (spec criada): `../specs/correcoes-issues-6-7-8/`
-  (Marco L, REQ-53 / §design 3). Análise de raiz categorizou os seis
+  EM ANDAMENTO (spec encerrada e sucedida): a spec `correcoes-issues-6-7-8`
+  (Marco L, REQ-53 / §design 3) que abriu esta frente foi fechada — o que ficou
+  pendente foi retomado por
+  [`correcoes-issues-6-8-12`](../specs/correcoes-issues-6-8-12/requirements.md)
+  (Marco M). Análise de raiz categorizou os seis
   sub-itens por tratabilidade: cinco fecham em codegen/runtime — `then
   state` (§22.1, replay+compara campos), `emitted`/`released` em Saga
   (§22.3, reusa a coleta de §22.4), `mock returns X` (§22.3, X vira o
@@ -30,8 +33,10 @@
 
   Status conforme [state.md](../state.md): Marco L ainda **in-progress**
   (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d pausada por decisão do
-  usuário; L1.3e/L1.3f bloqueadas em cascata — ver a issue sobre o pizzeria
-  bloqueado por múltiplos defeitos de codegen; próxima task L2.5 —
+  usuário; L1.3e/L1.3f bloqueadas em cascata — ver [a issue sobre o pizzeria
+  bloqueado por múltiplos defeitos de
+  codegen](pizzeria-bloqueado-por-multiplos-defeitos-de-codegen.md); próxima
+  task L2.5 —
   `rolledback` com reversão real). Fecha (parcialmente) quando o Marco L
   fechar.
 - SOLVED: FALSE
