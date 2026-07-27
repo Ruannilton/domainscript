@@ -1,7 +1,7 @@
 # Design — Read Side Completo (Cláusulas de Query e Smart Partial Loading)
 
-> Documento 2 de 3. Define **como** atender `requirements.md` (REQ-33..39,
-> NFR-18..20). Estende o `design.md` de codegen (§3.6/3.9/4.4) sem contradizê-lo:
+> Documento 2 de 3. Define **como** atender [requirements.md](requirements.md) (REQ-33..39,
+> NFR-18..20). Estende o [design.md](design.md) de codegen (§3.6/3.9/4.4) sem contradizê-lo:
 > os seams e invariantes de lá continuam valendo; este ciclo preenche o que
 > aquele documento adiou explicitamente como "Read Side de verdade (E8)".
 

@@ -3,8 +3,8 @@
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
 > `tasks`), continuação direta do ciclo `../read-side/` (REQ-33..40,
 > NFR-18..20, Marco I, completo). Nasce do gap **G-4** de
-> `../codegen/gaps.md` (registrado como **ISSUE-3** em
-> `../../issues/open-issues.md`): o sistema gerado hoje **não é implantável contra
+> [gaps.md](../codegen/gaps.md) (registrado como **ISSUE-3** em
+> [open-issues.md](../../issues/open-issues.md)): o sistema gerado hoje **não é implantável contra
 > infraestrutura real além de sqlite** — todo provider de produção do spec v6
 > (§11–§16) é rótulo decorativo ou só existe in-memory.
 >
@@ -460,7 +460,7 @@ O ciclo está completo quando:
    pulados (não falham) sem ela (REQ-48.3, NFR-24).
 5. `go build ./...` / `go test ./...` do compilador verdes; a doc dos exemplos
    que marcava esses providers como decorativos é atualizada (REQ-48.4).
-6. `../codegen/gaps.md` e `../../issues/open-issues.md` atualizados: G-4/
+6. [gaps.md](../codegen/gaps.md) e [open-issues.md](../../issues/open-issues.md) atualizados: G-4/
    ISSUE-3 marcados como **parcialmente fechados por este ciclo** (as cinco
    categorias no recorte), com ponteiro para cá e o restante de G-4 (outros
    bancos, gRPC-canal, Dynamo, layered) explicitamente ainda aberto.

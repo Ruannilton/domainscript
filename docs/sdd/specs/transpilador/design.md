@@ -1,7 +1,7 @@
 # Design — Front-end do Transpilador DomainScript
 
 > Documento 2 de 3 do fluxo spec-driven (`requirements` → `design` → `tasks`).
-> Define **como** os requisitos de `requirements.md` serão atendidos. Cada decisão
+> Define **como** os requisitos de [requirements.md](requirements.md) serão atendidos. Cada decisão
 > referencia os REQ/NFR que satisfaz.
 
 ## 1. Visão Arquitetural

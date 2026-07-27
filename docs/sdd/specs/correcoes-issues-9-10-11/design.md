@@ -204,7 +204,7 @@ Pontos validados:
 ## 4. REQ-51 — Produtor Outbox → canal cross-service (ISSUE-9, REQ-42.6)
 
 O maior dos três — o resíduo aberto do Marco J. O design segue o alvo já
-desenhado em §3.2a de `infra-providers/design.md`, traduzido para os pontos de
+desenhado em §3.2a de [design.md](../infra-providers/design.md), traduzido para os pontos de
 codegen concretos.
 
 ### 4.1. Condição de ativação, análise de raiz e pré-condição
@@ -426,6 +426,6 @@ tabela outbox durável (linha persistida na mesma tx) fecha a janela.
 - REQ-51 combina teste de wiring (asserção de string sobre o gerado, sem infra
   viva) + comportamental sobre sqlite real (`gentest.WriteFiles`/`RunTests`,
   sem broker) + atualização de golden e2e do `shop`.
-- Fechamento: `../../issues/open-issues.md` marca as três `RESOLVED`; `gaps.md` §G-4
-  "Residual aberto" perde o item do produtor→outbox→canal; `state.md` marca o
+- Fechamento: [open-issues.md](../../issues/open-issues.md) marca as três `RESOLVED`; [gaps.md](../codegen/gaps.md) §G-4
+  "Residual aberto" perde o item do produtor→outbox→canal; [state.md](../../state.md) marca o
   Marco K `done`.

@@ -1,7 +1,7 @@
 # Requirements — Front-end do Transpilador DomainScript
 
 > Documento 1 de 3 do fluxo spec-driven (`requirements` → `design` → `tasks`).
-> Define **o quê** e **por quê**. Não define implementação (isso é `design.md`).
+> Define **o quê** e **por quê**. Não define implementação (isso é [design.md](design.md)).
 
 ## 1. Introdução
 
@@ -326,7 +326,7 @@ evitável.
 
 ## 4. Rastreabilidade
 
-Cada requisito mapeia para itens de `design.md` e `tasks.md`:
+Cada requisito mapeia para itens de [design.md](design.md) e [tasks.md](tasks.md):
 
 | Requisito | Tema | Fase |
 |---|---|---|

@@ -22,7 +22,7 @@
   aritmética/FFI) — **reclassificados** de "dívida de codegen" para
   "aguardando definição no spec da linguagem" (exigem sintaxe nova não
   definida; não há ação de codegen pendente). Fecha (b) e reclassifica
-  (a)/(c) quando o Marco L fechar. Conforme `../state.md`, o Marco L
+  (a)/(c) quando o Marco L fechar. Conforme [state.md](../state.md), o Marco L
   ainda está in-progress (task corrente: L2.5), então esta issue segue
   aberta.
 - SOLVED: FALSE

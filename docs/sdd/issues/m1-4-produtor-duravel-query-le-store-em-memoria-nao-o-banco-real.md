@@ -40,7 +40,7 @@
   Dispatcher. Mesmo com as duas guardas fechadas, M1.6 (REQ-55.9: `dsc gen` +
   `go build`/`go vet` sobre o `pizzeria`) só prova **compilação** — não prova
   que `GetAvailableMenu`/`GetActiveOrders` devolvem dados corretos. O design
-  de `correcoes-issues-9-10-11/design.md` §4.1 já documentava a `store` em
+  de [design.md](../specs/correcoes-issues-9-10-11/design.md) §4.1 já documentava a `store` em
   memória como "não o banco declarado" para o produtor durável, mas nunca
   precisou lidar com uma Query do MESMO módulo lendo seu próprio estado,
   porque o recorte original de Marco K excluía Dispatcher/Query cacheada do

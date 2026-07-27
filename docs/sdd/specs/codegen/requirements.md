@@ -3,7 +3,7 @@
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
 > `tasks`), independente dos ciclos anteriores em `../` e
 > `../type-checking/`. Define **o quê** e **por quê** desta etapa. Não
-> define implementação (isso é `design.md`).
+> define implementação (isso é [design.md](design.md)).
 >
 > Continuidade de numeração: este ciclo continua a série do projeto a partir de
 > `REQ-14` e `NFR-11` (o front-end vai até `REQ-8`/`NFR-7`; a resolução de
@@ -51,7 +51,7 @@ A geração encarna os mesmos princípios do §1.1 do spec da linguagem:
 ### 1.3. Escopo
 
 Este ciclo cobre **a linguagem inteira**, mas entrega de forma **fatiada em
-marcos** (ver §5 e `tasks.md`): o núcleo transacional roda primeiro; reações,
+marcos** (ver §5 e [tasks.md](tasks.md)): o núcleo transacional roda primeiro; reações,
 infraestrutura avançada e exposição gRPC/telemetria vêm em marcos seguintes.
 
 | Em escopo | Fora de escopo |

@@ -1,6 +1,6 @@
 # Tasks — Providers Reais de Infraestrutura (Postgres, RabbitMQ, Redis, S3, Outbox durável)
 
-> Documento 3 de 3. Consome `design.md` (que consome `requirements.md`,
+> Documento 3 de 3. Consome [design.md](design.md) (que consome [requirements.md](requirements.md),
 > REQ-41..48/NFR-21..24, Marco **J**). Cada task cita o REQ que satisfaz
 > `(REQ-n)` e a seção do design `(§design x)`, é verticalmente fatiada e
 > independentemente verificável. **Uma PR por task de nível 2** (ex. J1.1);
@@ -156,7 +156,7 @@
     direto no commit de `NewUnitOfWork` quando um módulo produz para um canal
     "queue" cross-service — o item reclassificado de J2.4.b) não foi tocado:
     exige primeiro que UseCase/Handle chamem `tx.EnqueueOutbox`, peça que
-    `design.md` já reconhece como fechando de verdade só na fixture-âncora
+    [design.md](design.md) já reconhece como fechando de verdade só na fixture-âncora
     (J6, quando o transporte real de J3 estiver presente).
 
 ### Fase J3 — RabbitMQ como transporte de canal cross-process (REQ-43)
@@ -308,9 +308,9 @@
   - b. Atualizar a doc dos exemplos que marcavam esses providers como
     decorativos (`docs/examples/pizzeria` README — postgres/rabbitmq deixam de
     ser "só rótulo").
-  - c. Atualizar `../codegen/gaps.md` (G-4 parcialmente fechado — 5
-    categorias), `../../issues/open-issues.md` (ISSUE-3 idem, restante de G-4 aberto),
-    `../../state.md`, `README.md`/`CLAUDE.md`.
+  - c. Atualizar [gaps.md](../codegen/gaps.md) (G-4 parcialmente fechado — 5
+    categorias), [open-issues.md](../../issues/open-issues.md) (ISSUE-3 idem, restante de G-4 aberto),
+    [state.md](../../state.md), [README.md](../../README.md)/[CLAUDE.md](../../../../CLAUDE.md).
   - **Marco J — Providers Reais — fechado (recorte de 5).**
 
 ## Mapa de Dependências

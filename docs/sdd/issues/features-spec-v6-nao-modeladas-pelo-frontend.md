@@ -1,6 +1,6 @@
 # Features do spec v6 nunca modeladas pelo front-end (ex-ISSUE-2)
 - SPEC: codegen
-- TASK: gaps.md §G-3 (exclusões de `requirements.md` §1.3)
+- TASK: gaps.md §G-3 (exclusões de [requirements.md](../specs/codegen/requirements.md) §1.3)
 - DESCRIPTION: Features do spec v6 que o **front-end nunca modelou** — não são
   gaps só do codegen: parser/resolver/checker não as reconhecem, então fechar
   qualquer uma começa por um ciclo novo de front-end (parser → resolver → sema

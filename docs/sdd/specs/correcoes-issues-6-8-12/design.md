@@ -1,6 +1,6 @@
 # Design — Conclusão das dívidas remanescentes (ISSUE-6, ISSUE-8, ISSUE-12)
 
-> Define **como** atender `requirements.md` (REQ-55..61, NFR-31..33). Estende os
+> Define **como** atender [requirements.md](requirements.md) (REQ-55..61, NFR-31..33). Estende os
 > designs do Marco I (Read Side), Marco H4 (`*.test.ds` → Go) e Marco L.
 >
 > **Diferença de método em relação ao Marco L:** toda análise de raiz abaixo foi
@@ -141,7 +141,7 @@ mecanismo e no mesmo ponto onde `tenantID` já é carimbado hoje. O tipo chega a
 lá, não aqui.
 
 `sqlrt.EventStore` **não** implementa `StreamLister` neste ciclo (fora de escopo,
-§1.3 de `requirements.md`): um programa que use `list <Aggregate>` com provider
+§1.3 de [requirements.md](requirements.md)): um programa que use `list <Aggregate>` com provider
 real recebe o erro claro de REQ-55.5.
 
 ### 4.2. `list <Aggregate>` em `EmitQuery` (Atende REQ-55.3/55.4)
@@ -264,14 +264,14 @@ Marco K (item 4 abaixo, achado desta task). Mecanismo concreto:
    invalidar o cache de `GetAvailableMenu`). Sem essa extensão, um módulo que
    seja AO MESMO TEMPO produtor durável e dono de Query cacheada/Policy local
    nunca veria seus próprios eventos privados no Dispatcher — exatamente a
-   lacuna que `correcoes-issues-9-10-11/design.md` §4.3 já documentava como
+   lacuna que [design.md](../correcoes-issues-9-10-11/design.md) §4.3 já documentava como
    fora do recorte de Marco K ("`generateCmdMainFile` recusa combinar... Fora
    do escopo — o recorte é o produtor 'puro'"). Quando o serviço NÃO tem
    `dispatcher` (o recorte original de Marco K, ex. `shop`/`AnchorOrders`),
    `NewOutboxUnitOfWork` continua chamado com os MESMOS 4 argumentos de hoje —
    byte-idêntico (NFR-31).
 
-**Confirmação dos três pontos do Passo 2 de `tasks/M1.4.md`:**
+**Confirmação dos três pontos do Passo 2 de [M1.4.md](tasks/M1.4.md):**
 
 - **(a) O canal satisfaz o que uma assinatura do Dispatcher espera —
   Confirmado.** `ChannelTransport` (`rtsrc/channel.go.txt`) já documenta a
@@ -308,7 +308,7 @@ própria, não ampliando REQ-55 — REQ-55.11).** A leitura de
 `emitSingleDatabaseWiring`/`newMux` (`codegen/sql_wiring.go`,
 `codegen/codegen.go`) mostra que TODA rota de Query do serviço lê da MESMA
 `store` em memória (`runtime.NewMemoryEventStore()`), nunca do banco real do
-produtor durável — `correcoes-issues-9-10-11/design.md` §4.1 já documentava
+produtor durável — [design.md](../correcoes-issues-9-10-11/design.md) §4.1 já documentava
 essa `store` como "não o Database declarado" para o produtor, mas nunca
 precisou lidar com uma Query do MESMO módulo lendo seu próprio estado, porque
 o recorte de Marco K excluía Dispatcher (e portanto Query cacheada) do módulo
@@ -414,7 +414,7 @@ operações são independentes no runtime de hoje (`Dispatcher.Publish` nunca
 toca `EventStore.Append`). Cobrir a forma literal exigiria a rota (ii)
 (descartada abaixo). M2.4 implementa só a forma sem `Subject`, e produz erro
 de geração claro — nunca uma asserção que passa vacuamente — quando o `then`
-nomeia um `Subject` (o Step 3 de `tasks/M2.4.md` já antecipa exatamente
+nomeia um `Subject` (o Step 3 de [M2.4.md](tasks/M2.4.md) já antecipa exatamente
 isso).
 
 **Por que (ii) foi descartada.** Mudaria `Step[S]`/`RunSaga`
@@ -443,9 +443,9 @@ pelo preço de reusar infraestrutura existente.
 
 **Consequência em M2.3/M2.4:** nenhuma mudança de escopo — as duas tasks já
 foram redigidas com passos condicionais por rota ("se foi (i) … se foi (ii)
-…", Step 1 de `tasks/M2.3.md`; "se foi (i), o que se assevera é o que o passo
-publicou", `tasks/M2.4.md`) e com a guarda explícita para `Subject` fora de
-cobertura (Step 3 de `tasks/M2.4.md`). Ambas seguem `pending`, sem
+…", Step 1 de [M2.3.md](tasks/M2.3.md); "se foi (i), o que se assevera é o que o passo
+publicou", [M2.4.md](tasks/M2.4.md)) e com a guarda explícita para `Subject` fora de
+cobertura (Step 3 de [M2.4.md](tasks/M2.4.md)). Ambas seguem `pending`, sem
 cancelamento — só (iii) cancelaria M2.3/M2.4.
 
 ### 4.5. `mock … returns X`, shrinking e staging (Atende REQ-57/58/59)
@@ -468,8 +468,8 @@ valor efetivo (M3.3) — e o sintoma original (`emitSagaMock` faz `_ = goExpr`) 
 a **última** camada, não a primeira.
 
 **Decisão M3.1: (c) Delimitar — nenhum contrato de resposta neste ciclo.**
-Reverificadas as três opções contra `09-notifications-adapters.md`,
-`19-transactions-sagas.md` e `24-testing.md` (v7, resolvidas por título, não
+Reverificadas as três opções contra [09-notifications-adapters](../../steerings/domainscript-spec-v7/09-notifications-adapters.md),
+[19-transactions-sagas](../../steerings/domainscript-spec-v7/19-transactions-sagas.md) e [24-testing.md](../../steerings/domainscript-spec-v7/24-testing.md) (v7, resolvidas por título, não
 por número):
 
 - **(a) Resposta tipada pela própria `Notification` — REFUTADA.** A premissa
@@ -494,7 +494,7 @@ por número):
   como?); um Nível 2 precisaria que `function "Nome"` ganhasse `-> Tipo`, igual
   ao `Foreign` genérico. As duas mudanças exigem gramática nova em
   léxico→parser→resolver→sema — mesma natureza de ISSUE-2
-  (`../../issues/features-spec-v6-nao-modeladas-pelo-frontend.md`), fora do
+  ([features-spec-v6-nao-modeladas-pelo-frontend](../../issues/features-spec-v6-nao-modeladas-pelo-frontend.md)), fora do
   que uma task de codegen decide sozinha.
 - **(c) Delimitar — ESCOLHIDA.** Sem (a) e com (b) fora de escopo, não sobra
   opção implementável neste ciclo. `Call<Nome>` continua **exatamente** como
@@ -507,7 +507,7 @@ por número):
 têm um tipo para se apoiar — implementá-los adivinhando um formato (por
 exemplo, assumir que `X` é sempre o próprio tipo da `Notification`, ou
 carregar o valor como `any`) seria exatamente a espécie de invenção que a
-diretriz de spec deste repositório proíbe (`CLAUDE.md`, "A spec é a fonte de
+diretriz de spec deste repositório proíbe ([CLAUDE.md](../../../../CLAUDE.md), "A spec é a fonte de
 verdade"). Fica registrada uma issue de revisão de spec pedindo que a
 linguagem defina o contrato de resposta de `Adapter`/`Notification`; sem essa
 definição, nenhum ciclo futuro consegue retomar REQ-57.2/57.3 sem repetir o
@@ -607,7 +607,7 @@ memória). Prefiltro no store fica para o ciclo de providers reais (G-4).
 leitura que nenhuma das duas rotas originalmente prescritas (derivar de
 `EventType()` via um registro já disponível; usar um campo que `Event`/
 `EventMeta` já ofereça) existe hoje — ver
-`../../issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md`. Decisão:
+[m1-1-aggregatetype-nao-chega-a-eventstore-append](../../issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md). Decisão:
 **thread via `ctx`, o mesmo mecanismo já usado para `tenantID`** — um novo par
 `WithAggregateType`/`AggregateTypeFrom` em `codegen/rtsrc/contextkeys.go.txt`,
 seguindo exatamente a forma de `WithTenant`/`TenantFrom` (§13, já em uso no
@@ -697,7 +697,7 @@ graph TD
   `gentest.SmokeCompile` ou o e2e `driver.TestGenerate*`.
 - **`pizzeria` é a prova final da Fase M1** (M1.6): `GenerateProject` real,
   `go build`/`go vet` sobre os bytes em disco, e só então a limpeza do CI.
-- **Escopo de teste por task, nunca a suíte inteira** (`CLAUDE.md`): rodar
+- **Escopo de teste por task, nunca a suíte inteira** ([CLAUDE.md](../../../../CLAUDE.md)): rodar
   `go test ./codegen/ -run TestX`, não `go test ./...`. CI roda o resto na PR.
 - **Testes comportamentais do runtime** (`rtsrc_test.go`) são a guarda de M4.2:
   o staging não pode quebrar a durabilidade do commit.
@@ -717,7 +717,7 @@ graph TD
 | `pizzeria` bate em **uma** guarda de wiring | leitura de `generateCmdMainFile` + `topology.ds` | **REFUTADO** — bate em **duas** (múltiplos produtores E produtor+Dispatcher); o Marco L só mapeou a segunda |
 | `emit` em passo de Saga dá "erro claro" | leitura de `emitSagaStepPhaseFunc` + `emitStmt` | **REFUTADO** — é miscompilação silenciosa (`undefined: events`) |
 | `mock returns X` é "trocar o retorno do stub" | leitura de `emitSagaMock`/`decl_io.go`/`builtins.go` | **REFUTADO** — faltam 3 camadas: contrato de resposta, `result = call …`, e só então o stub |
-| (M3.1) Contrato de resposta "sai da declaração que já existe" (opção a) | leitura de `09-notifications-adapters.md`/`10-ffi.md`/`19-transactions-sagas.md`/`24-testing.md` | **REFUTADO** — `Notification` só declara campos de entrada; nem `Adapter` Nível 1 (`body {}`) nem Nível 2 (`function "Nome"` sem `-> Tipo`) carregam forma de resposta; `PaymentResult` do exemplo não é declarado em lugar nenhum |
+| (M3.1) Contrato de resposta "sai da declaração que já existe" (opção a) | leitura de [09-notifications-adapters](../../steerings/domainscript-spec-v7/09-notifications-adapters.md)/[10-ffi.md](../../steerings/domainscript-spec-v7/10-ffi.md)/[19-transactions-sagas](../../steerings/domainscript-spec-v7/19-transactions-sagas.md)/[24-testing.md](../../steerings/domainscript-spec-v7/24-testing.md) | **REFUTADO** — `Notification` só declara campos de entrada; nem `Adapter` Nível 1 (`body {}`) nem Nível 2 (`function "Nome"` sem `-> Tipo`) carregam forma de resposta; `PaymentResult` do exemplo não é declarado em lugar nenhum |
 | §22.7 por ramo exige re-arquitetura de `sema` | leitura de `handleRaisesError`/`testedErrorHandles`/`ast.ThenClause` | **REFUTADO** — os nomes de `Error` já estão nos dois lados; é trocar `bool` por conjunto |
 | `property` já é determinístico | leitura de `propertySeed` | **Confirmado** — semente derivada de `(Test, Property)`, nunca `time.Now` |
 | `memoryTx` não tem staging | leitura de `rtsrc/uow.go.txt` | **Confirmado** — `Append` grava direto; commit/rollback são no-op documentado |
@@ -738,11 +738,11 @@ graph TD
 | `released` e acesso NEGADO: **delimitar** | Implementar por analogia | `released` aparece 1× no spec inteiro, sem definição operacional, e `grep` no código dá zero; acesso NEGADO exige gramática nova. Implementar seria adivinhar semântica |
 | `sqlrt` **não** ganha `StreamLister` agora | Implementar nos dois de uma vez | Fora do escopo declarado; sem provider real exercitando, seria código não testado. O erro de REQ-55.5 cobre o caso |
 | Wiring de service: **fan-out no Dispatcher** (canal assina, UoW publica sempre no dispatcher) | Manter o canal como publisher direto da UoW (hoje) | Um `Publisher` só por UoW não escala para N produtores nem coexiste com um módulo que precise de Dispatcher local — é a causa raiz das duas guardas F5/F5-G3 (§4.3) |
-| Wiring de service: **um Publisher composto que faz fan-out** | Rejeitada — considerada no Passo 3 de `tasks/M1.4.md` como alternativa caso o fan-out no Dispatcher fosse refutado | Não foi necessária: o fan-out no Dispatcher (acima) resolve as duas guardas sem precisar de um tipo `Publisher` composto novo; um canal recebendo TODO evento (não só os seus) desperdiçaria o pipeline de workers/rate limit/circuit breaker do canal para eventos que ele descarta em `deliver` mesmo assim |
+| Wiring de service: **um Publisher composto que faz fan-out** | Rejeitada — considerada no Passo 3 de [M1.4.md](tasks/M1.4.md) como alternativa caso o fan-out no Dispatcher fosse refutado | Não foi necessária: o fan-out no Dispatcher (acima) resolve as duas guardas sem precisar de um tipo `Publisher` composto novo; um canal recebendo TODO evento (não só os seus) desperdiçaria o pipeline de workers/rate limit/circuit breaker do canal para eventos que ele descarta em `deliver` mesmo assim |
 | `NewOutboxUnitOfWork` ganha `publisher ...runtime.Publisher` **opcional** (variádico, como `NewUnitOfWork`) | Delimitar: produtor durável nunca combina com Dispatcher local (manter a fronteira de Marco K) | O `pizzeria` exige exatamente essa combinação (`Sales` é produtor durável E dono de `GetAvailableMenu` com `cache`, G3) — delimitar aqui reabriria a guarda F5/G3 pela porta dos fundos. A extensão é aditiva: sem `dispatcher` no serviço, a chamada continua com os mesmos 4 argumentos de hoje (byte-idêntico, NFR-31) |
 | Cada `wireTarget` recebe **sua própria instância de `uow`** (não uma variável de serviço única) | Manter uma única variável `uow` para todo o service, como hoje | Um serviço pode combinar um módulo produtor durável (UoW SQL) com módulos que só têm a UoW compartilhada (memória + dispatcher) — as duas nunca são a MESMA instância; a versão anterior desta seção não distinguia isso |
 | Mismatch de leitura do produtor durável (Query lê `store` em memória, nunca o banco real): **registrar issue própria, fora de REQ-55.7/55.8** | Resolver dentro de M1.4/M1.5 | É um bloqueio ADICIONAL e INDEPENDENTE (REQ-55.11): é sobre o Read Side de um módulo com banco real, não sobre quem publica no Dispatcher — amplia REQ-55 silenciosamente se resolvido aqui sem uma task própria |
-| `aggregateType` chega a `Append` via **`ctx`** (`WithAggregateType`/`AggregateTypeFrom`, mesmo padrão de `tenantID`), carimbado em `codegen/decl_usecase.go` antes de `uow.Run(ctx, ...)` — decisão explícita do usuário, condicionada a M1.1 confirmar que uma `Tx.Run()` nunca mistura `aggregateType`s | `aggregateID` prefixado (`"<Tipo>:<id>"`); outra rota não considerada | Opção 1 do pedido de decisão registrado em `m1-1-aggregatetype-nao-chega-a-eventstore-append.md` — reusa o mecanismo já validado de `tenantID` em vez de mudar o formato do id armazenado (que arriscaria REQ-55.6, byte-identidade de Queries já suportadas) |
+| `aggregateType` chega a `Append` via **`ctx`** (`WithAggregateType`/`AggregateTypeFrom`, mesmo padrão de `tenantID`), carimbado em `codegen/decl_usecase.go` antes de `uow.Run(ctx, ...)` — decisão explícita do usuário, condicionada a M1.1 confirmar que uma `Tx.Run()` nunca mistura `aggregateType`s | `aggregateID` prefixado (`"<Tipo>:<id>"`); outra rota não considerada | Opção 1 do pedido de decisão registrado em [m1-1-aggregatetype-nao-chega-a-eventstore-append](../../issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md) — reusa o mecanismo já validado de `tenantID` em vez de mudar o formato do id armazenado (que arriscaria REQ-55.6, byte-identidade de Queries já suportadas) |
 
 ---
 
@@ -757,4 +757,4 @@ graph TD
 | `list <Aggregate>` ficar não-determinístico e deixar o CI flaky | `ListStreams` ordena (§5.1); o e2e do `pizzeria` (M1.6) gera duas vezes e compara bytes |
 | A enumeração O(n) degradar uma Query real | Aceito e documentado (§5.1): store in-process, mesma natureza de `SelectSlice`. Prefiltro fica para o ciclo de providers reais (G-4) |
 | Descobrir, no `pizzeria`, um bloqueio **além** dos mapeados | REQ-55.11: registrar nova issue (`issue-generator`) e **não** ampliar REQ-55 — a regra que o Marco L usou bem quando achou ISSUE-12 |
-| Outra premissa se revelar errada em execução | A task **para e reporta** (§1), registra issue se for fora de escopo, e marca-se `blocked` no `state.md` da spec — nunca contorna |
+| Outra premissa se revelar errada em execução | A task **para e reporta** (§1), registra issue se for fora de escopo, e marca-se `blocked` no [state.md](state.md) da spec — nunca contorna |

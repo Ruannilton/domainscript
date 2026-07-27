@@ -1,8 +1,8 @@
 # Design — Back-end do Transpilador DomainScript (Geração de Go)
 
-> Documento 2 de 3. Define **como** atender `requirements.md` (REQ-14..32,
+> Documento 2 de 3. Define **como** atender [requirements.md](requirements.md) (REQ-14..32,
 > NFR-11..17). Cada decisão referencia os REQ/NFR que satisfaz. Estende os
-> `design.md` anteriores (front-end e type-checking); reusa seus invariantes e o
+> [design.md](design.md) anteriores (front-end e type-checking); reusa seus invariantes e o
 > modelo de dados já implementado (`ast`, `symbols`, `types`, `program`).
 
 ## 1. Visão Arquitetural

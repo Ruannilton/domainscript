@@ -1,7 +1,7 @@
 # Requirements — Correções de dívida técnica (ISSUE-9, ISSUE-10, ISSUE-11)
 
 > Ciclo de **manutenção** (Marco K). Não é greenfield: cada requisito fecha
-> uma issue já registrada em `../../issues/open-issues.md`, encontrada durante specs
+> uma issue já registrada em [open-issues.md](../../issues/open-issues.md), encontrada durante specs
 > anteriores e deixada em aberto por estar **fora do escopo** da task que a
 > descobriu. O objetivo aqui é corrigir cada uma **na raiz**, com o par de
 > testes positivo/negativo que o CLAUDE.md exige (NFR-4).
@@ -280,7 +280,7 @@ O ciclo está completo quando:
    cada task verdes; `wallet` E `shop` byte-idênticos (sem regeneração de
    golden dos exemplos reais); as asserções da fixture-âncora de J6 atualizadas
    deliberadamente.
-5. `../../issues/open-issues.md` marca ISSUE-9/10/11 como `RESOLVED (commit <hash>)`;
-   `../../state.md` reflete o Marco K como `done`; `../codegen/gaps.md`
+5. [open-issues.md](../../issues/open-issues.md) marca ISSUE-9/10/11 como `RESOLVED (commit <hash>)`;
+   [state.md](../../state.md) reflete o Marco K como `done`; [gaps.md](../codegen/gaps.md)
    §G-4 "Residual aberto" atualizado (o item produtor→outbox→canal deixa de estar
    aberto).

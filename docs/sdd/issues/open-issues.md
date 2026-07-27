@@ -2,7 +2,7 @@
 
 ## Revisão da especificação (bloqueiam implementação)
 
-A spec é a fonte de verdade (ver `CLAUDE.md`). Estas issues apontam pontos em
+A spec é a fonte de verdade (ver [CLAUDE.md](../../../CLAUDE.md)). Estas issues apontam pontos em
 que ela não pode ser implementada como está — texto incompleto ou contraditório.
 **Nenhuma linha de código antes de a spec ser revisada**; a auditoria completa
 que as originou está em [review-v7.md](../steerings/review-v7.md).

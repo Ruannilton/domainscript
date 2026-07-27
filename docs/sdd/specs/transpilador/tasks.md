@@ -2,7 +2,7 @@
 
 > Documento 3 de 3 do fluxo spec-driven (`requirements` → `design` → `tasks`).
 > Plano de implementação executável. Cada tarefa referencia os requisitos
-> (`requirements.md`) e o componente de design (`design.md`) que realiza.
+> ([requirements.md](requirements.md)) e o componente de design ([design.md](design.md)) que realiza.
 
 ## Como ler este plano
 
@@ -43,7 +43,7 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
   - `git init`
   - `go mod init domainscript`
   - Criar `.gitignore` (binários, `*.out`, `/dist`, caches de IDE, `*.test`).
-  - Criar `README.md` raiz com nome, propósito (front-end do transpilador
+  - Criar [README.md](../../README.md) raiz com nome, propósito (front-end do transpilador
     DomainScript) e instruções de build (`go build ./...`, `go test ./...`).
   _(§design 1.3, §design 2)_
   **Conclusão:** `go version` e `go mod verify` ok; `git status` limpo após o
@@ -360,8 +360,8 @@ Cada tarefa fecha com um commit atômico em [Conventional Commits](https://www.c
   **cada** regra da §23. _(NFR-4)_ A auditoria revelou e fechou a lacuna da regra
   REQ-5.18 (Upcast substituível por default).
   **Commit:** `test(sema): auditoria de cobertura da §23`
-- [x] **11.5** Revisão final contra o **Definition of Done** (`requirements.md` §5);
-  atualizar `README.md` com estado e exemplos de uso.
+- [x] **11.5** Revisão final contra o **Definition of Done** ([requirements.md](requirements.md) §5);
+  atualizar [README.md](../../README.md) com estado e exemplos de uso.
   **Commit:** `docs(repo): fechamento e Definition of Done`
 
 ---

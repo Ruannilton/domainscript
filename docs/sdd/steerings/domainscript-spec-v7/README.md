@@ -41,10 +41,10 @@ for its topic.
 
 ## Guidance for agents
 
-- Need the "big picture" before writing a spec? Read `01-overview.md` +
-  `25-compilation-rules.md` + `26-glossary.md` first — cheap, high signal.
+- Need the "big picture" before writing a spec? Read [01-overview.md](01-overview.md) +
+  [25-compilation-rules.md](25-compilation-rules.md) + [26-glossary.md](26-glossary.md) first — cheap, high signal.
 - Working on a specific construct (e.g. Sagas, Policies, Cache)? Load only
-  that section's file plus `25-compilation-rules.md` if you need the
+  that section's file plus [25-compilation-rules.md](25-compilation-rules.md) if you need the
   authoritative list of what's an error vs. a warning.
 - Don't load the whole spec unless doing something that spans most of it
   (e.g. auditing an implementation against the full v7 surface).

@@ -1,8 +1,8 @@
 # Design — Resolução Completa de Nomes & Tipos
 
-> Documento 2 de 3. Define **como** atender `requirements.md` (REQ-9..13,
+> Documento 2 de 3. Define **como** atender [requirements.md](requirements.md) (REQ-9..13,
 > NFR-8..10). Cada decisão referencia os REQ/NFR que satisfaz. Estende o
-> `design.md` do front-end (`../design.md`); reusa seus invariantes.
+> [design.md](design.md) do front-end ([design.md](../transpilador/design.md)); reusa seus invariantes.
 
 ## 1. Visão Arquitetural
 

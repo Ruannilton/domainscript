@@ -3,7 +3,7 @@
 - TASK: gaps.md §G-7 (lacunas dos testes gerados, Marco H4)
 - DESCRIPTION: `*.test.ds` → Go tests cobre o caminho feliz, mas várias formas
   do spec §22 têm semântica reduzida (cada uma registrada nas fatias de H4
-  em `tasks.md`/`codegen/gentest.go`): `then state { ... }` (asserção de estado
+  em [tasks.md](../specs/codegen/tasks.md)/`codegen/gentest.go`): `then state { ... }` (asserção de estado
   StateStored, §22.1) → erro de geração claro; cenário de acesso NEGADO (§22)
   → não expressável (a gramática não tem "como o caller X"); `mock ... returns
   X` desviando fluxo (§22.3) → mock sempre sucede, `X` é construído mas não
@@ -28,7 +28,7 @@
   para um ciclo de front-end: fecha só a fatia tratável e mantém esse resíduo
   apontado.
 
-  Status conforme `../state.md`: Marco L ainda **in-progress**
+  Status conforme [state.md](../state.md): Marco L ainda **in-progress**
   (L1.1/L1.2/L1.3a/L1.3b/L1.3c/L2.1 done; L1.3d pausada por decisão do
   usuário; L1.3e/L1.3f bloqueadas em cascata — ver a issue sobre o pizzeria
   bloqueado por múltiplos defeitos de codegen; próxima task L2.5 —

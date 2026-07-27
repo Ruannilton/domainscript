@@ -1,7 +1,7 @@
 # M1.1: uma `Tx.Run()` PODE gravar eventos de mais de um `aggregateType` — a rota "thread via `ctx`" não serve
 - SPEC: correcoes-issues-6-8-12
 - TASK: M1.1
-- DESCRIPTION: `design.md` §5.1 ("Como `aggregateType` chega a `Append`
+- DESCRIPTION: [design.md](../specs/correcoes-issues-6-8-12/design.md) §5.1 ("Como `aggregateType` chega a `Append`
   (decisão de M1.1)") registra a decisão do usuário — carimbar `ctx` UMA vez,
   em `codegen/decl_usecase.go`, imediatamente antes de `uow.Run(ctx, ...)` —
   mas condiciona explicitamente essa rota a uma premissa: "Isso só é seguro
@@ -9,7 +9,7 @@
   `aggregateType`... **M1.1 deve confirmar essa premissa por leitura**... Se
   a premissa **não** se confirmar (uma `Run()` mistura tipos), essa rota não
   serve — M1.1 para e reporta, não adivinha um fallback." A própria task
-  (`tasks/M1.1.md`, banner "Desbloqueada" + Step 2.2) repete a mesma condição.
+  ([M1.1.md](../specs/correcoes-issues-6-8-12/tasks/M1.1.md), banner "Desbloqueada" + Step 2.2) repete a mesma condição.
 
   Verifiquei por leitura e a premissa é **falsa**: o front-end permite, e o
   codegen hoje gera corretamente, um `UseCase.execute` que dispara `Handle`
@@ -92,7 +92,7 @@
   daquele mesmo `Run()` está em curso — o `ctx` é o MESMO objeto imutável
   para as duas chamadas. `ListStreams(ctx, "B")` deixaria de enxergar o
   stream de `B` (carimbado como `"A"`), e vice-versa — exatamente o cenário
-  que `design.md` §5.1 identificou como inseguro.
+  que [design.md](../specs/correcoes-issues-6-8-12/design.md) §5.1 identificou como inseguro.
 
   **4. O caminho 2PC tem o MESMO problema, latente.** `usecase2PCPlan` só
   exige `len(seen) >= 2` `Database` DISTINTOS entre os Aggregates tocados —
@@ -108,7 +108,7 @@
   "Mesmo Database → commit local") reconhecem é o `Database`, não o tipo de
   Aggregate. Não implementei a rota: seria exatamente a "adivinhação"
   (aceitar a mistura e carimbar mesmo assim, ou inventar um fallback não
-  registrado no design) que o processo deste repositório proíbe. `design.md`
+  registrado no design) que o processo deste repositório proíbe. [design.md](../specs/correcoes-issues-6-8-12/design.md)
   §5.1/§7.2 precisa decidir de novo — algumas rotas que preservariam a
   interface `EventStore` intocada (NFR-32) e não exigiriam re-arquitetar
   `Tx`:

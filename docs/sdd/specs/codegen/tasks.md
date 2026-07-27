@@ -1,7 +1,7 @@
 # Tasks — Back-end do Transpilador DomainScript (Geração de Go)
 
-> Documento 3 de 3. Plano executável para `requirements.md` (REQ-14..32) via
-> `design.md`. Mesmas convenções dos `tasks.md` anteriores: a ordem respeita
+> Documento 3 de 3. Plano executável para [requirements.md](requirements.md) (REQ-14..32) via
+> [design.md](design.md). Mesmas convenções dos [tasks.md](tasks.md) anteriores: a ordem respeita
 > dependências, fatiar **verticalmente** (um construto: emissor → lowering →
 > golden test → smoke compile, antes de alargar), cada task tem **critério de
 > conclusão** verificável e fecha em **commit** atômico (Conventional Commits,
@@ -835,7 +835,7 @@
   eventos são todos distintos). `emitted count N` compara `len(published)`.
 
   **Adaptação da fixture (mesmo precedente de "Fixtures de exemplo não são
-  fonte de verdade", `../codegen/design.md` §6 — já usado pela
+  fonte de verdade", [design.md](design.md) §6 — já usado pela
   fatia de Saga, que sintetizou o módulo `Booking`, e pela de property, que
   dropou o `Transfer` ilustrativo do spec):** nem wallet nem shop têm uma
   Policy com corpo de negócio de verdade (o único Policy do shop é `execute {
@@ -858,7 +858,7 @@
   Go de fato gerado, que o predicado por item filtra de verdade e que cada
   `RefundRequested` publicado é observado pelo coletor).
 
-  **Adaptação REMOVIDA em `../read-side/tasks.md` (I6.2):**
+  **Adaptação REMOVIDA em [tasks.md](../read-side/tasks.md) (I6.2):**
   `distinct`/agrupamento fechou em I6.1 (§20, REQ-37.1) — a fixture voltou à
   forma EXATA do spec (`soldTickets.distinct(t => t.orderId)`, 3 tickets, 2
   orders, `emitted count 2`), removendo o "um `orderId` por ticket" acima.
@@ -877,8 +877,8 @@
   `feat(codegen): geração de testes a partir de *.test.ds (cenário de Policy/Query)`
 
 - [x] **H5** Fechamento: auditoria de determinismo/idempotência (regen byte-idêntico,
-  limpeza de órfãos), revisão contra o Definition of Done, atualizar `README.md`,
-  `CLAUDE.md` (back-end deixa de ser "fora de escopo") e os specs. _(NFR-13, DoD §5)_
+  limpeza de órfãos), revisão contra o Definition of Done, atualizar [README.md](../../README.md),
+  [CLAUDE.md](../../../../CLAUDE.md) (back-end deixa de ser "fora de escopo") e os specs. _(NFR-13, DoD §5)_
 
   **Auditoria de determinismo/idempotência — gap encontrado e fechado.** Antes
   desta task, `driver/generate_test.go` (`TestGenerateProjectIdempotentSameBytes`,
@@ -915,7 +915,7 @@
   `TestGenerateProjectRemovesOrphanFiles`) foram rodados de novo sobre o HEAD
   atual e continuam verdes — não apenas confirmados por existirem.
 
-  **Revisão contra o Definition of Done (`requirements.md` §5):**
+  **Revisão contra o Definition of Done ([requirements.md](requirements.md) §5):**
 
   1. **Atendido.** Todo construto do spec v6 modelado pelo front-end tem tarefa
      `[x]` em Marcos E–H (VO/Enum E3, Error/Event E4, Aggregate E6, Command/UseCase
@@ -936,7 +936,7 @@
      `grpc.go`, `observ.go`, `gentest.go`, …) tem par de golden test (51 artefatos
      `.golden` sob `codegen/`); dependências externas (`sqlrt`, `grpcrt`, `otelrt`)
      isoladas em subpacotes próprios, referenciadas só quando o programa as exige
-     (ver invariante de back-end registrada em `CLAUDE.md`).
+     (ver invariante de back-end registrada em [CLAUDE.md](../../../../CLAUDE.md)).
   4. **Atendido.** `TestGenerateWalletE2EGoModHasNoExternalRequire` e
      `TestGenerateShopE2EGoModHasNoExternalRequire` prova que o `go.mod` de ambos
      os exemplos não tem `require`; o núcleo (`runtime/`) depende só da stdlib
@@ -954,14 +954,14 @@
   Nenhum critério ficou incompleto — o único gap real encontrado (item 2, Shop
   sem cobertura E2E de geração) foi fechado nesta própria task, não adiado.
 
-  `README.md` e `CLAUDE.md` (raiz) atualizados para descrever os dois estágios:
+  [README.md](../../README.md) e [CLAUDE.md](../../../../CLAUDE.md) (raiz) atualizados para descrever os dois estágios:
   pipeline com o estágio de geração, seção de back-end (`dsc gen`,
   `driver.GenerateProject`, o que é gerado, núcleo sem deps vs. deps opt-in),
   CLI com o subcomando `gen` (verificado contra `cmd/dsc/main.go` antes de
   documentar), Estado cobrindo os dois ciclos com os dois Definition of Done.
-  `CLAUDE.md` ganhou uma seção "Back-end architecture invariants" (núcleo vs.
+  [CLAUDE.md](../../../../CLAUDE.md) ganhou uma seção "Back-end architecture invariants" (núcleo vs.
   deps opt-in, golden+smoke pareados, determinismo) e as entradas de pacote de
-  `codegen/*` no layout — sem duplicar `design.md`/`tasks.md`.
+  `codegen/*` no layout — sem duplicar [design.md](design.md)/[tasks.md](tasks.md).
 
   **Este é o fechamento de todo o ciclo `../codegen/` (Marcos E, F, G,
   H) — front-end e back-end do transpilador estão ambos completos.**

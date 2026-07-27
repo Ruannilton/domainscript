@@ -2,7 +2,7 @@
 
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
 > `tasks`), independente da spec do front-end em `../`. Define **o quê**
-> e **por quê** desta etapa. Não define implementação (isso é `design.md`).
+> e **por quê** desta etapa. Não define implementação (isso é [design.md](design.md)).
 >
 > Continuidade de numeração: este ciclo continua a série do projeto a partir de
 > `REQ-9` e `NFR-8` (o front-end vai até `REQ-8`/`NFR-7`), para um namespace de
@@ -28,7 +28,7 @@ Evidência concreta, no projeto de exemplo `docs/examples/wallet`:
 `go run ./cmd/dsc docs/examples/wallet` hoje retorna **zero diagnósticos e exit
 code 0** — o validador aprova um programa com três typos.
 
-**Causa-raiz (lacuna de especificação, não só de código).** O `design.md` §3.7 do
+**Causa-raiz (lacuna de especificação, não só de código).** O [design.md](design.md) §3.7 do
 front-end define a passagem de resolução *literalmente* só para `ref`, `handles`,
 `on` e nomes de tipo em campos/parâmetros. Em consequência:
 
@@ -172,7 +172,7 @@ sozinhos não pegam.
 
 1. THE SYSTEM SHALL checar compatibilidade de tipo em: atribuição (`a = b`),
    argumentos de construção/chamada, operandos de operadores, e valor de `return`,
-   no nível de profundidade definido pelo `design.md`.
+   no nível de profundidade definido pelo [design.md](design.md).
 2. WHEN um uso é incompatível, THE SYSTEM SHALL emitir erro acionável (tipo
    esperado vs. tipo encontrado), na posição do uso.
 3. THE SYSTEM SHALL tratar a Regra de Ouro do Write Side (REQ-5.1) e este sistema de

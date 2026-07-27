@@ -33,7 +33,7 @@
   (J2, `runtime.DurableOutbox`/`sql_wiring.go:emitOutboxDatabaseWiring`) —
   todos opt-in, isolados atrás do seam existente, cobertos por golden +
   smoke compile (NFR-17) e determinismo (NFR-21, `infra_providers_
-  determinism_test.go`). Ver `../specs/codegen/gaps.md` §G-4 para a
+  determinism_test.go`). Ver [gaps.md](../specs/codegen/gaps.md) §G-4 para a
   tabela completa antes/depois por categoria.
 
   Residual que sobrou do Marco J (rastreado à parte, já resolvido): o lado

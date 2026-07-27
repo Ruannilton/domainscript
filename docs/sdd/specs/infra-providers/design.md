@@ -1,6 +1,6 @@
 # Design — Providers Reais de Infraestrutura (Postgres, RabbitMQ, Redis, S3, Outbox durável)
 
-> Documento 2 de 3. Consome `requirements.md` (REQ-41..48, NFR-21..24, Marco J)
+> Documento 2 de 3. Consome [requirements.md](requirements.md) (REQ-41..48, NFR-21..24, Marco J)
 > e traduz cada requisito numa decisão concreta sobre onde o código mora e como
 > o seam existente é preenchido. **Nada aqui redesenha um seam** — todos já
 > existem (read-side/codegen); o trabalho é implementar o lado real atrás deles
@@ -465,7 +465,7 @@ a `TestSharedCollectionTypeDeterministic`.
 
 Levantados cruzando o design com o código real (`program/graph.go`,
 `codegen/*.go`, `codegen/sqlrt/*`) — cada um vira uma subtask explícita em
-`tasks.md` para não ser descoberto no meio da implementação:
+[tasks.md](tasks.md) para não ser descoberto no meio da implementação:
 
 - **R1 — `Database.DSN` é `""` quando a conexão é `env(...)`.**
   `program.Database.DSN` só carrega literais estáticos (doc do próprio campo);
@@ -522,7 +522,7 @@ Levantados cruzando o design com o código real (`program/graph.go`,
   global (igual ao in-memory).
 
 - **R7 — Fixture-âncora precisa combinar UseCase + Policy no mesmo módulo?**
-  ISSUE-7 (`../../issues/open-issues.md`) já mostrou que um módulo com UseCase E Policy
+  ISSUE-7 ([open-issues.md](../../issues/open-issues.md)) já mostrou que um módulo com UseCase E Policy
   colide no wiring (`Wire` duplicado). A fixture-âncora deste ciclo deve
   **evitar** essa combinação por módulo (senão o `dsc gen` falha por um motivo
   alheio a este ciclo) — ou ISSUE-7 vira pré-requisito. Decisão: estruturar a

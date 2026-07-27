@@ -17,7 +17,7 @@
 > (`docs/examples/`) são outra coisa: escritos contra a spec, não passam hoje —
 > ver a seção G.
 >
-> **Relação com o que já existe.** `../specs/codegen/gaps.md` mapeia o
+> **Relação com o que já existe.** [gaps.md](../specs/codegen/gaps.md) mapeia o
 > transpilador contra a **v6** e continua válido no que cobre; os itens
 > repetidos aqui aparecem com a referência cruzada (`G-n`) para não duplicar
 > registro. O que este documento acrescenta é o **delta v7**: a §10 (FFI
@@ -71,7 +71,7 @@ grafia em que código e spec discordam.
 > **mudando o código**, nunca a spec. Onde a spec se mostrar ruim ou
 > incompleta demais para ser implementada como está, o caminho é registrar
 > uma issue pedindo a revisão dela — e implementar depois, contra o texto
-> revisado. Ver `CLAUDE.md`, "A spec é a fonte de verdade".
+> revisado. Ver [CLAUDE.md](../../../CLAUDE.md), "A spec é a fonte de verdade".
 
 ### A-1. `self` não existe em corpos de ValueObject (§2.2, §2.3)
 
@@ -348,7 +348,7 @@ serializados para qualquer caller. Nem erro, nem warning.
 
 ## 🟠 C. Implementado com semântica reduzida
 
-Itens já cobertos por `gaps.md`/issues; listados aqui só para completar o mapa
+Itens já cobertos por [gaps.md](../specs/codegen/gaps.md)/issues; listados aqui só para completar o mapa
 da v7. Nenhum deles é silencioso — todos dão erro de geração claro.
 
 | § | Promessa | Estado |
@@ -559,11 +559,11 @@ código antes de a spec ser atualizada:
 
 | Bloqueio | Issue |
 |---|---|
-| `ref` é keyword na §5.1 e identificador na §2.5 (A-6) | `spec-v7-ref-keyword-vs-identificador.md` |
-| `self.id` usado sem declaração nem tipo (A-2) | `spec-v7-identidade-implicita-do-aggregate.md` |
-| Metadata implícito de Event sem tipos nem isenção da Regra de Ouro (A-3) | `spec-v7-metadata-implicito-de-event.md` |
-| Sem catálogo normativo de métodos por tipo; `length` property vs. method (A-7) | `spec-v7-catalogo-de-metodos-embutidos.md` |
-| `RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum | `spec-v7-retrywithbackoff-sem-definicao.md` |
+| `ref` é keyword na §5.1 e identificador na §2.5 (A-6) | [spec-v7-ref-keyword-vs-identificador](../issues/spec-v7-ref-keyword-vs-identificador.md) |
+| `self.id` usado sem declaração nem tipo (A-2) | [spec-v7-identidade-implicita-do-aggregate](../issues/spec-v7-identidade-implicita-do-aggregate.md) |
+| Metadata implícito de Event sem tipos nem isenção da Regra de Ouro (A-3) | [spec-v7-metadata-implicito-de-event](../issues/spec-v7-metadata-implicito-de-event.md) |
+| Sem catálogo normativo de métodos por tipo; `length` property vs. method (A-7) | [spec-v7-catalogo-de-metodos-embutidos](../issues/spec-v7-catalogo-de-metodos-embutidos.md) |
+| `RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum | [spec-v7-retrywithbackoff-sem-definicao](../issues/spec-v7-retrywithbackoff-sem-definicao.md) |
 
 **Depois, o que já é implementável contra o texto atual**, em ordem:
 
@@ -606,5 +606,5 @@ código antes de a spec ser atualizada:
 
 9. **F-3 (`asc`/`desc`)** é limpeza de uma linha, oportunista.
 
-Os itens de C já têm registro próprio (`gaps.md` G-4/G-6/G-7, issues abertas) e
+Os itens de C já têm registro próprio ([gaps.md](../specs/codegen/gaps.md) G-4/G-6/G-7, issues abertas) e
 não precisam de entrada nova — a v7 não mudou nada neles.

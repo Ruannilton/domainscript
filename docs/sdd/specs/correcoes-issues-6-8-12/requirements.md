@@ -34,20 +34,20 @@ confirmada por reprodução**, até onde o escopo de codegen/runtime/sema alcan�
   mostrou **viável em `sema` sem re-arquitetura** — mais a reclassificação
   documentada dos itens que dependem do spec da linguagem.
 - **REQ-61:** o fechamento documental — delimitações (`acesso NEGADO`,
-  `released`) e atualização de `gaps.md`/`../../issues/`.
+  `released`) e atualização de [gaps.md](../codegen/gaps.md)/`../../issues/`.
 
 ### 1.2. Alinhamento filosófico com o spec
 
 - **Premissa verificada antes de virar task.** A lição do Marco L: quatro tasks
   descreviam um fix que não correspondia ao código. Toda análise de raiz aqui
-  foi confirmada por leitura **e** reprodução (ver `design.md` §7); onde a
+  foi confirmada por leitura **e** reprodução (ver [design.md](design.md) §7); onde a
   verificação mudou o escopo, a task já nasce com o escopo real.
 - **Nunca trocar um gap por uma miscompilação.** Uma forma não suportada deve
   produzir **erro de geração claro**, jamais Go que não compila (REQ-56.1) ou
   que compila com semântica errada.
 - **Fix na raiz, não no fixture.** `list <Aggregate>` é um gap de codegen
   provider-agnóstico; reescrever as Queries do `pizzeria` para contorná-lo foi
-  explicitamente rejeitado (`design.md` §7).
+  explicitamente rejeitado ([design.md](design.md) §7).
 - **A fronteira do spec da linguagem é parada, não adivinhação.** O que exige
   sintaxe/semântica que o spec não define (`released`, acesso NEGADO, §4.4,
   §25) é **delimitado e documentado**, nunca inventado.
@@ -175,8 +175,8 @@ clara — nunca gere Go quebrado.
 1. WHEN o corpo de um passo de Saga contém `emit <Evento>(...)`, THE SYSTEM
    SHALL falhar a geração com mensagem clara, em vez de emitir Go que
    referencia uma variável `events` inexistente no escopo do passo — fechando a
-   miscompilação silenciosa reproduzida em `design.md` §7.
-2. THE SYSTEM SHALL registrar em `design.md`, **antes de qualquer código de
+   miscompilação silenciosa reproduzida em [design.md](design.md) §7.
+2. THE SYSTEM SHALL registrar em [design.md](design.md), **antes de qualquer código de
    semântica**, a rota escolhida para um passo de Saga emitir (dispatcher
    publish-only, `Tx` no passo, ou delimitação), com o motivo das descartadas.
 3. WHERE a rota escolhida em REQ-56.2 for implementável neste ciclo, THE SYSTEM
@@ -195,7 +195,7 @@ valor ser construído e descartado.
 
 **Critérios de aceitação:**
 
-1. THE SYSTEM SHALL registrar em `design.md`, antes de código, o **contrato de
+1. THE SYSTEM SHALL registrar em [design.md](design.md), antes de código, o **contrato de
    resposta de um Adapter** — hoje inexistente: `Call<Nome>` devolve só `error`
    e nenhuma seção do spec define tipo de resposta para `Adapter`/`Notification`.
 2. WHERE o contrato de REQ-57.1 for implementável sem nova gramática de
@@ -287,17 +287,17 @@ reclassificada — para nenhuma delas continuar sendo um saco indefinido.
 
 **Critérios de aceitação:**
 
-1. THE SYSTEM SHALL documentar em `../codegen/gaps.md` e na issue de
+1. THE SYSTEM SHALL documentar em [gaps.md](../codegen/gaps.md) e na issue de
    ISSUE-6 que o **cenário de acesso NEGADO** e o verbo **`released`** exigem
    definição no spec da linguagem / nova gramática, apontados para um ciclo de
    front-end.
 2. THE SYSTEM SHALL **reclassificar** o gatilho de redação GDPR (§4.4) e os
    itens de §25 (avg/min/max/group by, aritmética estendida, marshalling FFI)
    de "dívida de codegen" para **"aguardando definição no spec da linguagem"**,
-   em `gaps.md` e na issue de ISSUE-8.
-3. THE SYSTEM SHALL atualizar `../../issues/open-issues.md` e cada arquivo de
-   issue tocado com o estado final, e o ponteiro de `../../state.md` conforme
-   as regras do `CLAUDE.md`.
+   em [gaps.md](../codegen/gaps.md) e na issue de ISSUE-8.
+3. THE SYSTEM SHALL atualizar [open-issues.md](../../issues/open-issues.md) e cada arquivo de
+   issue tocado com o estado final, e o ponteiro de [state.md](../../state.md) conforme
+   as regras do [CLAUDE.md](../../../../CLAUDE.md).
 
 ---
 
@@ -324,7 +324,7 @@ compilando sem alteração. Reafirma NFR-12/NFR-30.
 
 ### NFR-33 — Par positivo/negativo por correção, e nenhuma miscompilação silenciosa
 
-Cada sub-parte fechada entrega o par exigido pelo `CLAUDE.md` (NFR-4): um
+Cada sub-parte fechada entrega o par exigido pelo [CLAUDE.md](../../../../CLAUDE.md) (NFR-4): um
 programa que viola a regra (esperando o diagnóstico exato) e um correto
 (esperando silêncio). Adicionalmente, **toda forma não suportada que este ciclo
 descobrir deve produzir erro de geração claro** — nunca Go que não compila. O
@@ -342,7 +342,7 @@ escopo de teste é o da task, não a suíte inteira; CI roda o resto.
 | REQ-58 | Shrinking de `property` | ISSUE-6 | `codegen/gentest_property.go` | M4 |
 | REQ-59 | `rolledback` com staging | ISSUE-6 | `codegen/rtsrc/uow.go.txt`, `codegen/gentest.go` | M4 |
 | REQ-60 | Cobertura §22.7 por ramo de `Error` | ISSUE-8 | `sema/rules_warnings.go` | M5 |
-| REQ-61 | Delimitações e reclassificações | ISSUE-6, ISSUE-8, ISSUE-12 | `../codegen/gaps.md`, `../../issues/` | M5 |
+| REQ-61 | Delimitações e reclassificações | ISSUE-6, ISSUE-8, ISSUE-12 | [gaps.md](../codegen/gaps.md), `../../issues/` | M5 |
 
 ---
 
@@ -354,16 +354,16 @@ O ciclo está completo quando:
    `dsc gen docs/examples/pizzeria` sai 0 e o projeto Go **compila**; `pizzeria`
    sai de `KNOWN_UNGENERATABLE`; wallet/shop byte-idênticos (REQ-55).
 2. `emit` em passo de Saga não miscompila mais — ou funciona, ou dá erro claro —
-   com a rota registrada em `design.md` (REQ-56).
+   com a rota registrada em [design.md](design.md) (REQ-56).
 3. `mock … returns X` influencia o fluxo, ou está delimitado com o contrato de
-   resposta de Adapter registrado em `design.md` (REQ-57).
+   resposta de Adapter registrado em [design.md](design.md) (REQ-57).
 4. `property` que falha reporta contra-exemplo **mínimo e determinístico**
    (REQ-58); `rolledback` prova store intacta, com read-your-writes preservado
    (REQ-59).
 5. O warning de §22.7 nomeia o `Error` não coberto, com par NFR-4 (REQ-60).
 6. `go build ./...` / `go vet ./...` / `gofmt -l .` limpos; testes de escopo de
    cada task verdes; CI verde na PR da spec.
-7. `gaps.md`, `../../issues/` e `../../state.md` refletem o estado final:
+7. [gaps.md](../codegen/gaps.md), `../../issues/` e [state.md](../../state.md) refletem o estado final:
    **ISSUE-12** → `RESOLVED`; **ISSUE-6** → resolvida na fatia fechada, com
    `acesso NEGADO` e `released` apontados para um ciclo de front-end;
    **ISSUE-8** → fechada em (b) e reclassificada em (a)/(c) (REQ-61).

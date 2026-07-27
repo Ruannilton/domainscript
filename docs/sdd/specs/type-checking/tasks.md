@@ -1,7 +1,7 @@
 # Tasks — Resolução Completa de Nomes & Tipos
 
-> Documento 3 de 3. Plano executável para `requirements.md` (REQ-9..13) via
-> `design.md`. Mesmas convenções do `tasks.md` do front-end: ordem respeita
+> Documento 3 de 3. Plano executável para [requirements.md](requirements.md) (REQ-9..13) via
+> [design.md](design.md). Mesmas convenções do [tasks.md](tasks.md) do front-end: ordem respeita
 > dependências, fatiar **verticalmente**, cada task tem **critério de conclusão** e
 > fecha em **commit** atômico (Conventional Commits, português imperativo). Só
 > commitar com a árvore verde (`go build ./...` e `go test ./...`).
@@ -146,7 +146,7 @@
   **Commit:** `test(sema): regressão dos três bugs do Wallet`
 
 - [x] **F.3** Revalidar determinismo e limite de cascata sobre as novas regras;
-  atualizar `CLAUDE.md` (estado real do projeto) e os specs. _(NFR-9, NFR-1)_
+  atualizar [CLAUDE.md](../../../../CLAUDE.md) (estado real do projeto) e os specs. _(NFR-9, NFR-1)_
   **Conclusão:** testes de determinismo/cascata cobrindo erros de nome/tipo; árvore
   verde; auditoria de par positivo+negativo por REQ-9..13 completa (NFR-10).
   **Commit:** `docs(repo): fecha resolução de nomes & tipos e atualiza estado`

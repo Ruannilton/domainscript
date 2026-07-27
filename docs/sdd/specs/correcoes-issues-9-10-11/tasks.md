@@ -161,11 +161,11 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
   - DoD: escopo verde; smoke compile limpo.
 
 - [x] **K3.5** Docs + consolidação (fechamento de REQ-51). (§design 4.4, NFR-25)
-  - `../codegen/gaps.md` §G-4 "Residual aberto": remover o item
+  - [gaps.md](../codegen/gaps.md) §G-4 "Residual aberto": remover o item
     produtor→outbox→canal (agora fechado); manter os demais residuais (vendoring
     R10, categorias fora de escopo).
-  - `../../issues/open-issues.md`: ISSUE-9 → `RESOLVED (commit <hash>)`.
-  - `CLAUDE.md`/`README.md`: onde afirmam que o produtor publica direto no commit
+  - [open-issues.md](../../issues/open-issues.md): ISSUE-9 → `RESOLVED (commit <hash>)`.
+  - [CLAUDE.md](../../../../CLAUDE.md)/[README.md](../../README.md): onde afirmam que o produtor publica direto no commit
     (ISSUE-9), atualizar para "produtor com Database real + canal rabbitmq
     enfileira no outbox durável e o relay publica".
   - Confirmar `wallet`/`shop` byte-idênticos (`driver.TestGenerate*`), âncora
@@ -179,8 +179,8 @@ Convenção de commit (Conventional Commits em PT imperativo, CLAUDE.md):
 
 - [x] **K.fim** Revisão de DoD (requirements §5): as três issues fechadas com par
   de testes (REQ-50 nos DOIS backends); `wallet`/`shop` byte-idênticos; âncora de
-  J6 atualizada; `../../issues/open-issues.md` marca ISSUE-9/10/11 `RESOLVED`;
-  `../../state.md` marca o Marco K `done`; `gaps.md` §G-4 atualizado. (Sem
+  J6 atualizada; [open-issues.md](../../issues/open-issues.md) marca ISSUE-9/10/11 `RESOLVED`;
+  [state.md](../../state.md) marca o Marco K `done`; [gaps.md](../codegen/gaps.md) §G-4 atualizado. (Sem
   `go test ./...` local no fechamento — CI roda a suíte nas PRs, CLAUDE.md.)
 
 ---

@@ -1,7 +1,7 @@
 # M4.1: shrinking do contra-exemplo de `property` muda `tests_wallet.go.golden`/`gentest_test.go`, ambos fora de `target_files`
 - SPEC: correcoes-issues-6-8-12
 - TASK: M4.1
-- DESCRIPTION: `tasks/M4.1.md` restringe `target_files` a
+- DESCRIPTION: [M4.1.md](../specs/correcoes-issues-6-8-12/tasks/M4.1.md) restringe `target_files` a
   `codegen/gentest_property.go` e `codegen/gentest_property_test.go`.
   Implementar REQ-58 (shrinking determinístico do contra-exemplo de
   `property`, §22.5) como a task descreve — Step 1 (encolher a sequência por
@@ -54,7 +54,7 @@
   lista.
 
   Não implementei nada — nem parcialmente — para não deixar o `TestEmitTestsWalletGolden`
-  quebrado sem chance de correção dentro do escopo desta task. `tasks/M4.1.md`
+  quebrado sem chance de correção dentro do escopo desta task. [M4.1.md](../specs/correcoes-issues-6-8-12/tasks/M4.1.md)
   precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
   `codegen/gentest_test.go` em `target_files` (para reconciliar as
   asserções `strings.Contains` daquele teste com o novo formato de

@@ -2,9 +2,9 @@
 - SPEC: domainscript-spec-v7 (revisão da especificação)
 - TASK: correcoes-issues-6-8-12/TASK-M3.1 (REQ-57.1/57.4)
 - DESCRIPTION: `result = call PaymentRequest(...)` aparece em dois lugares da
-  spec — `19-transactions-sagas.md` §19.2 (o exemplo canônico de Saga) e
-  `09-notifications-adapters.md` §9.2 — e `mock PaymentRequest returns
-  PaymentResult(status: PaymentStatus.Declined)` aparece em `24-testing.md`
+  spec — [19-transactions-sagas](../steerings/domainscript-spec-v7/19-transactions-sagas.md) §19.2 (o exemplo canônico de Saga) e
+  [09-notifications-adapters](../steerings/domainscript-spec-v7/09-notifications-adapters.md) §9.2 — e `mock PaymentRequest returns
+  PaymentResult(status: PaymentStatus.Declined)` aparece em [24-testing.md](../steerings/domainscript-spec-v7/24-testing.md)
   §24.3. Em nenhum dos dois casos a spec declara o **tipo** do valor
   atribuído/mockado:
   - `Notification` (§9.1) só declara campos de ENTRADA (ex.: `Notification
@@ -15,13 +15,13 @@
     simétrico para mapear a resposta HTTP de volta a um tipo DomainScript.
   - `Adapter` Nível 2 — FFI vinculado (§9.3) referencia `function
     "ProcessPayment"` como STRING solta, sem a assinatura `-> Tipo` que o
-    `Foreign` genérico (`10-ffi.md` §10.2) tem (`pure function
+    `Foreign` genérico ([10-ffi.md](../steerings/domainscript-spec-v7/10-ffi.md) §10.2) tem (`pure function
     ComputeMerkleRoot(items List<bytes>) -> bytes`).
   - `PaymentResult`, o tipo usado no `mock ... returns PaymentResult(...)` do
     exemplo canônico de Test de Saga, não é declarado em NENHUM lugar da
     spec — `grep -rn "PaymentResult" ../steerings/domainscript-spec-v7/`
     só encontra as duas linhas do próprio exemplo (§19.2 e §24.3).
-  - `24-testing.md` §24.7 lista "Mock com retorno de tipo errado → Erro" como
+  - [24-testing.md](../steerings/domainscript-spec-v7/24-testing.md) §24.7 lista "Mock com retorno de tipo errado → Erro" como
     garantia semântica, o que pressupõe um tipo contra o qual checar — mas
     esse tipo nunca é declarado em lugar nenhum da gramática.
 
@@ -55,7 +55,7 @@
   Sem essa definição, `TASK-M3.2` ("Implementar `result = call
   Adapter(...)`") e `TASK-M3.3` ("`mock ... returns X` injeta X como retorno
   do stub") da spec `correcoes-issues-6-8-12` (REQ-57.2/57.3) ficam
-  canceladas nesta revisão — ver `../specs/correcoes-issues-6-8-12/design.md`
+  canceladas nesta revisão — ver [design.md](../specs/correcoes-issues-6-8-12/design.md)
   §4.5/§7.2 para o registro completo da decisão de delimitar em vez de
   adivinhar o contrato.
 - SOLVED: FALSE

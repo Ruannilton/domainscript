@@ -3,7 +3,7 @@
 > Documento 1 de 3 de um **novo** ciclo spec-driven (`requirements` → `design` →
 > `tasks`), continuação direta do ciclo `../codegen/` (REQ-14..32,
 > Marcos E–H, completo). Nasce dos gaps **G-1**, **G-2** e **G-8** de
-> `../codegen/gaps.md`: as cláusulas SQL-like de Query e o Smart
+> [gaps.md](../codegen/gaps.md): as cláusulas SQL-like de Query e o Smart
 > Partial Loading (§20 do spec) — as únicas lacunas em que **exemplos do próprio
 > spec v6 não geram código hoje**.
 >
@@ -314,6 +314,6 @@ O ciclo está completo quando:
    o dialeto de teste `$1` passando a MESMA suíte do dialeto sqlite.
 4. `go build ./...` / `go test ./...` do compilador verdes; wallet e shop sem
    regressão (NFR-19).
-5. `gaps.md` do ciclo de codegen atualizado: G-1, G-2 e G-8 marcados como
+5. [gaps.md](../codegen/gaps.md) do ciclo de codegen atualizado: G-1, G-2 e G-8 marcados como
    fechados por este ciclo (com ponteiro para cá); G-7 atualizado no item
    "§22.4 canônico".

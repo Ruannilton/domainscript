@@ -118,7 +118,7 @@
     e seguir para as Fases L2/L3** (independentes de L1) em vez de perseguir
     o fechamento completo de `pizzeria` agora. L1.3d/L1.3e/L1.3f ficam
     **BLOQUEADAS**, sem tentativa adicional neste ciclo — ver
-    `../state.md` para o registro completo da decisão.
+    [state.md](../state.md) para o registro completo da decisão.
   - **Conclusão:** o `pizzeria` está bloqueado por PELO MENOS CINCO defeitos
     independentes (F5/G3 + os quatro acima), nenhum deles dentro do escopo de
     REQ-52 (Wire unificado) — REQ-52.7 pede exatamente isto: registrar como

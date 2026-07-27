@@ -28,13 +28,13 @@
   agora `blocked` — não iniciar até M2.3 ser desbloqueada de novo)
 - M4.2 — Staging na memory UoW: `rolledback` prova reversão real (§22.2)
 - M5.1 — Cobertura §22.7 por ramo de `Error` em `sema`
-- M5.2 — Delimitações e reclassificações em `gaps.md` e nas issues
+- M5.2 — Delimitações e reclassificações em [gaps.md](../codegen/gaps.md) e nas issues
 - M5.3 — Fechamento do Marco M: revisão de DoD
 
 ## BLOCKED TASKS:
 
 - M1.1 — Seam de enumeração de streams no runtime (StreamLister). Bloqueada
-  DE NOVO: a rota decidida em `design.md` §5.1/§7.2 (thread de
+  DE NOVO: a rota decidida em [design.md](design.md) §5.1/§7.2 (thread de
   `aggregateType` via `ctx`, carimbado uma vez antes de `uow.Run`) partia da
   premissa de que uma única `Tx.Run()` nunca grava eventos de mais de um
   `aggregateType` — verificado por leitura e **refutado**
@@ -43,16 +43,16 @@
   Aggregates no mesmo `Database` pode despachar `Handle` de tipos diferentes
   no mesmo `Run`). Issue nova (a original já está `SOLVED`):
   [m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype](../../issues/m1-1-tx-run-pode-gravar-mais-de-um-aggregatetype.md).
-  `design.md` §5.1/§7.2 precisa decidir de novo antes de reabrir.
+  [design.md](design.md) §5.1/§7.2 precisa decidir de novo antes de reabrir.
 - M2.3 — Implementar o caminho de `emit` escolhido em M2.2 (rota (i)
-  Dispatcher publish-only, `design.md` §4.4). Bloqueada: o mecanismo
+  Dispatcher publish-only, [design.md](design.md) §4.4). Bloqueada: o mecanismo
   normativo nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
   (`codegen/decl_policy.go`) como quem atribui `sagaDispatcher = d`, e não
   decide o caso de um módulo só-Saga (sem Policy/UseCase, sem `func Wire`
   nenhum para estender) — nenhum dos arquivos necessários
   (`codegen/decl_policy.go`, `codegen/codegen.go`) está em `target_files`.
   [m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files](../../issues/m2-3-mecanismo-de-emit-em-passo-de-saga-exige-arquivos-fora-de-target-files.md).
-  `design.md` §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
+  [design.md](design.md) §4.4 precisa decidir de novo (caso só-Saga) e `target_files`
   desta task precisa ganhar os arquivos necessários antes de reabrir.
 - M4.1 — Shrinking determinístico do contra-exemplo de `property` (§22.5).
   Bloqueada: qualquer implementação fiel de REQ-58 muda o texto Go estático
@@ -66,7 +66,7 @@
   fora da lista nem rodar `go test`/`UPDATE_GOLDEN=1` para regenerar o
   golden. Issue:
   [m4-1-shrinking-de-property-muda-golden-fora-de-target-files](../../issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md).
-  `tasks/M4.1.md` precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
+  [M4.1.md](tasks/M4.1.md) precisa ganhar `codegen/testdata/tests_wallet.go.golden` e
   `codegen/gentest_test.go` em `target_files` (ou uma decisão de design que
   isole a mudança) antes de reabrir.
 
@@ -74,7 +74,7 @@
 
 - M3.2 (`Implementar 'result = call Adapter(...)' (§18.2)`) e M3.3 (`mock ...
   returns X injeta X como retorno do stub`) — canceladas por M3.1
-  (`design.md` §4.5/§7.2, REQ-57.4). M3.1 verificou as três opções de
+  ([design.md](design.md) §4.5/§7.2, REQ-57.4). M3.1 verificou as três opções de
   contrato de resposta de `Adapter`/`Notification`: (a) "resposta tipada pela
   própria `Notification`" foi **refutada** por leitura (nenhuma declaração
   hoje carrega a forma de uma resposta); (b) `Adapter X returns <Tipo>`
