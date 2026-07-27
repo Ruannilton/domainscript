@@ -92,8 +92,11 @@ depois.
 
 ## Escopo: estritamente o que a task especifica
 
-- Toque **apenas** os arquivos de `target_files`. Precisar de um arquivo fora
-  dessa lista é empecilho (ver abaixo), não licença para ampliar.
+- `target_files` é uma lista de **referência**, não uma cerca: ela indica onde
+  a implementação provavelmente acontece, mas tocar um arquivo fora dela não é,
+  por si só, empecilho — não gere issue só por isso. O que importa é a seção
+  acima: se o que a task exige diverge do spec da linguagem ou o spec não
+  sustenta, aí sim é empecilho, esteja o arquivo em `target_files` ou não.
 - Execute os **Passos de Implementação** da task, nada além. Sem refactor
   oportunista, sem renomear o que estava ali, sem consertar bug vizinho, sem
   "já que estou aqui".
@@ -115,10 +118,9 @@ antes de commitar, o que você pode e deve rodar: `go build ./...`,
 ## Empecilho: registre issue, bloqueie a task, pare
 
 Empecilho é qualquer coisa que impeça entregar a task **como especificada**:
-dependência que não existe, arquivo fora de `target_files` que seria
-inevitável, ambiguidade que muda o resultado, conflito com um invariante do
-`design.md`, **divergência do spec da linguagem** (seção acima) — e, muito em
-especial, **premissa errada**: a task afirma que o código faz X e a leitura
+dependência que não existe, ambiguidade que muda o resultado, conflito com um
+invariante do `design.md`, **divergência do spec da linguagem** (seção acima)
+— e, muito em especial, **premissa errada**: a task afirma que o código faz X e a leitura
 mostra que faz Y. Este repositório já perdeu ciclos assim (ver L1.3d e L2.1 em
 `.claude/specs/correcoes-issues-6-7-8/tasks.md`); o comportamento certo é
 parar, não improvisar um contorno.
