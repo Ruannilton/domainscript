@@ -1,6 +1,6 @@
 # UseCase e Policy no mesmo módulo não geram (colisão de Wire) (ex-ISSUE-7)
-- SPEC: codegen
-- TASK: descoberto em `testdata/projects/pizzeria` (não estava no `gaps.md`)
+- SPEC: [codegen](../specs/codegen/requirements.md)
+- TASK: descoberto em [`testdata/projects/pizzeria`](../../testdata/projects/pizzeria) (não estava no [`gaps.md`](../specs/codegen/gaps.md))
 - DESCRIPTION: Um módulo que combina **`UseCase` E `Policy` no mesmo módulo**
   ainda não gera — `dsc gen` falha com "UseCase e Policy no mesmo módulo ainda
   não têm wiring combinado suportado (cada um gera seu próprio Wire —
@@ -15,8 +15,10 @@
   unificar o wiring: um único `Wire(...)` por módulo que registre tanto os
   UseCases (dispatcher/UoW) quanto as Policies (assinaturas de evento).
 
-  EM ANDAMENTO (spec criada): `.claude/specs/correcoes-issues-6-7-8/`
-  (Marco L, REQ-52 / §design 2). Achado da análise de raiz: **o próprio
+  EM ANDAMENTO (spec encerrada e sucedida): a spec `correcoes-issues-6-7-8`
+  (Marco L, REQ-52 / §design 2 — arquivos removidos ao fechar, ver
+  [`correcoes-issues-6-8-12/requirements.md`](../specs/correcoes-issues-6-8-12/requirements.md)
+  para o ciclo sucessor) resolveu isto. Achado da análise de raiz: **o próprio
   código já resolve esta colisão em outros lugares** — `StartWorkers`,
   `WireQueryCache`, `WireOutboxStore`/`StartOutboxRelay` usam nome próprio
   em vez de um 2º `Wire`. Fix recomendado: um `Wire` unificado por módulo
@@ -27,7 +29,8 @@
 
   A task L1.1 já fechou a colisão de `Wire` em si (o escopo direto desta
   issue). **Porém não marcar esta issue como totalmente resolvida** enquanto
-  a issue sobre o pizzeria bloqueado por múltiplos defeitos de codegen (o
+  [a issue sobre o pizzeria bloqueado por múltiplos defeitos de
+  codegen](pizzeria-bloqueado-por-multiplos-defeitos-de-codegen.md) (o
   bloqueio real e maior de gerar o pizzeria de ponta a ponta, achado em
-  L1.2) permanecer aberta — ver `.claude/specs/correcoes-issues-6-7-8/`.
+  L1.2) permanecer aberta.
 - SOLVED: FALSE

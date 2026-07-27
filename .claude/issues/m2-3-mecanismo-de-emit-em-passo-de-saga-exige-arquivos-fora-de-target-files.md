@@ -1,12 +1,15 @@
 # M2.3: mecanismo normativo de `emit` em passo de Saga (design.md §4.4, rota i) exige `decl_policy.go`/`codegen.go`, fora de `target_files`
-- SPEC: correcoes-issues-6-8-12
-- TASK: M2.3
-- DESCRIPTION: `tasks/M2.3.md` manda implementar a rota **(i) Dispatcher
-  publish-only**, decidida por M2.2 (já `completed`) e registrada como
-  **normativa** em `design.md` §4.4 — a própria task diz "Não escolha uma
-  rota diferente." `target_files` de M2.3 é só
-  `codegen/decl_saga.go`, `codegen/lower/stmt.go`,
-  `codegen/decl_saga_test.go`.
+- SPEC: [correcoes-issues-6-8-12](../specs/correcoes-issues-6-8-12/requirements.md)
+- TASK: [M2.3](../specs/correcoes-issues-6-8-12/tasks/M2.3.md)
+- DESCRIPTION: [`tasks/M2.3.md`](../specs/correcoes-issues-6-8-12/tasks/M2.3.md)
+  manda implementar a rota **(i) Dispatcher publish-only**, decidida por
+  [M2.2](../specs/correcoes-issues-6-8-12/tasks/M2.2.md) (já `completed`) e
+  registrada como **normativa** em
+  [`design.md`](../specs/correcoes-issues-6-8-12/design.md) §4.4 — a própria
+  task diz "Não escolha uma rota diferente." `target_files` de M2.3 é só
+  [`codegen/decl_saga.go`](../../codegen/decl_saga.go),
+  [`codegen/lower/stmt.go`](../../codegen/lower/stmt.go),
+  [`codegen/decl_saga_test.go`](../../codegen/decl_saga_test.go).
 
   O texto de `design.md` §4.4 (parágrafo "Decisão (M2.2): rota (i)") descreve
   o mecanismo com uma citação de função explícita, não uma analogia solta:
@@ -18,9 +21,10 @@
   > pelo menos um passo de alguma Saga do módulo usar `emit`..."
 
   `emitPolicyWireFunc` e `emitCombinedWireFunc` são funções de
-  `codegen/decl_policy.go`, não de `codegen/decl_saga.go`. Implementar a rota
-  **como o design normativo a descreve** exige, portanto, editar
-  `decl_policy.go` para que essas duas funções também emitam
+  [`codegen/decl_policy.go`](../../codegen/decl_policy.go), não de
+  `codegen/decl_saga.go`. Implementar a rota **como o design normativo a
+  descreve** exige, portanto, editar `decl_policy.go` para que essas duas
+  funções também emitam
   `sagaDispatcher = d` — arquivo fora de `target_files` de M2.3.
 
   Isso por si só já seria "arquivo fora de `target_files` que seria
@@ -30,7 +34,8 @@
   `PolicyDecl`/`UseCaseDecl` (e portanto já ganha um `func Wire` de
   `decl_policy.go`/`decl_usecase.go`). A fixture real usada pelos próprios
   testes de Saga hoje (`sagaFixtureSrc`/`sagaEmitFixtureSrc`,
-  `decl_saga_test.go`) é um módulo **só-Saga** — `codegen.go` documenta
+  `decl_saga_test.go`) é um módulo **só-Saga** —
+  [`codegen.go`](../../codegen/codegen.go) documenta
   explicitamente, na função `generateModuleFiles` (comentário acima da
   chamada de `EmitSagas`): "Sagas não somam a `moduleMarks`/`wireTargets`
   (`generateCmdMainFile`): ao contrário de UseCase/Policy/Worker, uma Saga
@@ -43,7 +48,8 @@
   Cobrir esse caso (dar a um módulo só-Saga um ponto de wiring de
   `runtime.Dispatcher` real, chamado por `cmd/<service>/main.go`) segue o
   precedente já existente no próprio código para exatamente este problema —
-  `WireMetrics` (`codegen/decl_metric.go`), o mesmo "Dispatcher externo
+  `WireMetrics` ([`codegen/decl_metric.go`](../../codegen/decl_metric.go)),
+  o mesmo "Dispatcher externo
   precisa alcançar um construto sem Wire próprio" que uma Metric `on Evento`
   resolveu com um nome de função PRÓPRIO (nunca "Wire", evitando a colisão
   de símbolo que ISSUE-7 fechou) e um novo campo em `moduleMarks`

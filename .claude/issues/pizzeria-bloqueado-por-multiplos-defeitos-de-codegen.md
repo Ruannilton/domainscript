@@ -1,8 +1,11 @@
 # Pizzeria bloqueado por múltiplos defeitos independentes de codegen (ex-ISSUE-12)
-- SPEC: correcoes-issues-6-7-8
-- TASK: L1.2 (achado ao provar `testdata/projects/pizzeria` fim-a-fim, REQ-52.4/52.7)
+- SPEC: correcoes-issues-6-7-8 (encerrada e sucedida por
+  [`correcoes-issues-6-8-12`](../specs/correcoes-issues-6-8-12/requirements.md);
+  arquivos da 6-7-8 removidos ao fechar)
+- TASK: L1.2 (achado ao provar [`testdata/projects/pizzeria`](../../testdata/projects/pizzeria) fim-a-fim, REQ-52.4/52.7)
 - DESCRIPTION: L1.2 pedia para confirmar que o `Kitchen` do `pizzeria` não
-  esbarra na guarda F5/G3 pré-existente (`codegen/codegen.go:1143`:
+  esbarra na guarda F5/G3 pré-existente ([`codegen/codegen.go`](../../codegen/codegen.go), na
+  linha 1143 à época do registro — pode ter se movido desde então:
   `"codegen: cmd/%s/main.go: módulo com Policy/Query cacheada E módulo
   produtor de canal de saída no mesmo service ainda não têm wiring combinado
   suportado (F5/G3)"`, disparada quando `producerChannel != nil &&
@@ -132,5 +135,8 @@
     o item 4, e a guarda F5/G3 em si). Este registro é INDEPENDENTE da issue
     sobre a colisão de Wire (que L1.1 já fechou); não considerar aquela issue
     totalmente resolvida enquanto esta (o bloqueio real e maior de
-    `pizzeria`) permanecer aberta — ver `.claude/specs/correcoes-issues-6-7-8/`.
+    `pizzeria`) permanecer aberta — ver
+    [`correcoes-issues-6-8-12/requirements.md`](../specs/correcoes-issues-6-8-12/requirements.md)
+    (spec sucessora; `correcoes-issues-6-7-8` foi encerrada e seus arquivos
+    removidos).
 - SOLVED: FALSE
