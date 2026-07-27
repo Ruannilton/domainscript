@@ -1,20 +1,20 @@
 ---
 name: issue-generator
-description: Use this when you need to register/cadastrar a new issue found during work in this repo — creates one markdown file per issue under .claude/issues/ from assets/issue-template.md and indexes it in .claude/issues/open-issues.md.
+description: Use this when you need to register/cadastrar a new issue found during work in this repo — creates one markdown file per issue under docs/sdd/issues/ from assets/issue-template.md and indexes it in docs/sdd/issues/open-issues.md.
 ---
 
 # Issue Generator
 
-Registers a new issue as its own file under `.claude/issues/`. This replaces
+Registers a new issue as its own file under `docs/sdd/issues/`. This replaces
 the old mechanism of sequential `ISSUE-<n>` blocks appended to
 `.claude/issues.md` (now retired — all issues were migrated to
-`.claude/issues/`). Use this skill whenever the user asks to open/register/
+`docs/sdd/issues/`). Use this skill whenever the user asks to open/register/
 cadastrar an issue found during work in this repo, including errors found
 mid-task that are out of scope for the spec/task being worked on (see root
 `CLAUDE.md`).
 
 **Spec-revision issues.** The language spec
-(`.claude/steerings/domainscript-spec-v7/`) is this repo's source of truth,
+(`docs/sdd/steerings/domainscript-spec-v7/`) is this repo's source of truth,
 so a second kind of issue is first-class here: the spec itself cannot be
 implemented as written — it is silent, ambiguous or self-contradictory on the
 point at hand — or something is implemented that the spec never describes.
@@ -47,7 +47,7 @@ are the reference format.
    `[a-z0-9]` with `-`, collapse repeated `-`, trim leading/trailing `-`.
    (e.g. "Erro de validação no parser" → `erro-de-validacao-no-parser`).
 
-3. **Check for duplicates.** Read `.claude/issues/open-issues.md`; if an
+3. **Check for duplicates.** Read `docs/sdd/issues/open-issues.md`; if an
    entry already points at `<issue-name>.md` or an equivalent title, tell the
    user instead of creating a duplicate.
 
@@ -60,9 +60,9 @@ are the reference format.
    - `SOLVED: []` → leave empty; this only gets filled in later, when the
      issue is actually resolved (e.g. `SOLVED: [commit <hash>]`)
 
-5. **Write the file** to `.claude/issues/<issue-name>.md`.
+5. **Write the file** to `docs/sdd/issues/<issue-name>.md`.
 
-6. **Append to the index.** Add one line to `.claude/issues/open-issues.md`:
+6. **Append to the index.** Add one line to `docs/sdd/issues/open-issues.md`:
    `- [<Title>](<issue-name>.md)`. If the file is empty/missing a header,
    start it with `# Open Issues` first.
 

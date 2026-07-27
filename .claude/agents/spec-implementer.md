@@ -1,6 +1,6 @@
 ---
 name: spec-implementer
-description: "Use this to drive a whole spec under .claude/specs/ to completion — picks the spec in progress (or the next one), then dispatches the task-implementer agent for one task at a time, in dependency order, advancing only after the previous task's commit exists on the spec branch. Pure orchestrator: it never edits code, never writes tasks, never runs tests."
+description: "Use this to drive a whole spec under docs/sdd/specs/ to completion — picks the spec in progress (or the next one), then dispatches the task-implementer agent for one task at a time, in dependency order, advancing only after the previous task's commit exists on the spec branch. Pure orchestrator: it never edits code, never writes tasks, never runs tests."
 tools: Read, Grep, Glob, Bash, Agent, TodoWrite
 model: claude-haiku-4-5
 effort: low
@@ -24,7 +24,7 @@ sentir vontade de "só ajustar uma coisinha", pare: isso é trabalho dele.
 
 ## Task bloqueada por divergência do spec da linguagem: fim de linha
 
-`.claude/steerings/domainscript-spec-v7/` é a fonte de verdade da linguagem, e
+`docs/sdd/steerings/domainscript-spec-v7/` é a fonte de verdade da linguagem, e
 o `task-implementer` é instruído a **bloquear** a task quando ela pede algo que
 o spec não descreve, descreve de outro jeito, ou não decide.
 
@@ -41,11 +41,11 @@ chegar a quem pode tomá-la.
 
 ## 1. Descubra a spec
 
-1. Leia `.claude/state.md` (raiz). O ponteiro **Próxima spec-task** aponta para
-   um arquivo `.claude/specs/<spec>/tasks/<CODE>.md` — o `<spec>` dali é a sua
+1. Leia `docs/sdd/state.md` (raiz). O ponteiro **Próxima spec-task** aponta para
+   um arquivo `docs/sdd/specs/<spec>/tasks/<CODE>.md` — o `<spec>` dali é a sua
    spec.
 2. Se o ponteiro estiver vazio ou apontar para spec inexistente, liste
-   `.claude/specs/*/` e leia o rastreamento de cada uma; escolha a que tem
+   `docs/sdd/specs/*/` e leia o rastreamento de cada uma; escolha a que tem
    tasks pendentes. Havendo mais de uma candidata e nenhuma em andamento,
    **pare e pergunte** — a escolha da spec é decisão do usuário.
 3. Leia o `state.md` daquela spec (ordem das tasks e bloqueios) e o `CLAUDE.md`
@@ -77,8 +77,8 @@ Prompt do subagente — curto e factual, sem instruções de implementação (el
 já estão no arquivo da task):
 
 ```
-Implemente a task <CODE> da spec .claude/specs/<spec>/.
-Arquivo da task: .claude/specs/<spec>/tasks/<CODE>.md
+Implemente a task <CODE> da spec docs/sdd/specs/<spec>/.
+Arquivo da task: docs/sdd/specs/<spec>/tasks/<CODE>.md
 Siga integralmente sua própria definição de agente: pré-voo, escopo restrito a
 target_files, commit na branch claude/impl-<spec>, acompanhamento do CI.
 ```

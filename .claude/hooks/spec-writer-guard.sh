@@ -4,7 +4,7 @@
 # Torna estruturais as duas proibições do agente, em vez de deixá-las só no
 # prompt: ele **não altera código** e **não executa testes**. Regras:
 #
-#   Write/Edit/NotebookEdit  -> só sob .claude/ (specs, state.md, issues)
+#   Write/Edit/NotebookEdit  -> só sob .claude/ ou docs/sdd/ (specs, state.md, issues)
 #   Bash                     -> nega toolchain Go/make/dsc e mutadores de
 #                               arquivo in-place; git de leitura/commit/push
 #                               segue liberado
@@ -63,9 +63,10 @@ check_path() {
 
   case "$norm" in
   */.claude/*) return 0 ;;
+  */docs/sdd/*) return 0 ;;
   esac
 
-  deny "spec-writer nao altera codigo: Write/Edit so e permitido sob .claude/ (specs, state.md, issues). Caminho recusado: ${path:-<vazio>}. Um defeito de codigo encontrado durante a pesquisa vira issue (skill issue-generator), nao um patch."
+  deny "spec-writer nao altera codigo: Write/Edit so e permitido sob .claude/ ou docs/sdd/ (specs, state.md, issues). Caminho recusado: ${path:-<vazio>}. Um defeito de codigo encontrado durante a pesquisa vira issue (skill issue-generator), nao um patch."
 }
 
 check_cmd() {

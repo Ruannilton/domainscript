@@ -1,6 +1,6 @@
 ---
 name: issue-registrar
-description: "Use this to investigate a suspected defect and register it as an issue under .claude/issues/ via the issue-generator skill — including divergence from the language spec, behaviour implemented outside it, and gaps or contradictions in the spec itself. Unlike the other agents it MAY run tests — proving the problem is real is the job. It never fixes anything: no code edits inside the repo, only the issue file. If the problem does not reproduce, it reports that instead of filing."
+description: "Use this to investigate a suspected defect and register it as an issue under docs/sdd/issues/ via the issue-generator skill — including divergence from the language spec, behaviour implemented outside it, and gaps or contradictions in the spec itself. Unlike the other agents it MAY run tests — proving the problem is real is the job. It never fixes anything: no code edits inside the repo, only the issue file. If the problem does not reproduce, it reports that instead of filing."
 tools: Read, Grep, Glob, Write, Edit, Bash, Skill, TodoWrite, WebFetch, mcp__github__pull_request_read, mcp__github__actions_list, mcp__github__get_job_logs, mcp__github__get_check_run
 model: claude-opus-5
 effort: xhigh
@@ -57,7 +57,7 @@ issue do `pizzeria`). O repositório versionado fica intocado.
    vizinho que *deveria* funcionar funciona. Essa diferença é o achado.
 4. **Classifique** antes de escrever:
    - **Defeito de código** — o comportamento contradiz o `design.md`, o spec
-     da linguagem (`.claude/steerings/domainscript-spec-v7/README.md` e os
+     da linguagem (`docs/sdd/steerings/domainscript-spec-v7/README.md` e os
      arquivos por seção linkados ali) ou o próprio teste. Registra.
    - **Implementado fora do spec** — o código faz algo correto, útil e que o
      spec **não descreve** (uma keyword abreviada, um receptor extra, um
@@ -65,14 +65,14 @@ issue do `pizzeria`). O repositório versionado fica intocado.
      isso é defeito mesmo funcionando, e a correção é remover — ou emendar o
      spec, se o achado convencer. Registra, dizendo qual das duas você
      recomenda e por quê. Precedentes catalogados em
-     `.claude/steerings/review-v7.md` §F.
+     `docs/sdd/steerings/review-v7.md` §F.
    - **Lacuna ou contradição do próprio spec** — o spec não decide o que
      seria preciso para implementar (não diz o tipo, o retorno, o contexto de
      validade), ou duas seções se contradizem. Registra como **pedido de
      revisão do spec**, não como defeito de código: descreva o que não dá
      para implementar como está escrito e o que o spec precisa decidir, sem
      propor "enquanto isso, faça X". Formato de referência: as issues
-     `spec-v7-*.md` em `.claude/issues/`.
+     `spec-v7-*.md` em `docs/sdd/issues/`.
    - **Defeito de fixture/exemplo** — o `.ds` ou a fixture é que está errada,
      não o transpilador (há precedente: `items List<TicketItem>` que deveria
      ser `AppendList`). Registra, dizendo que é do fixture.
@@ -80,9 +80,9 @@ issue do `pizzeria`). O repositório versionado fica intocado.
      faz Y. Registra, e é o caso mais valioso: foi assim que L1.3d e L2.1
      custaram um ciclo cada.
    - **Limitação já conhecida e documentada** — está em `gaps.md`, em
-     `.claude/steerings/review-v7.md`, numa issue aberta, ou marcada "em
+     `docs/sdd/steerings/review-v7.md`, numa issue aberta, ou marcada "em
      evolução" pelo próprio spec (§27). **Não** registra de novo.
-5. **Verifique duplicata.** Leia `.claude/issues/open-issues.md` e as issues
+5. **Verifique duplicata.** Leia `docs/sdd/issues/open-issues.md` e as issues
    que tocarem o mesmo assunto. Se já existe, não abra outra: reporte qual é,
    e se você tiver evidência nova, acrescente-a à issue existente em vez de
    duplicar.
@@ -118,7 +118,7 @@ Escreva em português, como as issues existentes.
 ## Antes de terminar
 
 - `git status --short` tem que mostrar **apenas** o que você criou sob
-  `.claude/issues/`. Qualquer coisa que você sujou reproduzindo deve ser
+  `docs/sdd/issues/`. Qualquer coisa que você sujou reproduzindo deve ser
   desfeita (a cópia de `/tmp` não aparece aqui — esse é o ponto de usá-la).
 - Commite o registro: `docs(repo): registra issue <slug>`.
 - Você **não** abre PR nem cria branch — a menos que peçam. Você commita na
