@@ -4,21 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "3053b0e147557198",
+        "id": "3fff8a4ba5c837a3",
         "type": "tabs",
         "children": [
           {
-            "id": "3109528d2720de35",
+            "id": "b9b3a0a9ac7a4c2c",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "docs/sdd/issues/visibility-de-view-nao-implementado.md",
+                "file": "docs/sdd/issues/cache-ratelimit-backend-exige-string-contra-spec.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "visibility-de-view-nao-implementado"
+              "title": "cache-ratelimit-backend-exige-string-contra-spec"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "README.md",
+                "file": "docs/sdd/issues/cache-ratelimit-backend-exige-string-contra-spec.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Links inversos para README"
+              "title": "Links inversos para cache-ratelimit-backend-exige-string-contra-spec"
             }
           },
           {
@@ -169,8 +169,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -183,20 +182,44 @@
       "bases:Criar nova base": false
     }
   },
-  "active": "3109528d2720de35",
+  "active": "b9b3a0a9ac7a4c2c",
   "lastOpenFiles": [
-    "docs/sdd/state.md",
-    "docs/sdd/README.md",
-    "docs/sdd/specs/correcoes-issues-6-8-12/tasks/M2.2.md",
-    "docs/sdd/steerings/domainscript-spec-v7/README.md",
-    "docs/sdd/issues/m1-4-produtor-duravel-query-le-store-em-memoria-nao-o-banco-real.md",
-    "docs/sdd/issues/m1-1-aggregatetype-nao-chega-a-eventstore-append.md",
-    "docs/sdd/specs/correcoes-issues-6-8-12/tasks/M1.3.md",
+    "docs/sdd/state.md.tmp.22656.3d680c9f43d5",
+    "docs/sdd/issues/spec-v7-sum-e-focus-da-secao-22-contra-catalogo-de-metodos.md",
+    "docs/sdd/issues/spec-v7-sum-e-focus-da-secao-22-contra-catalogo-de-metodos.md.tmp.22656.dd80361db05b",
+    "docs/sdd/steerings/domainscript-spec-v7/25-compilation-rules.md",
+    "docs/sdd/steerings/domainscript-spec-v7/24-testing.md",
+    "docs/sdd/steerings/domainscript-spec-v7/23-error-classification.md",
+    "docs/sdd/steerings/domainscript-spec-v7/19-transactions-sagas.md",
+    "docs/sdd/steerings/domainscript-spec-v7/09-notifications-adapters.md",
+    "docs/sdd/steerings/domainscript-spec-v7/06-read-side.md",
+    "docs/sdd/steerings/domainscript-spec-v7/05-application-layer.md",
+    "docs/sdd/steerings/domainscript-spec-v7/04-domain-core.md",
+    "docs/sdd/steerings/domainscript-spec-v7/03-control-flow.md",
+    "docs/sdd/steerings/domainscript-spec-v7/02-type-system.md",
+    "docs/sdd/steerings/domainscript-spec-v7/01-overview.md",
+    "docs/sdd/issues/sedaXdM1P",
+    "docs/sdd/issues/sed5ZHZ6v",
+    "docs/sdd/issues/sedBPdpZX",
+    "docs/sdd/issues/sedRs0Tm2",
+    "docs/sdd/issues/sedCbGTSg",
+    "docs/sdd/steerings/domainscript-spec-v7/09-notifications-adapters.md.tmp.22656.83fbc99ba662",
+    "docs/sdd/steerings/domainscript-spec-v7/09-notifications-adapters.md.tmp.22656.61b6bb109d2c",
+    "docs/sdd/steerings/domainscript-spec-v7/12-topology.md.tmp.22656.86216c4f62d0",
+    "docs/sdd/steerings/domainscript-spec-v7/12-topology.md.tmp.22656.0b82e6d6d09d",
+    "docs/examples/domainscript-spec-v6_2.md",
+    "docs/sdd/steerings/domainscript-spec-v6_2.md",
+    "docs/sdd/issues/usecase-access-block-nao-parseado.md",
+    "docs/notes/Issues/spec-v7-retrywithbackoff-sem-definicao.md",
+    "docs/sdd/issues/spec-v7-retrywithbackoff-sem-definicao.md",
+    "docs/sdd/steerings/review-v7.md",
+    "docs/sdd/issues/spec-v7-ref-keyword-vs-identificador.md",
     "docs/sdd/issues/open-issues.md",
-    "Sem título.canvas",
-    "testdata/projects/README.md",
-    "README.md",
-    "Sem título",
-    "CLAUDE.md"
+    "docs/sdd/steerings/domainscript-spec-v7/README.md",
+    "docs/notes/Features/Application Event.md",
+    "docs/notes/Features/Tipos Referencia.md",
+    "docs/notes/Issues/spec-v7-metadata-implicito-de-event.md",
+    "docs/notes/Issues/spec-v7-identidade-implicita-do-aggregate.md",
+    "Sem título.canvas"
   ]
 }
