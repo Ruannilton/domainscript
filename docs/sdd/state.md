@@ -17,11 +17,13 @@ via `codegen/gentest_test.go:TestEmitTestsWalletGolden` — nenhum dos dois
 arquivos está em `target_files` de M4.1. Issue:
 [m4-1-shrinking-de-property-muda-golden-fora-de-target-files](issues/m4-1-shrinking-de-property-muda-golden-fora-de-target-files.md).
 M3.1 concluída: decidiu delimitar o contrato de resposta de
-`Adapter`/`Notification` ([design.md](specs/correcoes-issues-6-8-12/design.md) §4.5/§7.2) — nenhuma declaração hoje
-carrega a forma de uma resposta de `call`, e a única rota que resolveria
-(`Adapter X returns <Tipo>`) exige gramática nova fora do escopo deste ciclo.
-M3.2/M3.3 CANCELADAS em consequência (REQ-57.4); issue de revisão de spec:
-[spec-v7-adapter-sem-contrato-de-resposta](issues/spec-v7-adapter-sem-contrato-de-resposta.md). M2.3 (`emit` em
+`Adapter`/`Notification` ([design.md](specs/correcoes-issues-6-8-12/design.md) §4.5/§7.2) — M3.2/M3.3 CANCELADAS
+em consequência (REQ-57.4). **A premissa dessa decisão caiu em 2026-07-31**: a
+spec passou a definir o contrato em
+[§9.4](steerings/domainscript-spec-v7/09-notifications-adapters.md)
+(`Notification X { … } -> VO`, bloco `response { }` no Adapter Nível 1,
+assinatura no Nível 2), então M3.2/M3.3 são reabríveis contra texto normativo —
+decisão de priorização, não mais de linguagem. M2.3 (`emit` em
 passo de Saga) segue `blocked`: o mecanismo normativo de [design.md](specs/correcoes-issues-6-8-12/design.md) §4.4
 (rota i) nomeia `emitPolicyWireFunc`/`emitCombinedWireFunc`
 ([decl_policy.go](../../codegen/decl_policy.go)) como quem atribui `sagaDispatcher = d`, e não

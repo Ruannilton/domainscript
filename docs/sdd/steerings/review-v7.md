@@ -168,34 +168,6 @@ O efeito prático é o pior dos dois mundos: escrever a forma da spec não dá
 erro de sintaxe, dá um `nome não declarado: "notify"` seguido de um statement
 que *funciona* — a mensagem não aponta para a causa.
 
-### A-6. `ref` é keyword reservada e colide com o exemplo da §2.5
-
-O exemplo de `File`/`FileRef` da §2.5 usa `ref` como nome de parâmetro e de
-variável local:
-
-```ds
-Handle AttachDocument(ref FileRef) { emit DocumentAttached(self.id, ref) }
-...
-ref = store cmd.document
-```
-
-```
-14:27: error: esperava um identificador, encontrei ref
-15:40: error: esperava uma expressão, encontrei ref
-30:9:  error: esperava uma expressão, encontrei ref
-```
-
-`ref` é `token.REF` (hard keyword, para `personId ref Person` da §5.1).
-Renomeando a variável, **todo o resto da §2.5 funciona**: `store`,
-`load File(...)`, `signed_url(..., expires:)`, `delete file(...)`, roteamento
-de campo `FileRef` para uma `FileStorage` do bloco `storage` — tudo
-implementado ([builtins.go](../../../codegen/lower/builtins.go),
-[decl_aggregate_storage.go](../../../codegen/decl_aggregate_storage.go)). A divergência é só a colisão do nome.
-
-**Correção:** esta é uma **contradição interna da spec**, não uma escolha da
-implementação — a §5.1 exige `ref` como keyword e a §2.5 o usa como
-identificador; nenhuma gramática satisfaz as duas. Precisa de decisão na spec
-antes de qualquer código: [spec-v7-ref-keyword-vs-identificador](../issues/spec-v7-ref-keyword-vs-identificador.md).
 
 ### A-7. Catálogo de métodos embutidos: 3 entradas (§2.2, §2.4)
 
@@ -557,13 +529,12 @@ podem ser implementados como estão porque o texto não diz o suficiente ou se
 contradiz. Cada um já tem issue registrada pedindo a revisão — nenhuma linha de
 código antes de a spec ser atualizada:
 
-| Bloqueio | Issue |
-|---|---|
-| `ref` é keyword na §5.1 e identificador na §2.5 (A-6) | [spec-v7-ref-keyword-vs-identificador](../issues/spec-v7-ref-keyword-vs-identificador.md) |
-| `self.id` usado sem declaração nem tipo (A-2) | [spec-v7-identidade-implicita-do-aggregate](../issues/spec-v7-identidade-implicita-do-aggregate.md) |
-| Metadata implícito de Event sem tipos nem isenção da Regra de Ouro (A-3) | [spec-v7-metadata-implicito-de-event](../issues/spec-v7-metadata-implicito-de-event.md) |
-| Sem catálogo normativo de métodos por tipo; `length` property vs. method (A-7) | [spec-v7-catalogo-de-metodos-embutidos](../issues/spec-v7-catalogo-de-metodos-embutidos.md) |
-| `RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum | [spec-v7-retrywithbackoff-sem-definicao](../issues/spec-v7-retrywithbackoff-sem-definicao.md) |
+| Bloqueio                                                                       | Issue                                                                                               |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `self.id` usado sem declaração nem tipo (A-2)                                  | [spec-v7-identidade-implicita-do-aggregate](../issues/spec-v7-identidade-implicita-do-aggregate.md) |
+| Metadata implícito de Event sem tipos nem isenção da Regra de Ouro (A-3)       | [spec-v7-metadata-implicito-de-event](../issues/spec-v7-metadata-implicito-de-event.md)             |
+| Sem catálogo normativo de métodos por tipo; `length` property vs. method (A-7) | [spec-v7-catalogo-de-metodos-embutidos](../issues/spec-v7-catalogo-de-metodos-embutidos.md)         |
+| `RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum                | [spec-v7-retrywithbackoff-sem-definicao](../issues/spec-v7-retrywithbackoff-sem-definicao.md)       |
 
 **Depois, o que já é implementável contra o texto atual**, em ordem:
 

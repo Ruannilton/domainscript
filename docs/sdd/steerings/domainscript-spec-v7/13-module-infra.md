@@ -11,7 +11,7 @@ Module Carteira {
         connection: env("DB_URL")
         supportsXA: true
         manages: [Wallet]
-        retry: { attempts: 3, backoff: "exponential" }
+        retry: { attempts: 3, backoff: "exponential" }   // chaves e defaults: §19.3.1
         circuitBreaker: { threshold: 5, cooldown: 30s }
         tenancy: { strategy: row_level, column: "tenant_id" }
     }

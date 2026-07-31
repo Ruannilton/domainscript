@@ -33,4 +33,4 @@
   Observação de escopo: `event.timestamp` é o único dos quatro que algum
   exemplo da spec exercita; os outros três aparecem só na frase de abertura da
   §4.2. Definir os quatro de uma vez evita uma segunda rodada.
-- SOLVED: FALSE
+- SOLVED: TRUE

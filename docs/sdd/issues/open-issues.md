@@ -7,12 +7,23 @@ que ela não pode ser implementada como está — texto incompleto ou contradit�
 **Nenhuma linha de código antes de a spec ser revisada**; a auditoria completa
 que as originou está em [review-v7.md](../steerings/review-v7.md).
 
-- [`ref` é keyword na §5.1 e identificador na §2.5 (contradição interna)](spec-v7-ref-keyword-vs-identificador.md)
-- [Identidade implícita do Aggregate (`self.id`) sem declaração nem tipo](spec-v7-identidade-implicita-do-aggregate.md)
-- [Metadata implícito de Event sem tipos nem isenção da Regra de Ouro](spec-v7-metadata-implicito-de-event.md)
-- [Sem catálogo normativo de métodos embutidos por tipo](spec-v7-catalogo-de-metodos-embutidos.md)
-- [`RetryWithBackoff(3)` usado na §19.2 e definido em lugar nenhum](spec-v7-retrywithbackoff-sem-definicao.md)
-- [Nenhuma seção define o contrato de resposta de `Adapter`/`Notification` (`result = call ...`, `mock ... returns X`)](spec-v7-adapter-sem-contrato-de-resposta.md)
+- [`sum()` sobre ValueObject e `focus()` sem semântica de ausência (§22 contra o novo §2.8)](spec-v7-sum-e-focus-da-secao-22-contra-catalogo-de-metodos.md)
+
+### Resolvidas na revisão de 2026-07-31
+
+Cinco issues de revisão de spec foram fechadas escrevendo as seções que
+faltavam. A spec v7 agora define `ref T`, identidade de Aggregate, envelope de
+evento, `ApplicationEvent`, catálogo de métodos, contrato de resposta de
+Adapter e o vocabulário de retry/compensação de Saga — **nada disso está
+implementado**, e o delta correspondente é trabalho de conformidade a planejar.
+
+| Issue | Onde a spec passou a responder |
+|-------|-------------------------------|
+| [Identidade implícita do Aggregate (`self.id`)](spec-v7-identidade-implicita-do-aggregate.md) | [§2.7](../steerings/domainscript-spec-v7/02-type-system.md) + [§4.3.1](../steerings/domainscript-spec-v7/04-domain-core.md) |
+| [Metadata implícito de Event](spec-v7-metadata-implicito-de-event.md) | [§4.2.3](../steerings/domainscript-spec-v7/04-domain-core.md) + [§5.3](../steerings/domainscript-spec-v7/05-application-layer.md) |
+| [Catálogo normativo de métodos embutidos](spec-v7-catalogo-de-metodos-embutidos.md) | [§2.8](../steerings/domainscript-spec-v7/02-type-system.md) |
+| [`RetryWithBackoff(3)` sem definição](spec-v7-retrywithbackoff-sem-definicao.md) | [§19.3](../steerings/domainscript-spec-v7/19-transactions-sagas.md) |
+| [Contrato de resposta de `Adapter`/`Notification`](spec-v7-adapter-sem-contrato-de-resposta.md) | [§9.4](../steerings/domainscript-spec-v7/09-notifications-adapters.md) |
 
 ## Implementação
 

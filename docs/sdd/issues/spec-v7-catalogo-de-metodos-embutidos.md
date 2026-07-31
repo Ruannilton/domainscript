@@ -53,4 +53,4 @@
   o `check` recusar) e `goname.builtinArity`/`GoBuiltinCall` (para o `gen`
   emitir) — mas nenhum dos dois pode ser escrito antes de a spec dizer o que
   existe.
-- SOLVED: FALSE
+- SOLVED: TRUE

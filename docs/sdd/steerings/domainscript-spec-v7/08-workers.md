@@ -7,7 +7,7 @@ Worker ProcessExpiredReservations {
     schedule every 1min
     concurrency: 1
     timeout 5min
-    onError { retry: { attempts: 3, backoff: "exponential" } }
+    onError { retry: { attempts: 3, backoff: "exponential" } }   // chaves e defaults: §19.3.1
     execute {
         expiredOrders = list Order o
             where o.status == OrderStatus.Pending and o.expiresAt < now()

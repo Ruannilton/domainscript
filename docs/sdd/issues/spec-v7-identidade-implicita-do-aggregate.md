@@ -31,4 +31,4 @@
   para declará-lo. Vale notar a interação com a Regra de Ouro
   ([§2.1](../steerings/domainscript-spec-v7/02-type-system.md)): se a
   identidade implícita for `string`, é um primitivo no Write Side.
-- SOLVED: FALSE
+- SOLVED: TRUE

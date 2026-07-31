@@ -132,8 +132,12 @@ Fixture activeWallet {
 |----------|-----------|
 | Evento/comando inexistente no teste | ❌ Erro |
 | Shape de evento esperado errada | ❌ Erro |
-| Mock com retorno de tipo errado | ❌ Erro |
+| Mock com retorno de tipo errado, ou em Notification sem contrato de resposta ([§9.4](09-notifications-adapters.md)) | ❌ Erro |
+| Cenário atinge `call X` sem `mock X returns …` | ❌ Falha em execução |
 | `fail step X` inexistente | ❌ Erro |
+| Metadata de evento fornecido em `given`/`when`, ou asserido em `then` ([§4.2.3](04-domain-core.md)) | ❌ Erro |
+| `emitted <ApplicationEvent>` qualificado por instância ([§5.3.7](05-application-layer.md)) | ❌ Erro |
+| `compensate` de `Error` inexistente ([§19.3](19-transactions-sagas.md)) | ❌ Erro |
 | Handle sem cenário de erro testado | ⚠️ Warning |
 
 Cobertura por Handle e ramo (não por linha): o compilador reporta exatamente quais regras e caminhos de erro não têm teste.

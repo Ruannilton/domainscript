@@ -63,4 +63,4 @@
   [design.md](../specs/correcoes-issues-6-8-12/design.md)
   §4.5/§7.2 para o registro completo da decisão de delimitar em vez de
   adivinhar o contrato.
-- SOLVED: FALSE
+- SOLVED: TRUE

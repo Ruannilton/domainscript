@@ -37,7 +37,7 @@ View WalletSummaryVW From Wallet {
 `load`, `list`, `count`, `join` (mesmo banco), `in`, `distinct`. `join` cross-database → erro, exige `Projection`. Bloco `cache` opcional (seção 16).
 
 ```ds
-Query GetStatement(walletId WalletId, page int) -> List<StatementEntryVW> {
+Query GetStatement(walletId ref Wallet, page integer) -> List<StatementEntryVW> {
     return load Wallet(walletId)
            .entries
            orderBy date descending

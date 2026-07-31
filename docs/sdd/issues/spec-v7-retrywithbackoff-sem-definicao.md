@@ -31,4 +31,4 @@
   **está** implementado
   ([decl_saga.go](../../../codegen/decl_saga.go)), então a lacuna é
   só do `onInfraError`.
-- SOLVED: FALSE
+- SOLVED: TRUE

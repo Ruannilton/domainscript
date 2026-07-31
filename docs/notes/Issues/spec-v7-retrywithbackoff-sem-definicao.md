@@ -1,0 +1,3 @@
+ISSUE: [[docs/sdd/issues/spec-v7-retrywithbackoff-sem-definicao|spec-v7-retrywithbackoff-sem-definicao]]
+Solution:
+O RetryWithBackoff muito provavelmente era apenas uma indicação para tentar 3 vez após um erro de infra, pensando bem é melhor tem um atributo na saga (ex maxAttempts) para indicar quantas vezes a saga deve executar antes de iniciar o processo de down, e um comando para triggar o down automaticamente.

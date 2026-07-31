@@ -3,7 +3,7 @@
 Política na Query, backend no `mod.ds`.
 
 ```ds
-Query GetWalletSummary(walletId WalletId) -> WalletSummaryVW {
+Query GetWalletSummary(walletId ref Wallet) -> WalletSummaryVW {
     cache {
         ttl: 5min
         invalidateOn: [DepositPerformed, WithdrawalPerformed]  // override; default é inferido

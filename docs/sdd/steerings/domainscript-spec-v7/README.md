@@ -12,14 +12,14 @@ for its topic.
 | # | File | Covers |
 |---|------|--------|
 | 1 | [01-overview.md](01-overview.md) | Filosofia, paradigma, escopo, estrutura de arquivos `.ds` |
-| 2 | [02-type-system.md](02-type-system.md) | ValueObjects, Enums, coleções, `File`/`FileStream`/`FileRef`, funções built-in |
+| 2 | [02-type-system.md](02-type-system.md) | ValueObjects, Enums, coleções, `File`/`FileStream`/`FileRef`, funções built-in, tipos `ref`, catálogo de métodos |
 | 3 | [03-control-flow.md](03-control-flow.md) | `ensure`, `match`, `for`, `log` |
 | 4 | [04-domain-core.md](04-domain-core.md) | Write Side: Errors, Events, versionamento/redação de eventos, Aggregates |
-| 5 | [05-application-layer.md](05-application-layer.md) | Commands, UseCases |
+| 5 | [05-application-layer.md](05-application-layer.md) | Commands, UseCases, Application Events (evento de escopo de requisição) |
 | 6 | [06-read-side.md](06-read-side.md) | Views, field-level security, Queries, Projections cross-database |
 | 7 | [07-policies.md](07-policies.md) | Policies (reações a eventos) |
 | 8 | [08-workers.md](08-workers.md) | Workers (background processing) |
-| 9 | [09-notifications-adapters.md](09-notifications-adapters.md) | Notifications, `notify`/`call`, Adapters (HTTP declarativo / FFI) |
+| 9 | [09-notifications-adapters.md](09-notifications-adapters.md) | Notifications, `notify`/`call`, contrato de resposta, Adapters (HTTP declarativo / FFI) |
 | 10 | [10-ffi.md](10-ffi.md) | `Foreign` (FFI geral): pure/impure, marshalling, onde pode ser chamado, testing |
 | 11 | [11-interface.md](11-interface.md) | `interface.ds`: HTTP/gRPC, tenant resolution, versionamento, rate limit |
 | 12 | [12-topology.md](12-topology.md) | `topology.ds`: services, canais entre módulos |
