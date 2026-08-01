@@ -25,3 +25,5 @@
   Impacto: cada uma é um ciclo de spec próprio (as mais caras do inventário,
   atravessam o pipeline inteiro); abrir só quando houver demanda real.
 - SOLVED: FALSE
+**nota do desenvolvedor:** não daremos suporte a  exposição TCP/UPD direta no momento
+**nota do desenvolvedor:** tenancy deve ser definido por agregado, considerando que o agregado define toda a borda de persistencia

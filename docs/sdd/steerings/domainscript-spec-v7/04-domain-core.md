@@ -377,13 +377,12 @@ Não há convenção de nome nem de posição: o marcador é a única forma. Um 
 
 Opaco não significa inútil: `CallerId` tem exatamente um operador, a **comparação de vínculo** contra uma identidade de Aggregate.
 
-| Operação | Resultado |
-|----------|-----------|
-| `caller.id == <expr : ref T>` / `!=`, em `access` ou `visibility` | `boolean` — comparação de vínculo |
-| `caller.id` em qualquer outro contexto (`Handle`, `Apply`, UseCase, Query, Policy, Saga, `log`) | ❌ Erro de compilação |
-| `caller.id` comparado a primitivo, ValueObject, Enum ou outro `CallerId` | ❌ Erro de compilação |
-| `caller.id` atribuído a variável, passado a `load`, guardado em `state` ou emitido em evento | ❌ Erro de compilação |
-| `<` `>` `<=` `>=` sobre `CallerId` | ❌ Erro de compilação |
+| Operação                                                                                        | Resultado                         |
+| ----------------------------------------------------------------------------------------------- | --------------------------------- |
+| `caller.id == <expr : ref T>` / `!=`, em `access` ou `visibility`                               | `boolean` — comparação de vínculo |
+| `caller.id` comparado a primitivo, ValueObject, Enum ou outro `CallerId`                        | ❌ Erro de compilação              |
+| `caller.id` atribuído a variável, passado a `load`, guardado em `state` ou emitido em evento    | ❌ Erro de compilação              |
+| `<` `>` `<=` `>=` sobre `CallerId`                                                              | ❌ Erro de compilação              |
 
 `caller.id == x`, com `x : ref T`, avalia `true` sse o caller está autenticado e o subject autenticado, desserializado para a representação declarada em `identity` de `T`, é igual a `x`. Caller anônimo ou subject malformado para essa representação → `false`, **fail-closed** — nunca erro de execução, nunca 422; a negativa é negativa de `access`, que já é closed-by-default. `T` é lido do próprio operando: `caller.id == self.id` num `Aggregate Wallet` compara contra a representação de `Wallet`; `caller.id == self.owner`, com `owner ref Person`, compara contra a de `Person`. A nominalidade de `ref` fica intacta — não se introduz nenhuma comparação `ref T` × `ref U`, nem `ref T` × primitivo: `CallerId` é um tipo distinto com um operador próprio.
 
