@@ -5,16 +5,12 @@
 
 // --- ValueObjects ---
 
-ValueObject TicketId(string) {
-    Valid { value.length() > 0 }
-}
-
-// A cópia local (anticorrupção) do OrderId de Sales — nunca o mesmo tipo,
-// nunca resolvido por nome cross-module (só PublicEvent atravessa módulos,
-// REQ-7.4). Ver policy.ds para a conversão na fronteira.
-ValueObject ExternalOrderRef(string) {
-    Valid { value.length() > 0 }
-}
+// NOTA: o antigo ValueObject ExternalOrderRef foi removido. A §2.7 permite
+// "ref T" cross-módulo explicitamente ("carrega identidade, não estado"), e um
+// VO-wrapper de id de agregado alheio é justamente o que "ref Order" existe
+// para substituir. A camada anticorrupção continua nos ValueObjects de
+// DOMÍNIO traduzidos na fronteira (TicketItemName, TicketItemQuantity) — o que
+// deixa de ser traduzido é só a identidade, que é nominal por construção.
 
 ValueObject TicketItemName(string) {
     Valid { value.length() > 0 }
@@ -57,15 +53,15 @@ Error TicketNotInPreparation { message "Só um ticket em preparo pode ser finali
 
 // --- Events ---
 
-Event TicketCreated    { id TicketId, orderRef ExternalOrderRef }
-Event TicketItemAdded  { id TicketId, item TicketItem }
-Event TicketClaimed    { id TicketId, cookId CookId }
+Event TicketCreated    { id ref KitchenTicket, orderRef ref Order }
+Event TicketItemAdded  { id ref KitchenTicket, item TicketItem }
+Event TicketClaimed    { id ref KitchenTicket, cookId CookId }
 
 // PublicEvent: o contrato compartilhado com o módulo Sales (§4.2). Ao
 // finalizar o ticket, a Kitchen avisa o resto do sistema; a Policy de Sales
 // (sales/policy.ds) reage liberando o pedido, sem a Kitchen jamais chamar
 // Sales diretamente.
-PublicEvent TicketFinished { orderRef ExternalOrderRef }
+PublicEvent TicketFinished { orderRef ref Order }
 
 // --- Aggregate ---
 // KitchenTicket: StateStored (§4.1 do desafio) — só o estado atual da
@@ -74,8 +70,9 @@ Aggregate KitchenTicket {
     strategy StateStored
 
     state {
-        id        TicketId
-        orderRef  ExternalOrderRef
+        // sem campo id: implícito (§4.3.1). orderRef é a identidade do pedido
+        // no OUTRO bounded context, não a deste agregado — segue sendo campo.
+        orderRef  ref Order
         items     AppendList<TicketItem>
         status    TicketStatus
         cookId    CookId
@@ -93,12 +90,11 @@ Aggregate KitchenTicket {
         Finish  requires caller.authenticated
     }
 
-    Handle Create(orderRef ExternalOrderRef) {
+    Handle Create(orderRef ref Order) {
         emit TicketCreated(self.id, orderRef)
     }
 
     Apply TicketCreated {
-        state.id = event.id
         state.orderRef = event.orderRef
         state.status = TicketStatus.Pending
         state.createdAt = CreatedAt(now())

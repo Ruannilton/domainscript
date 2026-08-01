@@ -1,14 +1,10 @@
 // read.ds — o Read Side (§6) do módulo Kitchen: o painel do KDS.
 
-View KitchenTicketVW {
-    id        TicketId
-    orderRef  ExternalOrderRef
-    items     List<TicketItem>
-    status    TicketStatus
-    cookId    CookId
-    createdAt CreatedAt
-    startedAt StartedAt
-}
+// "From KitchenTicket": projeta a raiz do agregado, campos auto-mapeados com
+// flattening (§6.1). A Query faz "list KitchenTicket t ... as
+// KitchenTicketVW", ou seja, projeta a raiz — não um elemento de coleção, que
+// é o caso em que a forma de shape explícito se justificaria.
+View KitchenTicketVW From KitchenTicket
 
 // Painel KDS (§4.3 do desafio): tickets Pending ou Preparing, FIFO — o mais
 // antigo primeiro.

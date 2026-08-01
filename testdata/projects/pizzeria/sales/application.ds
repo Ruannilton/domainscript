@@ -5,7 +5,7 @@
 // Requisição de item — a forma de ENTRADA de PlaceOrder, antes do snapshot.
 // Não confundir com OrderLineSnapshot (domain.ds): esta não carrega preço.
 ValueObject OrderItemRequest {
-    menuItemId MenuItemId
+    menuItemId ref MenuItem
     quantity   Quantity
 
     Valid { ok }
@@ -73,8 +73,10 @@ UseCase PlaceOrder handles Place {
 
             // Snapshot: copia nome/preço do cardápio AGORA — o pedido nunca
             // mais volta a consultar o MenuItem para saber quanto cobrou.
+            // menuItem.id, não menuItem.state.id: a identidade se lê DA
+            // INSTÂNCIA carregada (§4.3.1); "state.id" é erro de compilação.
             lines.add(OrderLineSnapshot(
-                menuItemId: menuItem.state.id,
+                menuItemId: menuItem.id,
                 name: menuItem.state.name,
                 quantity: req.quantity,
                 unitPrice: menuItem.state.price

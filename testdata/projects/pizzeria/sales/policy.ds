@@ -5,12 +5,12 @@
 // ou dar join num Aggregate da Kitchen (§6.1 do desafio: isolamento estrito
 // via evento público, coreografia).
 //
-// event.orderRef (ExternalOrderRef, tipo da Kitchen) é traduzido de volta
-// para OrderId (tipo de Sales) via "OrderId(event.orderRef)": construir um
-// ValueObject wrapper a partir de OUTRO ValueObject (não do primitivo cru)
-// é a mesma conversão de fronteira usada no sentido inverso pela Kitchen
-// (ver kitchen/policy.ds) — o par formam a camada anticorrupção entre os
-// dois bounded contexts.
+// event.orderRef é "ref Order" — a identidade viaja tipada de ponta a ponta,
+// sem VO-wrapper de tradução: a §2.7 permite "ref T" cross-módulo porque
+// identidade não é estado. Logo "load Order(event.orderRef)" type-checa
+// diretamente, que é a forma canônica da §2.7 ("load T(x) exige x : ref T").
+// A camada anticorrupção entre os bounded contexts segue existindo nos
+// ValueObjects de domínio traduzidos na fronteira (ver kitchen/policy.ds).
 //
 // Idempotência sob AtLeastOnce: uma entrega duplicada do MESMO TicketFinished
 // chegaria com o pedido já em Ready/Delivered — chamar CompletePreparation()
@@ -20,7 +20,7 @@
 Policy MarkOrderReadyOnTicketFinished on TicketFinished {
     delivery AtLeastOnce
     execute {
-        order = load Order(OrderId(event.orderRef))
+        order = load Order(event.orderRef)
         ensure order exists else Nop
         ensure order.state.status == OrderStatus.Preparing else Nop
         order.CompletePreparation()

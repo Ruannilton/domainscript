@@ -3,9 +3,6 @@
 
 // --- ValueObjects: blocos atômicos, imutáveis e auto-validáveis (§2.2) ---
 
-ValueObject MenuItemId(string) {
-    Valid { value.length() > 0 }
-}
 
 ValueObject MenuItemName(string) {
     Valid { value.length() > 0 }
@@ -24,11 +21,8 @@ ValueObject Availability(boolean) {
     Valid { ok }
 }
 
-ValueObject OrderId(string) {
-    Valid { value.length() > 0 }
-}
 
-// Identidade do cliente autenticado que fez o pedido (distinta do OrderId):
+// Identidade do cliente autenticado que fez o pedido (distinta do ref Order):
 // é contra ESTE campo que a visibility de OrderVW compara caller.id (read.ds)
 // — o id do pedido nunca é o id de quem o fez.
 ValueObject CustomerId(string) {
@@ -91,7 +85,7 @@ Enum OrderStatus : string {
 // PlaceOrder). Alterações futuras de preço/nome no cardápio não corrompem o
 // histórico financeiro já registrado no Order.
 ValueObject OrderLineSnapshot {
-    menuItemId MenuItemId
+    menuItemId ref MenuItem
     name       MenuItemName
     quantity   Quantity
     unitPrice  Money
@@ -113,17 +107,17 @@ Error InvalidOrderTransition {
 // --- Events: o que de fato aconteceu, no passado (§4.2) ---
 
 Event MenuItemCreated {
-    id       MenuItemId
+    id       ref MenuItem
     name     MenuItemName
     ingredients List<IngredientName>
     price    Money
     prepTime PrepTimeMinutes
 }
 
-Event MenuItemPriceUpdated { id MenuItemId, price Money }
+Event MenuItemPriceUpdated { id ref MenuItem, price Money }
 
 Event OrderPlaced {
-    id         OrderId
+    id         ref Order
     customerId CustomerId
     customer   CustomerName
     phone      CustomerPhone
@@ -132,9 +126,9 @@ Event OrderPlaced {
     total      Money
 }
 
-Event OrderPreparingStarted { id OrderId }
-Event OrderReady            { id OrderId }
-Event OrderDelivered        { id OrderId }
+Event OrderPreparingStarted { id ref Order }
+Event OrderReady            { id ref Order }
+Event OrderDelivered        { id ref Order }
 
 // PublicEvent: o contrato compartilhado com o módulo Kitchen (§4.2, REQ-7.4).
 // É público porque a Policy CreateTicketOnOrderPaid (módulo Kitchen, outro
@@ -142,7 +136,7 @@ Event OrderDelivered        { id OrderId }
 // snapshot inteiro (não um "load" cruzado, ver README "Isolamento") para que
 // a cozinha monte o ticket sem tocar o banco de Sales.
 PublicEvent OrderPaid {
-    id    OrderId
+    id    ref Order
     lines List<OrderLineSnapshot>
     total Money
 }
@@ -155,7 +149,8 @@ Aggregate MenuItem {
     strategy StateStored
 
     state {
-        id           MenuItemId
+        // sem campo id: ele é implícito (§4.3.1) — declará-lo aqui colidiria
+        // com o membro implícito self.id e é erro de compilação.
         name         MenuItemName
         ingredients  List<IngredientName>
         price        Money
@@ -174,7 +169,8 @@ Aggregate MenuItem {
     }
 
     Apply MenuItemCreated {
-        state.id = event.id
+        // nenhum Apply semeia a identidade (§4.3.1): quando ele roda, self.id
+        // já existe. "state.id = ..." é erro de compilação — state não tem id.
         state.name = event.name
         state.ingredients = event.ingredients
         state.price = event.price
@@ -203,7 +199,8 @@ Aggregate Order {
     strategy EventSourced
 
     state {
-        id         OrderId
+        // sem campo id: implícito (§4.3.1). customerId NÃO é a identidade do
+        // pedido — é o principal autenticado que o fez, e continua VO.
         customerId CustomerId
         customer   CustomerName
         phone      CustomerPhone
@@ -229,7 +226,6 @@ Aggregate Order {
     }
 
     Apply OrderPlaced {
-        state.id = event.id
         state.customerId = event.customerId
         state.customer = event.customer
         state.phone = event.phone

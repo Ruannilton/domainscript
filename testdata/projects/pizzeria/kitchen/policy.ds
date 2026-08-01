@@ -4,11 +4,22 @@
 // Pending — nunca lendo o banco de Sales, só o payload do PublicEvent
 // (isolamento estrito, §6.1 do desafio).
 //
-// event.id/event.lines[i].name/... são tipos de Sales (OrderId,
-// MenuItemName, Quantity); cada um é traduzido para o tipo PRÓPRIO da
-// Kitchen construindo o ValueObject local a partir do valor estrangeiro
-// (TicketId(event.id), TicketItemName(line.name), ...) — a mesma camada
-// anticorrupção usada no sentido inverso por sales/policy.ds.
+// event.id é "ref Order" e atravessa sem tradução: a §2.7 permite "ref T"
+// cross-módulo porque identidade não é estado. Os valores de DOMÍNIO, esses
+// sim, continuam traduzidos para o tipo próprio da Kitchen
+// (TicketItemName(line.name), TicketItemQuantity(line.quantity)) — é aí que
+// mora a camada anticorrupção, e é o mesmo padrão de sales/policy.ds.
+//
+// ⚠️ DIVERGÊNCIA ABERTA (decisão de modelagem pendente, ver README):
+// "load KitchenTicket(event.id)" passa um "ref Order" onde a §2.7 exige
+// "ref KitchenTicket" — são tipos distintos e isso é erro de compilação.
+// A forma atual deriva a identidade do ticket da identidade do pedido, que é
+// justamente o que torna a reentrega idempotente. Sob a §4.3.1 a identidade do
+// ticket é implícita e alocada pelo runtime, então essa derivação deixa de
+// existir e a busca "o ticket deste pedido" precisa de outro mecanismo
+// (Query por orderRef, ou chave de idempotência da Policy). A spec não define
+// qual — por isso a linha continua como está, sinalizada, em vez de ser
+// trocada por um palpite.
 //
 // Idempotência sob AtLeastOnce: uma entrega duplicada do MESMO OrderPaid não
 // pode recriar o ticket (voltaria o status para Pending e duplicaria os
@@ -17,9 +28,9 @@
 Policy CreateTicketOnOrderPaid on OrderPaid {
     delivery AtLeastOnce
     execute {
-        ticket = load KitchenTicket(TicketId(event.id))
+        ticket = load KitchenTicket(event.id)
         ensure not (ticket exists) else Nop
-        ticket.Create(ExternalOrderRef(event.id))
+        ticket.Create(event.id)
         for line in event.lines {
             ticket.AddItem(TicketItem(
                 name: TicketItemName(line.name),

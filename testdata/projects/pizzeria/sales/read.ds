@@ -1,12 +1,11 @@
 // read.ds — o Read Side (§6) do módulo Sales: Views e Queries.
 
-View MenuItemVW {
-    id          MenuItemId
-    name        MenuItemName
-    ingredients List<IngredientName>
-    price       Money
-    prepTime    PrepTimeMinutes
-}
+// "From MenuItem": a View projeta a raiz do agregado, então os campos são
+// auto-mapeados com flattening (§6.1) e NÃO se declaram. A forma de shape
+// explícito (o StatementEntryVW da §6.1) existe para projetar o que não é
+// raiz — tipicamente um elemento de coleção do state —, que não é o caso aqui:
+// a Query faz "list MenuItem m ... as MenuItemVW".
+View MenuItemVW From MenuItem
 
 // Alto tráfego (§3.4 do desafio): cache de 1h. A invalidação NÃO precisa de
 // "invalidateOn" explícito — o compilador infere o conjunto de eventos a
@@ -28,19 +27,18 @@ Query GetAvailableMenu() -> AppendList<MenuItemVW> {
 // pedido ou para staff (§3.4 do desafio) — bloco visibility (§6.2). Nota: a
 // enforcement de campo é um gap conhecido do back-end (ver README).
 //
-// Compara caller.id contra self.customerId (identidade de quem fez o
-// pedido), NUNCA contra self.id (identidade do próprio pedido) — os dois só
-// coincidem por acaso em domínios onde o agregado É o dono (ex. Account na
-// wallet); aqui Order e cliente são identidades distintas.
-View OrderVW {
-    id         OrderId
-    customerId CustomerId
-    customer   CustomerName
-    phone      CustomerPhone
-    orderType  OrderType
-    total      Money
-    status     OrderStatus
-
+// "From Order" é obrigatório aqui, não estilo: a §4.3.1 define que dentro de
+// "visibility" o "self" é a INSTÂNCIA PROJETADA, e uma View sem "From" não tem
+// instância a que se referir. Campos auto-mapeados (§6.1) — o corpo carrega só
+// o bloco visibility, exatamente como o exemplo da §6.2.
+//
+// ⚠️ DIVERGÊNCIA ABERTA (decisão de modelagem pendente, ver README):
+// "caller.id == self.customerId" compara CallerId com um ValueObject, e a
+// §4.3.1 só admite comparação de vínculo contra "ref T". Expressar "o dono do
+// pedido" de forma conforme exigiria um "Aggregate Customer" — que este
+// domínio não modela, porque o cliente é principal autenticado externo, não
+// agregado deste bounded context. Mantido como está, sinalizado.
+View OrderVW From Order {
     visibility {
         customer requires caller.id == self.customerId or caller.hasRole("staff")
         phone    requires caller.id == self.customerId or caller.hasRole("staff")
