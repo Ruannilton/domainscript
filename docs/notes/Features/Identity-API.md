@@ -98,32 +98,41 @@ dele, que existem, valem e autorizam — só não podem ser citados por nome num
 Mesma coisa para `claims { }`: declara as chaves que o código lê com
 `caller.hasClaim(Claim.storeUnit, v)`.
 
-### 2.2. `serviceAccounts` — o principal que não é gente
+### 2.2. O principal que não é gente
 
 Uma `Policy` que reage a um `PublicEvent` dispara `Handle`s protegidos por
 `access`. Quem é o `caller` ali? Hoje o fixture `pizzeria` responde com
 `caller.hasRole("system_sales")` e nunca diz quem atribui esse papel — é
 exatamente o buraco que [[Identity]] §1 descreve.
 
+**Decisão: o caller é o próprio módulo/serviço que disparou** ([[Identity]]
+§4.5). Todo módulo tem um principal, sem declaração nenhuma: ele existe porque
+o módulo existe. Daí a forma canônica de autorizar execução reativa não é papel
+inventado, é o nome do módulo:
+
+```ds
+AccessPolicy SalesSystem   { requires caller.isService(Sales) }
+AccessPolicy KitchenSystem { requires caller.isService(Kitchen) }
+```
+
+Isso apaga metade da necessidade de `system_*`: `system_sales`,
+`system_kitchen` e afins eram nome de convenção para algo que o compilador
+sabe sozinho — qual módulo está executando. Papel para isso é indireção sem
+ganho, e uma `string` a mais para digitar errado.
+
+Sobra o caso que **não** é módulo deste sistema: a máquina externa. O gateway
+de pagamento batendo em `/admin/orders/{id}/pay` não tem principal implícito,
+precisa de credencial e de papéis:
+
 ```ds
 serviceAccounts {
-    Sales    { roles: [system_sales] }
-    Kitchen  { roles: [system_kitchen] }
     Payments { roles: [system_payment], credentials: clientSecret }
 }
 ```
 
-Duas regras:
-
-- **Execução reativa** (`Policy`, `Worker`, saga) roda sob a conta de serviço
-  do módulo que a declara. Não há caller anônimo em reação: `caller.hasRole`
-  responde pelos papéis daquela conta.
-- **Chamada externa de máquina** (o gateway de pagamento batendo em
-  `/admin/orders/{id}/pay`) autentica por client credentials contra a conta
-  que declarou `credentials`.
-
-É o "service account" do Keycloak e o "app client" do Cognito, com o mesmo
-propósito: parar de tratar sistema como se fosse usuário sem credencial.
+É o "service account" do Keycloak e o "app client" do Cognito, agora restrito
+ao caso em que ele é de fato necessário: parar de tratar sistema externo como
+usuário sem credencial. Chamador interno não declara nada.
 
 ## 3. Superfície 2 — o modelo da lib padrão
 
@@ -220,36 +229,35 @@ caller.id                         // ref T
 caller.hasRole(Role.manager)      // boolean
 caller.hasClaim(Claim.storeUnit, "centro")
 caller.satisfies(OrderOwner)
+caller.isService(Sales)           // principal implícito de módulo — §2.2
 ```
 
-### 4.1. Onde `caller` é legível, e a extensão que o cadastro exige
+### 4.1. Onde `caller` é legível
 
-`access`, `visibility` e `AccessPolicy` — a regra de [[Identity]] §4. Só que
-gravar o dono de um recurso precisa de mais que isso: em
-`PlaceOrder`, alguém tem que colocar o principal dentro do `OrderPlaced`.
-
-Duas formas possíveis, e a proposta escolhe a primeira:
+`access`, `visibility`, `AccessPolicy` — e **o corpo do `UseCase`**
+([[Identity]] §4.5). Sem a última posição não haveria como gravar o dono de um
+recurso, e o principal teria que chegar pelo payload do Command:
 
 ```ds
-// (a) PROPOSTA — caller.id legível também no corpo de UseCase
 UseCase PlaceOrder handles Place {
     execute {
         order.Place(customerId: caller.id, …)     // ambiente, não payload
     }
 }
-
-// (b) alternativa — marcador no state, preenchido pelo runtime
-Aggregate Order {
-    state { customerId ref User owner }
-}
 ```
 
-(a) é menor e mantém o `Handle` puro — ele continua recebendo `customerId`
-como parâmetro, testável sem principal nenhum. E preserva o princípio 1 de
-[[Identity]] §2, porque o valor vem do contexto ambiente, **nunca** de um campo
-do Command: `cmd.customerId` continua sendo o erro que sempre foi. Isso é uma
-extensão ao contrato de [[Identity]] §4 e precisa de decisão explícita — ver
-§9, Q1.
+O `Handle` continua recebendo `customerId` por parâmetro e permanece testável
+sem principal nenhum — `caller` dentro de `Handle` segue proibido. E o
+princípio 1 de [[Identity]] §2 fica de pé: o valor vem do contexto ambiente,
+`cmd.customerId` continua sendo o erro que sempre foi.
+
+**Ler não é autorizar.** Com `caller` disponível no UseCase, nada impede
+escrever `ensure caller.hasRole(Role.manager) else Forbidden` no corpo — e aí
+a autorização vira invisível para o compilador, contra a Forma Canônica de
+[[Identity]] §2. A decisão de acesso pertence a `access`, `requires` e
+`AccessPolicy`, que são declarativos e inspecionáveis; o UseCase lê `caller`
+para *alimentar o domínio*, não para decidir permissão. Proponho aviso
+(⚠️ warning), não erro — ver §9, Q1.
 
 ## 5. Superfície 4 — `AccessPolicy`
 
@@ -366,14 +374,15 @@ fixa o principal sem subir provedor, que é o princípio 6 de [[Identity]] §2.
 
 Ainda no espírito de não codificar decisão que a spec não tomou:
 
-1. **Q1 — `caller.id` no corpo de UseCase (§4.1).** Sem isso não há como
-   gravar o dono de um recurso; com isso, `caller` deixa de ser legível
-   *apenas* em posição de autorização. A proposta é liberar em UseCase e
-   manter proibido dentro de `Handle`, preservando o agregado puro.
-2. **Q2 — `serviceAccounts` (§2.2).** Conceito novo, sem precedente na spec.
-   Sem ele, `access` de `Handle` disparado por `Policy` não tem semântica
-   definida — o fixture `pizzeria` já depende disso hoje e ninguém escreveu a
-   regra.
+1. **Q1 — autorização inline no UseCase (§4.1).** Decidido que `caller` é
+   legível ali; falta decidir o que fazer quando alguém usa isso para
+   *autorizar* em vez de alimentar o domínio. Proponho ⚠️ warning — erro seria
+   difícil de definir sem falso positivo, e silêncio deixa autorização fora do
+   alcance do compilador.
+2. **Q2 — `caller.isService(M)` (§2.2).** A decisão de que o caller reativo é
+   o módulo pede um membro novo no contrato de `caller`, que [[Identity]] §4
+   ainda não lista. Alternativa seria papel implícito por módulo, que traz de
+   volta a `string`.
 3. **Q3 — `requires` em rota (§5).** Estende [[11-interface]]; precisa decidir
    se convive com o `access` do agregado (as duas checagens rodam) ou se uma
    suprime a outra. A proposta é que rodem as duas, fail-closed.

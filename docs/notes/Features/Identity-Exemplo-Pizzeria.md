@@ -86,11 +86,12 @@ Topology {
 
                 // sementes: o que o código cita. O catálogo segue mutável por
                 // API — a rede de pizzarias pode criar "supervisor" sem recompilar.
-                roles { customer, manager, cook, system_sales, system_kitchen, system_payment }
+                // Sales e Kitchen não aparecem aqui: módulo tem principal
+                // implícito, e caller.isService(M) o alcança sem papel nenhum.
+                roles { customer, manager, cook, system_payment }
 
+                // só a máquina EXTERNA precisa de conta declarada
                 serviceAccounts {
-                    Sales    { roles: [system_sales] }
-                    Kitchen  { roles: [system_kitchen] }
                     Payments { roles: [system_payment], credentials: clientSecret }
                 }
 
@@ -129,13 +130,18 @@ AccessPolicy Cook          { requires caller.hasRole(Role.cook) }
 AccessPolicy Staff         { requires Manager or Cook }
 AccessPolicy KitchenAccess { requires Cook or Manager }
 
-AccessPolicy SalesSystem   { requires caller.hasRole(Role.system_sales) }
-AccessPolicy KitchenSystem { requires caller.hasRole(Role.system_kitchen) }
+// execução reativa: o caller é o módulo, não um papel inventado
+AccessPolicy SalesSystem   { requires caller.isService(Sales) }
+AccessPolicy KitchenSystem { requires caller.isService(Kitchen) }
+
+// máquina externa: essa sim precisa de credencial e papel
 AccessPolicy PaymentSystem { requires caller.hasRole(Role.system_payment) }
 ```
 
 Oito nomes de domínio no lugar de dezenove ocorrências de `string` espalhadas
-— e cada um testável isoladamente.
+— e cada um testável isoladamente. Dois dos cinco papéis de hoje
+(`system_sales`, `system_kitchen`) somem por completo: eram nome de convenção
+para o que o compilador já sabe.
 
 ## 5. `sales/` — o que muda
 
@@ -212,10 +218,12 @@ oferecia sem duplicar condição.
  }
 ```
 
-A linha que o [[Identity-API]] §4.1 (Q1) precisa liberar. Ela é o ponto do
-sistema inteiro em que o principal entra no domínio — e o motivo de
-`cmd.customerId` ter que **deixar de existir**: enquanto o dono vier do
-payload, qualquer cliente faz pedido em nome de outro.
+É o ponto do sistema inteiro em que o principal entra no domínio, e o motivo
+de `cmd.customerId` ter que **deixar de existir**: enquanto o dono vier do
+payload, qualquer cliente faz pedido em nome de outro. Ler `caller` no corpo do
+UseCase é permitido justamente para isto ([[Identity]] §4.5); dentro do
+`Handle`, não — `Place` continua recebendo `customerId` por parâmetro e
+testável sem principal.
 
 ### 5.4. `read.ds` — a divergência fecha
 
@@ -317,9 +325,10 @@ Interface da cozinha:
 ```
 
 `Create`/`AddItem` sob `SalesSystem` param de depender de convenção: a `Policy`
-`CreateTicketOnOrderPaid` roda sob a conta de serviço do módulo Sales
-([[Identity-API]] §2.2), que **tem** `system_sales`. Hoje esse papel não é
-atribuído por ninguém — o fixture funciona porque nada checa.
+`CreateTicketOnOrderPaid` roda sob o principal do módulo Sales, e
+`caller.isService(Sales)` responde verdadeiro porque foi Sales quem disparou
+([[Identity]] §4.5) — nada a atribuir, nada a configurar. Hoje o papel
+`system_sales` não é dado a ninguém; o fixture só funciona porque nada checa.
 
 ## 7. Os quatro fluxos, ponta a ponta
 
@@ -416,11 +425,11 @@ possível sem subir provedor.
 
 **Cobra**, e nenhuma delas é detalhe de sintaxe:
 
-| | Questão | Onde |
+| | Questão | Situação |
 |---|---|---|
-| Q1 | `caller.id` legível em UseCase, senão não há como gravar o dono | [[Identity-API]] §4.1 |
-| Q2 | `serviceAccounts`, senão `Policy` → `Handle` com `access` não tem caller | [[Identity-API]] §2.2 |
-| Q3 | `requires` em rota convivendo com `access` do agregado | [[Identity-API]] §5 |
-| Q6 | Papel default do `register` — quem nasce `customer`? Configurável no bloco (`register { public, defaultRoles: [customer] }`) é a proposta natural, e não está escrita em lugar nenhum | este documento |
+| Q1 | `caller` legível em UseCase | ✅ Decidido ([[Identity]] §4.5); resta o tratamento de autorização inline ([[Identity-API]] §9) |
+| Q2 | Caller de execução reativa | ✅ Decidido: é o módulo que disparou; falta fixar `caller.isService(M)` no contrato de `caller` |
+| Q3 | `requires` em rota convivendo com `access` do agregado | Em aberto — [[Identity-API]] §5 |
+| Q6 | Papel default do `register` — quem nasce `customer`? `register { public, defaultRoles: [customer] }` é a proposta natural, e não está escrita em lugar nenhum | Em aberto — este documento |
 
-Q1 e Q2 são bloqueantes: sem elas o exemplo não fecha nem no papel.
+As duas bloqueantes caíram; Q3 e Q6 não impedem o exemplo de fechar no papel.
