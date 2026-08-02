@@ -6,6 +6,10 @@
 > cada decisão, e a §9 passou a listar o que elas fecham e o que sobra.
 > Inspiração declarada: ASP.NET Core Identity (stores, claims, policies,
 > external providers, endpoints scaffolded).
+>
+> **Continuações**: [[Identity-API]] detalha a superfície que o desenvolvedor
+> escreve (as sete camadas de API); [[Identity-Exemplo-Pizzeria]] aplica tudo
+> ao fixture `pizzeria` com cliente, gerente e cozinheiro.
 
 ## 1. O buraco, com evidência
 
@@ -107,7 +111,13 @@ soltas".
 ```ds
 Identity {
     provider: local
-    store: IdentityDb              // Database declarado pela infraestrutura
+    // o store é declarado aqui, não num mod.ds: Identity é de serviço (§3.4)
+    // e módulo nenhum é dono dele. Mesmas chaves de um Database de módulo.
+    store {
+        provider: "postgres"
+        connection: env("IDENTITY_DB_URL")
+    }
+
     id: Customer                   // <-- a integração decisiva, ver §4.3
 
     password {
@@ -174,7 +184,7 @@ Store local para conta e papéis; login social delegado — o caso
 ```ds
 Identity {
     provider: federated
-    store: IdentityDb
+    store { provider: "postgres", connection: env("IDENTITY_DB_URL") }
     id: Customer
 
     external Google {
@@ -534,12 +544,17 @@ de virar spec:
 - **R2 — escopo da chave de idempotência.** Já estava marcado "decisão em
   aberto" na tabela da §7 e não foi tocado: a chave passa a incluir o
   principal, ou não?
-- **R3 — `given caller ...` em [[24-testing]].** A sintaxe de teste é a única
-  peça do princípio 6 (§2) ainda sem forma proposta.
-- **R4 — superfície da lib padrão de identity.** A §3.0 fixa que `User`, `Role`
-  e `Claim` vêm prontos; falta enumerar o que exatamente a lib expõe, e como
-  esses tipos aparecem no catálogo fechado da [[02-type-system]] §2.8 ao lado
-  de `caller`.
+- **R3 — `given caller ...` em [[24-testing]].** Proposta em
+  [[Identity-API]] §8; falta a decisão.
+- **R4 — superfície da lib padrão de identity.** Enumerada em
+  [[Identity-API]] §3 (tipos, eventos e a lista do que é proibido); falta
+  encaixá-la no catálogo fechado da [[02-type-system]] §2.8 ao lado de
+  `caller`.
+
+Mais as questões que a superfície de API abriu, todas em [[Identity-API]] §9:
+`caller.id` legível em UseCase (Q1, bloqueante — sem ela não há como gravar o
+dono de um recurso), `serviceAccounts` (Q2, bloqueante — `Policy` que dispara
+`Handle` com `access` não tem caller definido hoje) e `requires` em rota (Q3).
 
 ## 10. Recomendação de sequenciamento
 
