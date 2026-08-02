@@ -289,7 +289,7 @@ Quem não usa `expose` escreve o próprio `UseCase Login` e continua funcionando
 | `Identity` como serviço ([[12-topology]]) | `provider: oidc` apontando para outro serviço do próprio topology | Coerente com o modelo |
 | Catálogo §2.8 ([[02-type-system]]) | Ganha a entrada `caller`, fechando a contradição da §1 | Correção necessária de qualquer forma |
 
-### 7.2. O atrito real: ordem entre tenant e identity
+### 7.2. O atrito real: ordem entre tenant e identity[^1]
 
 A §14 resolve tenant na borda por `subdomain`/`header`/`jwt_claim`/`path`. Com
 `jwt_claim`, **o token precisa ser validado antes de o tenant existir** — mas a
@@ -305,6 +305,7 @@ quem valida o token. O design precisa fixar uma ordem:
 
 `jwt_claim` só é legal na rota 2. Combinar `tenant { from: jwt_claim }` com
 `Identity` por-tenant deveria ser **erro de compilação**.
+
 
 ## 8. Gaps que isto fecha
 
@@ -323,28 +324,28 @@ quem valida o token. O design precisa fixar uma ordem:
 
 Honestidade sobre o alcance:
 
-1. **Onde o bloco `Identity` mora** — módulo `Platform` (precedente do
+1. [^2]**Onde o bloco `Identity` mora** — módulo `Platform` (precedente do
    `Aggregate Tenant`) ou nível de `service` em [[12-topology]]? Muda o modelo
    de compartilhamento entre módulos.
-2. **Autorização é do domínio ou da borda?** `AccessPolicy` com `self` roda no
+2. [^3]**Autorização é do domínio ou da borda?** `AccessPolicy` com `self` roda no
    domínio (precisa da instância carregada); sem `self` poderia rodar na borda,
    antes do UseCase. Duas execuções diferentes com uma sintaxe só — precisa de
    regra explícita, ou vira o mesmo problema de pushdown de
    [[spec-v7-sum-e-focus-da-secao-22-contra-catalogo-de-metodos]].
-3. **Catálogo de papéis.** `caller.hasRole("staff")` valida `"staff"` contra o
+3. [^8]**Catálogo de papéis.** `caller.hasRole("staff")` valida `"staff"` contra o
    quê? Um `Enum Role` declarado? Uma lista no bloco `Identity`? Texto livre
    (e então erro de digitação vira negação silenciosa — fail-closed correto,
    mas indepurável)? Recomendo enumerar no bloco `Identity`.
-4. **Migração de `caller.id`.** Com `caller.subject` disponível, `caller.id`
+4. [^4]**Migração de `caller.id`.** Com `caller.subject` disponível, `caller.id`
    vira redundante em programas que declaram `subject`? Manter os dois é ter
    duas formas para a mesma pergunta, contra "Uma Forma Canônica".
-5. **Revogação e sessão.** `refresh { rotation, reuseDetection }` pressupõe
+5. [^5]**Revogação e sessão.** `refresh { rotation, reuseDetection }` pressupõe
    store de sessão. Com `provider: oidc` isso é do provedor externo; com
    `local` é nosso. A superfície declarada não pode ser a mesma nos dois.
-6. **MFA e confirmação alteram fluxo de login**, ou seja, geram máquina de
+6. [^6]**MFA e confirmação alteram fluxo de login**, ou seja, geram máquina de
    estados na borda. Isso é runtime vendorado (como o event store) ou é
    modelável em DomainScript? ASP.NET faz o primeiro.
-7. **Identity é multi-tenant por si?** Um usuário pertence a um tenant, a
+7. [^7]**Identity é multi-tenant por si?** Um usuário pertence a um tenant, a
    vários, ou é global com papéis por tenant? Muda o schema do store local e é
    decisão de produto, não de coerência interna.
 
@@ -366,3 +367,21 @@ Se isto virar spec, a ordem que minimiza retrabalho:
 
 Os passos 1 e 2 são os de melhor relação valor/risco: consertam o que já está
 quebrado hoje e não pressupõem nenhuma decisão das perguntas em aberto da §9.
+
+[^1]: Nota do desenvolvedor: tenant por jwt na verdade se refere ao identificador do usuário/aplicação acessando o sistema, assim o modulo de identity precisa resolver ele primeiramente antes de ser aplicado o tenant, para evitar que um ataque DDoS deixe o modulo de identity sobrecarregado o serviço de identity pode ser utilizado apenas para extrair o identificador do jwt 
+
+[^2]: O identity é definido a nível de serviço
+	
+
+[^3]: Autorizações que precisem acessar dados de domínio ficam dentro do escopo do domínio, autorizações  que não dependam de domínio (ex: acessar o recurso no path X com o token de acesso Y) devem viver fora do domínio
+
+[^4]: Utilizaremos a notação caller.id  ao invés de subject
+
+[^5]: se o provider é local as informações deve ser gravadas em um  banco de dados especificado pela infraestrutura
+
+[^6]: Runtime vendorável, similar ao aspnet core identity
+
+[^7]: Identity deve suportar multi tenancy
+
+[^8]: Embora seja contra o design da linguagem usar strings diretamente, e declarar as claims e roles no modulo do identity seja uma solução mais "segura"  e testável, seria interessante termos flexibilidade em termos de poder cadastrar alterar claims/roles, e adicionar-las, remover-las de um usuário via  API
+	
