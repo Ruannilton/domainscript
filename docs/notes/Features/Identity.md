@@ -1,6 +1,9 @@
 # Identity — design de proposta
 
-> Status: **proposta de design**. Nada implementado, nada escrito na spec ainda.
+> Status: **proposta de design, revisada**. Nada implementado, nada escrito na
+> spec ainda. As decisões do autor sobre as perguntas em aberto estão
+> incorporadas ao corpo; as notas de rodapé `[^n]` são o registro original de
+> cada decisão, e a §9 passou a listar o que elas fecham e o que sobra.
 > Inspiração declarada: ASP.NET Core Identity (stores, claims, policies,
 > external providers, endpoints scaffolded).
 
@@ -47,9 +50,12 @@ Antes da sintaxe, as restrições que o desenho não pode violar:
    nunca campo de Command. O domínio lê, jamais recebe.
 2. **Três camadas separadas, e a separação é o ponto.** Infraestrutura (onde
    credenciais moram, quem emite/valida token) ≠ contrato (o que `caller`
-   oferece ao domínio) ≠ domínio (se você quer um `Aggregate User`, é seu).
-   ASP.NET Identity conflaciona as três; aqui isso quebraria "Zero
-   Infraestrutura" ([[01-overview]] §1).
+   oferece ao domínio) ≠ domínio (o agregado que a aplicação cadastra é dela).
+   Herdamos do ASP.NET Identity o *escopo* — um framework de identity completo,
+   sem lib externa a aprender (§3.0) — mas não a conflação: lá as três camadas
+   se misturam no mesmo `IdentityUser` que o desenvolvedor herda e estende, e
+   aqui isso quebraria "Zero Infraestrutura" ([[01-overview]] §1). A §7.3
+   sustenta a mesma linha entre principal do serviço e usuário do domínio.
 3. **Uma Forma Canônica** ([[01-overview]] §1.1). Um mecanismo de autorização,
    não três.
 4. **Fail-closed**, coerente com `access` closed-by-default e com tenant
@@ -59,19 +65,50 @@ Antes da sintaxe, as restrições que o desenho não pode violar:
 6. **Determinismo e testabilidade** ([[24-testing]]): um cenário precisa poder
    fixar quem é o caller sem subir provedor.
 
-## 3. Camada 1 — o bloco `Identity` em `mod.ds`
+## 3. Camada 1 — o bloco `Identity`
 
 Segue exatamente o idioma dos outros blocos de [[13-module-infra]]
 (`Database`, `Cache`, `RateLimit`, `Idempotency`, `Telemetry`): configuração
-declarativa, valores enumerados nus, rótulos opacos entre aspas.
+declarativa, valores enumerados nus, rótulos opacos entre aspas. Mora no nível
+de `service`, não de módulo — §3.4.
+
+### 3.0. O que o bloco escolhe é o *backend*, não o modelo[^8]
+
+Antes da sintaxe, o enquadramento que decide tudo o que vem depois:
+**DomainScript passa a ter um framework de identity próprio**, como o ASP.NET
+Core Identity, o Cognito ou o Keycloak são para suas plataformas. O objetivo é
+que o desenvolvedor **não precise aprender outra lib, outro framework ou outro
+serviço** para ter autenticação: ele escreve DomainScript, e escolhe por
+configuração qual backend sustenta aquilo.
+
+Disso decorrem duas coisas:
+
+- **O modelo vem da lib padrão.** `User`, `Role`, `Claim` e os VOs
+  correspondentes são declarações da biblioteca padrão, implementadas pelo
+  compilador e pelo runtime vendorado — o desenvolvedor não os escreve, não os
+  versiona e não pode quebrá-los. Do ponto de vista dele, identity é
+  *configuração e população de valores*, não modelagem.
+- **`provider:` escolhe o backend.** Store local, um provedor OIDC gerenciado
+  (Cognito, Auth0, Entra, Keycloak) ou os dois. Trocar de backend é trocar uma
+  linha de configuração; o contrato de `caller` (§4) e as `AccessPolicy` (§5)
+  não mudam.
+
+Isso também resolve a tensão aparente com "não usar tipos primitivos"
+([[02-type-system]]). Aquela regra existe para proteger *os agregados que o
+desenvolvedor escreve*, onde uma `string` nua é convite a erro de domínio. Os
+agregados e VOs de identity são internos ao compilador: o risco que a regra
+combate — modelagem frouxa feita por quem está com pressa — não se aplica da
+mesma forma, porque não há modelagem do usuário ali. É o que abre espaço para
+papéis e claims mutáveis por API (§4.4) sem que isso vire "voltamos às strings
+soltas".
 
 ### 3.1. Provedor local (store próprio)
 
 ```ds
 Identity {
     provider: local
-    store: IdentityDb              // Database declarado no mesmo mod.ds
-    subject: Customer              // <-- a integração decisiva, ver §4.3
+    store: IdentityDb              // Database declarado pela infraestrutura
+    id: Customer                   // <-- a integração decisiva, ver §4.3
 
     password {
         hasher: argon2id           // argon2id (padrão) | bcrypt | pbkdf2
@@ -94,6 +131,9 @@ Identity {
 
     confirmation { email: required }     // required | optional | none
     mfa          { totp: optional }      // required | optional | none
+
+    roles  { admin, staff, customer }    // sementes; clientes cadastram outros
+    claims { tier, storeId }             // via API em runtime — §4.4[^8]
 }
 ```
 
@@ -111,12 +151,12 @@ Identity {
     issuer:   env("COGNITO_ISSUER")
     audience: env("COGNITO_AUDIENCE")
     jwks:     env("COGNITO_JWKS_URL")
-    subject:  Customer
+    id:       Customer
 
     claims {
-        subject: "sub"                 // qual claim vira caller.subject
-        roles:   "cognito:groups"      // qual claim vira caller.hasRole
-        email:   "email"
+        id:    "sub"                   // qual claim vira caller.id
+        roles: "cognito:groups"        // qual claim vira caller.hasRole
+        email: "email"
     }
 }
 ```
@@ -135,13 +175,13 @@ Store local para conta e papéis; login social delegado — o caso
 Identity {
     provider: federated
     store: IdentityDb
-    subject: Customer
+    id: Customer
 
     external Google {
         issuer: env("GOOGLE_ISSUER")
         clientId: env("GOOGLE_CLIENT_ID")
         clientSecret: env("GOOGLE_CLIENT_SECRET")
-        linkBy: email                  // email | subject | manual
+        linkBy: email                  // email | providerId | manual
     }
 }
 ```
@@ -149,10 +189,14 @@ Identity {
 ### 3.4. Onde o bloco mora
 
 `Identity` é **um por serviço**, não por módulo — dois módulos do mesmo
-serviço não podem ter noções diferentes de quem está chamando. Duas rotas:
-declará-lo num módulo `Platform` sem tenancy (o mesmo precedente que a §14 já
-usa para `Aggregate Tenant`), ou em [[12-topology]] no nível do `service`.
-**Decisão em aberto** — ver §8.
+serviço não podem ter noções diferentes de quem está chamando.
+
+**Decidido: o bloco é declarado no nível do `service`, em [[12-topology]]**[^2],
+não num módulo `Platform`. A consequência que importa: `Identity` deixa de ser
+declaração de módulo e passa a ser configuração de serviço, ao lado do que a
+topologia já diz sobre cada serviço; os módulos daquele serviço apenas *leem*
+`caller`, nenhum deles o configura. Um programa sem topologia declarada tem um
+único serviço default, e é lá que o bloco mora.
 
 ## 4. Camada 2 — o contrato normativo de `caller`
 
@@ -163,37 +207,80 @@ superfície fechada, e a [[02-type-system]] §2.8 ganha a entrada correspondente
 | Membro | Tipo | Semântica | Onde é legível |
 |--------|------|-----------|----------------|
 | `caller.authenticated` | `boolean` | Há principal autenticado | Qualquer `access`/`visibility`/`AccessPolicy` |
-| `caller.id` | `CallerId` | Identidade opaca do principal — inalterado, [[04-domain-core]] §4.3.1 | idem |
-| `caller.subject` | `ref T` | **Novo.** O principal *como agregado do programa*, quando `Identity.subject: T` está declarado | idem |
-| `caller.hasRole(r)` | `boolean` | `r` é `string` literal validado contra o catálogo de papéis | idem |
-| `caller.hasClaim(k, v)` | `boolean` | Claim arbitrária — a escotilha para o que role não expressa | idem |
+| `caller.id` | `ref T` com `Identity { id: T }` declarado; `CallerId` opaco sem ele | O principal — nominal e comparável quando há `Identity`, opaco como hoje quando não há (§4.3) | idem |
+| `caller.hasRole(r)` | `boolean` | `r` é um `Role` (§4.4), não uma `string` nua | idem |
+| `caller.hasClaim(k, v)` | `boolean` | `k` é um `Claim` (§4.4); `v` o valor esperado | idem |
 | `caller.satisfies(P)` | `boolean` | `P` é uma `AccessPolicy` declarada (§5) | idem |
+
+**Um só membro, com a mecânica do `subject`**[^4]. A proposta original tinha
+`caller.id : CallerId` (opaco) *e* `caller.subject : ref T` (nominal) — duas
+grafias para a mesma pergunta, contra "Uma Forma Canônica". A decisão mantém a
+**mecânica** do `subject` — o principal é uma referência tipada ao agregado,
+não um identificador opaco a ser comparado por fora — e descarta o **nome**,
+porque `caller.id` é o que [[04-domain-core]] §4.3.1 e o resto da documentação
+já escrevem. Mesma renomeação no bloco de configuração: `Identity { id: T }`,
+e `claims { id: "sub" }` no mapeamento OIDC.
 
 Fora de `access`, `visibility` e `AccessPolicy` → erro de compilação, mesma
 regra que a §4.3.1 já fixa para `caller.id`. Caller anônimo → todo membro é
 `false` / não-vinculado, **fail-closed**, nunca erro de execução.
 
-### 4.3. `caller.subject` — por que resolve o beco sem saída
+### 4.3. `Identity { id: T }` — o principal como referência tipada
 
-`caller.id : CallerId` é opaco e só compara contra `ref T`. Isso é correto e
-não muda. O problema é que muitos domínios **não modelam o principal como
-agregado próprio** — o `pizzeria` é exatamente esse caso.
+Hoje `caller.id : CallerId` é opaco e a §4.3.1 só o deixa comparar contra
+`ref T` — sem que nada na linguagem declare **quem é esse `T`**. A regra existe,
+o referente não.
 
-`Identity { subject: Customer }` declara, num único lugar, que o principal
-autenticado *corresponde* a um `Aggregate Customer`. A partir daí
-`caller.subject : ref Customer` e a comparação de posse vira nominal e
-type-safe:
+`Identity { id: Customer }` declara o referente num único lugar. A partir daí
+`caller.id : ref Customer`, e a comparação de posse é nominal e verificada em
+compilação:
 
 ```ds
-// hoje: proibido (CallerId contra ValueObject) e sem alternativa conforme
+// sem Identity: caller.id é CallerId opaco, e contra um ValueObject
+// a comparação é proibida pela §4.3.1 — sem alternativa conforme
 visibility { total requires caller.id == self.customerId }
 
-// com Identity.subject declarado, e customerId : ref Customer
-visibility { total requires caller.subject == self.customerId }
+// com Identity { id: Customer } e customerId : ref Customer,
+// a mesma linha é a forma correta: ref Customer contra ref Customer
 ```
 
-Sem `Identity` declarado, `caller.subject` simplesmente não existe (erro de
-compilação ao usá-lo) — nenhuma semântica inventada por omissão.
+A linha escrita é a mesma; o que muda é o tipo de `caller.id`, e com ele o que
+o compilador consegue provar. Sem `Identity` declarado nada é inventado por
+omissão: `caller.id` continua com a superfície restrita de hoje.
+
+`T` pode ser um agregado do próprio domínio (`Customer`, `Employee`) ou o
+`User` da lib padrão (§3.0), para quem não quer modelar o principal. É o que
+tira o `pizzeria` do beco sem saída sem obrigá-lo a declarar um
+`Aggregate Customer` que aquele bounded context não quer: basta
+`id: User` e `customerId : ref User`. Nos dois casos a peça que falta é `ref T`
+existir de fato — [[spec-v7-identidade-implicita-do-aggregate]].
+
+### 4.4. Papéis e claims — sementes declaradas, catálogo mutável por API[^8]
+
+`Role` e `Claim` são VOs da lib padrão (§3.0), não `string`s. Isso é o que
+permite ter as duas coisas que pareciam incompatíveis — segurança de tipo no
+código e catálogo mutável pelos clientes em runtime:
+
+- **O bloco `Identity` declara sementes**, os papéis e claims que o *programa*
+  conhece e cita. Cada nome declarado vira um valor da lib padrão referenciável
+  no código: `caller.hasRole(Role.staff)` é verificado em compilação, erro de
+  digitação é erro de compilação, e nenhuma `string` nua aparece numa
+  `AccessPolicy`.
+- **O catálogo não é fechado.** A API de gestão (§6) cadastra, altera e remove
+  papéis e claims em runtime, e os atribui a usuários — é assim que o cliente
+  de uma plataforma define papéis que o desenvolvedor da plataforma nunca
+  previu. Esses papéis existem no store, participam da autorização e são
+  legítimos.
+- **A diferença entre os dois não é de poder, é de verificabilidade.** Um papel
+  criado em runtime não pode ser *citado por nome* numa `AccessPolicy` — o
+  compilador não teria contra o que checá-lo. Ele autoriza pelos caminhos
+  resolvidos em runtime (`caller.hasRole(r)` com `r` vindo de dado,
+  `caller.hasClaim`), que falham fechado.
+
+Ou seja: o desenvolvedor cadastra os tipos padrão de papel e claim de forma
+declarada, e ainda assim permite que os clientes cadastrem os seus. Com
+`provider: oidc` as sementes declaram os valores esperados no claim mapeado em
+`claims { roles: ... }`; a fonte da verdade continua sendo o provedor externo.
 
 ## 5. Camada 3 — `AccessPolicy`: autorização nomeada
 
@@ -203,11 +290,11 @@ mesma condição de posse aparece **três vezes** no mesmo bloco `visibility`.
 
 ```ds
 AccessPolicy OrderOwner {
-    requires caller.subject == self.customerId
+    requires caller.id == self.customerId
 }
 
 AccessPolicy Staff {
-    requires caller.hasRole("staff")
+    requires caller.hasRole(Role.staff)     // semente declarada — §4.4
 }
 
 AccessPolicy OrderVisible {
@@ -244,6 +331,27 @@ sem `self` (só `caller`) valem em qualquer posição, inclusive num `access` de
 UseCase — o que destrava, de graça, parte de
 [[usecase-access-block-nao-parseado]].
 
+### 5.1. Onde cada policy executa[^3]
+
+A regra é a natureza da condição, e ela é decidível sintaticamente:
+
+| Policy | Executa | Quando |
+|--------|---------|--------|
+| Depende de dado de domínio (referencia `self`) | **Dentro do domínio** | Depois de carregar a instância — não há como decidir posse antes de ter o agregado |
+| Não depende de domínio (só `caller`, rota, token) | **Fora do domínio, na borda** | Antes de entrar no UseCase; a requisição é rejeitada sem tocar o domínio |
+
+Não é escolha de quem escreve: uma policy sem `self` **sempre** executa na
+borda, uma com `self` **sempre** no domínio. Uma sintaxe só, dois pontos de
+lowering, e o critério é a presença de `self` — o compilador classifica, o
+autor não anota. Isso evita o problema de pushdown ambíguo de
+[[spec-v7-sum-e-focus-da-secao-22-contra-catalogo-de-metodos]], onde a mesma
+grafia podia significar dois lugares de execução sem regra que decidisse.
+
+Composição segue a mesma classificação: `OrderVisible = OrderOwner or Staff`
+referencia `self` através de `OrderOwner`, logo é policy de domínio inteira.
+Uma composição de domínio **não** pode ser usada num `access` de UseCase, pelo
+mesmo motivo de sempre: ali não há instância.
+
 ## 6. Camada 4 — endpoints gerados
 
 Análogo ao *Identity API endpoints* do ASP.NET Core 8. Só com
@@ -275,37 +383,111 @@ que passaria a ser default do endpoint gerado em vez de exemplo solto.
 Quem não usa `expose` escreve o próprio `UseCase Login` e continua funcionando
 — a spec já mostra essa forma, e ela não deixa de valer.
 
+### 6.1. Onde o estado mora, e de quem é a máquina de estados
+
+**Sessão, refresh e revogação são persistidos no `Database` apontado por
+`store:`**[^5] — infraestrutura declarada, como qualquer outra: nada de store
+implícito, nada de estado em memória do processo. Isso torna
+`refresh { rotation, reuseDetection: revokeFamily }` implementável de fato, e
+correto sob múltiplas réplicas do serviço.
+
+Daí decorre uma regra de superfície: **`tokens`, `lockout`, `password`,
+`confirmation` e `mfa` só são legais com `provider: local` ou `federated`.** Com
+`provider: oidc` emissão, rotação e revogação são do provedor externo; declarar
+esses blocos ali é erro de compilação, não configuração ignorada em silêncio.
+Simetricamente, `store:` é obrigatório em `local`/`federated` e proibido em
+`oidc`.
+
+**MFA e confirmação de e-mail são máquina de estados do runtime
+vendorado**[^6], como o event store — não são modeláveis em DomainScript e não
+geram Aggregate no programa do usuário. É a escolha do ASP.NET Core Identity, e
+é o que mantém o princípio 2 da §2: o fluxo de login é infraestrutura, o
+domínio só lê `caller`.
+
 ## 7. Integração com o que já existe
 
 | Feature | Como se conecta | Atrito |
 |---------|-----------------|--------|
 | `access` de Aggregate ([[04-domain-core]] §4.3) | Passa a aceitar `AccessPolicy` além da condição inline | Nenhum — extensão compatível |
-| `visibility` de View ([[06-read-side]] §6.2) | Idem, e ganha `caller.subject` | Destrava o bloqueio 1 de [[visibility-de-view-nao-implementado]] |
-| Multi-tenancy ([[14-multi-tenancy]]) | `jwt_claim` já resolve tenant a partir do token; Identity define **quem emite** esse token | ⚠️ Ordem de resolução, ver §7.2 |
+| `visibility` de View ([[06-read-side]] §6.2) | Idem, e ganha `caller.id` com referente declarado | Destrava o bloqueio 1 de [[visibility-de-view-nao-implementado]] |
+| Multi-tenancy ([[14-multi-tenancy]]) | Identity resolve o caller **primeiro**; o tenant é derivado do caller resolvido | Ordem fixada na §7.2 |
 | `rateLimit { perUser }` ([[17-rate-limiting]]) | `perUser` passa a ter definição: chaveado por `caller.id` | Hoje é indefinido |
 | Testing ([[24-testing]]) | `given caller ...` fixa principal/papéis do cenário, como alias de teste faz com `ref T` | Precisa de sintaxe nova |
 | Erros ([[23-error-classification]]) | 401 (não autenticado) vs 403 (autenticado, sem permissão) — distinção que hoje não existe | Hoje só há `ErrForbidden` |
-| Idempotência ([[15-idempotency]]) | Escopo da chave passa a poder incluir o principal | Decisão em aberto |
+| Idempotência ([[15-idempotency]]) | Escopo da chave passa a poder incluir o principal | Em aberto — R3 (§9.1) |
 | `Identity` como serviço ([[12-topology]]) | `provider: oidc` apontando para outro serviço do próprio topology | Coerente com o modelo |
 | Catálogo §2.8 ([[02-type-system]]) | Ganha a entrada `caller`, fechando a contradição da §1 | Correção necessária de qualquer forma |
 
-### 7.2. O atrito real: ordem entre tenant e identity[^1]
+### 7.2. Ordem entre tenant e identity — resolvida[^1]
 
 A §14 resolve tenant na borda por `subdomain`/`header`/`jwt_claim`/`path`. Com
-`jwt_claim`, **o token precisa ser validado antes de o tenant existir** — mas a
-validação do token é responsabilidade do Identity, que num modelo multi-tenant
-pode ser *por tenant* (issuer diferente por tenant, caso comum em SaaS B2B).
+`jwt_claim` isso parecia circular: o token precisa ser validado antes de o
+tenant existir, mas quem valida o token seria um Identity que num SaaS B2B
+poderia ser por tenant.
 
-Isso é circular e a spec atual não enxerga o problema porque nunca definiu
-quem valida o token. O design precisa fixar uma ordem:
+**A circularidade era falsa, e some com a ordem fixada: identity primeiro,
+tenant depois, sempre.** O que `tenant { from: jwt_claim }` lê é o
+identificador do usuário/aplicação que já está chamando — ou seja, um atributo
+do caller **já resolvido**, não uma entrada independente. Daí:
 
-1. Resolver tenant por meios que não dependem do token (`subdomain`, `header`,
-   `path`) → validar token no contexto do tenant; ou
-2. Validar token com issuer global → extrair tenant do claim.
+1. A borda verifica a **assinatura** do token (`Identity`, issuer global do
+   serviço — §3.4, um por serviço) e resolve o caller.
+2. O tenant é extraído do token **já verificado**[^1], ou das fontes que não
+   dependem dele (`subdomain`, `header`, `path`).
+3. Só então o filtro de tenancy da §14 se aplica ao domínio.
 
-`jwt_claim` só é legal na rota 2. Combinar `tenant { from: jwt_claim }` com
-`Identity` por-tenant deveria ser **erro de compilação**.
+O passo 1 é precondição do passo 2, e é a parte que a spec hoje não escreve:
+ler tenant de um token cuja assinatura não foi verificada é escalada de
+privilégio trivial — qualquer cliente forja o claim e atravessa o isolamento.
+Um `tenant { from: jwt_claim }` sem `Identity` declarado no serviço deve ser
+**erro de compilação**, não configuração aceita que confia no claim.
 
+Duas consequências normativas:
+
+- **`Identity` por tenant é ilegal.** Issuer diferente por tenant exigiria
+  saber o tenant antes de validar o token, que é exatamente a ordem invertida.
+  Um serviço tem um `Identity`; multi-tenancy vive *dentro* dele (§9.1, R2), não
+  em cima dele.
+- **`tenant { from: jwt_claim }` não valida token.** Ele lê um claim de um
+  token que o Identity já validou. Hoje a §14 sugere o contrário e precisa ser
+  corrigida junto.
+
+**Resistência a DDoS**: no caminho de requisição a borda faz apenas validação
+local do JWT (assinatura contra JWKS em cache e extração do identificador) —
+sem ida ao store nem ao serviço de identity por requisição. Um pico de tráfego
+não autenticado é rejeitado com trabalho O(1) e criptográfico apenas, e não
+converte carga de borda em carga no Identity. Os endpoints que de fato tocam o
+store (`login`, `register`, `refresh`) são justamente os que já nascem com
+`rateLimit` por IP (§6).
+
+
+### 7.3. Multi-tenancy: duas populações, e a linguagem não escolhe por você[^7]
+
+`Identity` suporta multi-tenancy, mas **qual modelo de tenancy vale é decisão
+da aplicação**, não da linguagem — e os dois extremos são igualmente legítimos:
+
+- **Pizzaria de esquina**: um único tenant, vários usuários. Tenancy
+  simplesmente não é declarada; `Identity` funciona sozinho.
+- **Plataforma de e-commerce vendida a outras empresas**: o tenant é o
+  *cliente contratante*. Quem autentica contra a infraestrutura de identity do
+  serviço são os operadores daquela empresa, e o tenant vem do token conforme
+  a §7.2.
+
+O que essa segunda forma revela é a distinção que precisa estar escrita:
+
+| População | O que é | De quem é |
+|-----------|---------|-----------|
+| **Principal do serviço** | Quem chama o serviço e é autenticado por ele | Infraestrutura de identity — modelo da lib padrão (§3.0) |
+| **Usuário do domínio** | Quem a aplicação cadastra como parte do negócio dela (o cliente do e-commerce) | Domínio do desenvolvedor — `Aggregate` escrito por ele |
+
+Um e-commerce multi-tenant cadastra compradores: **esses compradores são
+agregados do domínio da plataforma, não entradas da infraestrutura de identity
+do serviço.** Eles obedecem às regras de tenancy da [[14-multi-tenancy]] como
+qualquer outro agregado, e o `Identity` do serviço não sabe que existem.
+
+As duas populações se cruzam só onde o desenvolvedor quiser: `Identity { id: T }`
+(§4.3) é exatamente o ponto onde ele diz "o principal autenticado *é* este
+agregado do meu domínio". Quem não declara mantém as duas separadas.
 
 ## 8. Gaps que isto fecha
 
@@ -313,41 +495,51 @@ quem valida o token. O design precisa fixar uma ordem:
 |-----|-----------|
 | `caller` sem definição normativa — bloqueio 3 de [[usecase-access-block-nao-parseado]] | §4 dá o contrato completo e entra no catálogo fechado da §2.8 |
 | `caller.hasRole` fora do catálogo §2.8 = erro ao pé da letra | idem |
-| `visibility` sem `self`/`caller.id` utilizável — bloqueios 1 e 2 de [[visibility-de-view-nao-implementado]] | `caller.subject` + `AccessPolicy` dão a comparação de posse type-safe |
-| Posse inexprimível quando o principal não é agregado (`pizzeria`) | `Identity { subject: T }` + `caller.subject` |
+| `visibility` sem `self`/`caller.id` utilizável — bloqueios 1 e 2 de [[visibility-de-view-nao-implementado]] | `Identity { id: T }` + `AccessPolicy` dão a comparação de posse type-safe |
+| Comparação de posse sem referente declarado para `caller.id` | `Identity { id: T }` declara o `T` que a §4.3.1 exige — agregado do domínio ou `User` da lib padrão |
+| Tenant lido de token não verificado | §7.2: `tenant { from: jwt_claim }` exige `Identity` no serviço |
 | `perUser` de rateLimit sem definição | Chaveado por `caller.id` |
 | `access` de UseCase sem semântica de `caller` | Policies sem `self` são válidas ali |
 | 401 vs 403 indistinguíveis | §7, tabela de erros |
 | Condição de acesso duplicada e sem nome | `AccessPolicy` |
 
-## 9. O que este design **não** resolve, e perguntas em aberto
+## 9. Decisões da revisão
 
-Honestidade sobre o alcance:
+As sete perguntas em aberto da versão anterior deste documento, e o que a
+revisão decidiu sobre cada uma:
 
-1. [^2]**Onde o bloco `Identity` mora** — módulo `Platform` (precedente do
-   `Aggregate Tenant`) ou nível de `service` em [[12-topology]]? Muda o modelo
-   de compartilhamento entre módulos.
-2. [^3]**Autorização é do domínio ou da borda?** `AccessPolicy` com `self` roda no
-   domínio (precisa da instância carregada); sem `self` poderia rodar na borda,
-   antes do UseCase. Duas execuções diferentes com uma sintaxe só — precisa de
-   regra explícita, ou vira o mesmo problema de pushdown de
-   [[spec-v7-sum-e-focus-da-secao-22-contra-catalogo-de-metodos]].
-3. [^8]**Catálogo de papéis.** `caller.hasRole("staff")` valida `"staff"` contra o
-   quê? Um `Enum Role` declarado? Uma lista no bloco `Identity`? Texto livre
-   (e então erro de digitação vira negação silenciosa — fail-closed correto,
-   mas indepurável)? Recomendo enumerar no bloco `Identity`.
-4. [^4]**Migração de `caller.id`.** Com `caller.subject` disponível, `caller.id`
-   vira redundante em programas que declaram `subject`? Manter os dois é ter
-   duas formas para a mesma pergunta, contra "Uma Forma Canônica".
-5. [^5]**Revogação e sessão.** `refresh { rotation, reuseDetection }` pressupõe
-   store de sessão. Com `provider: oidc` isso é do provedor externo; com
-   `local` é nosso. A superfície declarada não pode ser a mesma nos dois.
-6. [^6]**MFA e confirmação alteram fluxo de login**, ou seja, geram máquina de
-   estados na borda. Isso é runtime vendorado (como o event store) ou é
-   modelável em DomainScript? ASP.NET faz o primeiro.
-7. [^7]**Identity é multi-tenant por si?** Um usuário pertence a um tenant, a
-   vários, ou é global com papéis por tenant? Muda o schema do store local e é
-   decisão de produto, não de coerência interna.
+| # | Pergunta | Decisão | Onde está no corpo |
+|---|----------|---------|--------------------|
+| 1 | Onde o bloco `Identity` mora | Nível de `service`, em [[12-topology]] — não um módulo `Platform`[^2] | §3.4 |
+| 2 | Autorização é do domínio ou da borda | Depende de dado de domínio → domínio; não depende → borda. Critério sintático: presença de `self`[^3] | §5.1 |
+| 3 | Catálogo de papéis | `Role`/`Claim` são VOs da lib padrão; o bloco declara sementes citáveis no código, e o catálogo é mutável por API em runtime[^8] | §3.0, §4.4 |
+| 4 | `caller.id` vs `caller.subject` | Um membro só: a **mecânica** do `subject` (`ref T`) com o **nome** `id`, que a documentação já usa[^4] | §4, §4.3 |
+| 5 | Revogação e sessão | Persistidas no `Database` de `store:`; `tokens`/`lockout`/`password` só com `local`/`federated`[^5] | §6.1 |
+| 6 | MFA e confirmação | Máquina de estados do runtime vendorado, como no ASP.NET Core Identity[^6] | §6.1 |
+| 7 | Identity é multi-tenant | Sim, e o *modelo* é da aplicação, não da linguagem: principal do serviço ≠ usuário do domínio[^7] | §7.3 |
+| — | Ordem tenant × identity | Identity primeiro, sempre; tenant só de token com assinatura verificada; `Identity` por tenant é ilegal[^1] | §7.2 |
+| — | O que o bloco escolhe | Identity é framework da lib padrão; `provider:` escolhe o backend, o modelo não é do desenvolvedor[^8] | §3.0 |
+
+### 9.1. Questões residuais
+
+O que as decisões acima **não** fecham, e continua precisando de resposta antes
+de virar spec:
+
+- **R1 — cardinalidade principal ↔ tenant.** A §7.3 fixa que o modelo de
+  tenancy é da aplicação e que o e-commerce separa principal (operador do
+  cliente contratante) de usuário do domínio (comprador). Falta o schema do
+  store local: um principal carrega um tenant, ou vários? Os dois exemplos
+  citados se resolvem com `0..1`, o que é a proposta — mas isso decide se
+  `hasRole` é por tenant, e é decisão de produto.
+- **R2 — escopo da chave de idempotência.** Já estava marcado "decisão em
+  aberto" na tabela da §7 e não foi tocado: a chave passa a incluir o
+  principal, ou não?
+- **R3 — `given caller ...` em [[24-testing]].** A sintaxe de teste é a única
+  peça do princípio 6 (§2) ainda sem forma proposta.
+- **R4 — superfície da lib padrão de identity.** A §3.0 fixa que `User`, `Role`
+  e `Claim` vêm prontos; falta enumerar o que exatamente a lib expõe, e como
+  esses tipos aparecem no catálogo fechado da [[02-type-system]] §2.8 ao lado
+  de `caller`.
 
 ## 10. Recomendação de sequenciamento
 
@@ -360,13 +552,46 @@ Se isto virar spec, a ordem que minimiza retrabalho:
    e unifica o lowering de acesso que hoje está espalhado.
 3. **Bloco `Identity` com `provider: oidc` (§3.2).** O mais barato dos três
    provedores — só valida token e mapeia claim, sem store, sem endpoint.
-4. **`subject:` + `caller.subject` (§4.3).** Depende de `ref T`
+4. **`Identity { id: T }` tipando `caller.id` (§4.3).** Depende de `ref T`
    ([[spec-v7-identidade-implicita-do-aggregate]]) estar implementado.
 5. **`provider: local` + `expose` (§3.1, §6).** O maior, e o único que exige
-   runtime novo (hash, token, store).
+   runtime novo (hash, token, store, máquina de estados de MFA/confirmação) e a
+   lib padrão de identity (§3.0). Depende de R1 e R4, que definem o schema do
+   store e a superfície dos tipos.
 
 Os passos 1 e 2 são os de melhor relação valor/risco: consertam o que já está
-quebrado hoje e não pressupõem nenhuma decisão das perguntas em aberto da §9.
+quebrado hoje e não pressupõem nenhuma das questões residuais da §9.1 — o passo
+2 inclusive já pode incorporar a regra de execução da §5.1, que é decidível sem
+o bloco `Identity` existir.
+
+## 11. Registro da segunda rodada de revisão
+
+As notas `[^1]`–`[^8]` são a primeira rodada. A segunda precisou desfazer uma
+leitura errada da nota 4 e fechar o que 1, 7 e 8 tinham deixado pela metade —
+palavras do autor:
+
+- **Sobre [^1]** — "extrair o tenant do JWT com assinatura verificada". A
+  verificação de assinatura é precondição, não detalhe de implementação: §7.2,
+  passo 1.
+- **Sobre [^4]** — "diz *usar caller.id em vez de subject*, mas isso é só o
+  nome: vamos usar a mecânica sugerida com o subject, mas ao invés de chamar de
+  subject, chamaremos o campo de id para ficar em conformidade com o que já
+  existe da documentação". Uma versão anterior deste documento tinha lido a nota
+  como descarte da mecânica — era renomeação, e a §4.3 foi refeita.
+- **Sobre [^8]** — o propósito da feature é oferecer um framework de identity
+  dentro da linguagem, como ASP.NET Identity, Cognito ou Keycloak, sem que o
+  desenvolvedor precise aprender outra lib ou serviço, escolhendo o backend por
+  configuração. Como os agregados e VOs de identity são implementações internas
+  do compilador, a filosofia de não expor tipos primitivos — que existe para
+  proteger os agregados *do desenvolvedor* — não é violada por papéis e claims
+  mutáveis: "o desenvolvedor pode por exemplo cadastrar os tipos de claims e
+  roles padrões hardcoded mas permitir via api que os clientes cadastrem
+  outros". Virou a §3.0 e a §4.4.
+- **Sobre [^7]** — o modelo de tenancy "depende da aplicação que o
+  desenvolvedor está montando": pizzaria de esquina é um tenant com vários
+  usuários; uma plataforma de e-commerce separa por cliente contratante, e "os
+  usuários que o ecommerce cadastra são do domínio da plataforma, não da
+  infraestrutura identity do serviço". Virou a §7.3.
 
 [^1]: Nota do desenvolvedor: tenant por jwt na verdade se refere ao identificador do usuário/aplicação acessando o sistema, assim o modulo de identity precisa resolver ele primeiramente antes de ser aplicado o tenant, para evitar que um ataque DDoS deixe o modulo de identity sobrecarregado o serviço de identity pode ser utilizado apenas para extrair o identificador do jwt 
 
