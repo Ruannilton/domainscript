@@ -548,6 +548,8 @@ revisão decidiu sobre cada uma:
 | 7 | Identity é multi-tenant | Sim, e o *modelo* é da aplicação, não da linguagem: principal do serviço ≠ usuário do domínio[^7] | §7.3 |
 | — | Ordem tenant × identity | Identity primeiro, sempre; tenant só de token com assinatura verificada; `Identity` por tenant é ilegal[^1] | §7.2 |
 | — | O que o bloco escolhe | Identity é framework da lib padrão; `provider:` escolhe o backend, o modelo não é do desenvolvedor[^8] | §3.0 |
+| — | Leitura de `caller` e caller reativo | Legível em corpo de `UseCase`, proibido em `Handle`; em reação o caller é o módulo que disparou | §4.5 |
+| — | Autoridade sobre o catálogo | `Role.root` da lib padrão, bootstrap obrigatório por env; mutar catálogo de papéis é só de root, papel de cadastro vem explícito na request dentro de allowlist | [[Identity-API]] §2.3, §6.1 |
 
 ### 9.1. Questões residuais
 

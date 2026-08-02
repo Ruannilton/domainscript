@@ -67,6 +67,12 @@ Identity {
 
     id: User                             // ref T de caller.id — §3.2
 
+    // obrigatório em local/federated: o serviço não sobe sem root (§2.3)
+    root {
+        email:    env("IDENTITY_ROOT_EMAIL")
+        password: env("IDENTITY_ROOT_PASSWORD")
+    }
+
     password     { hasher: argon2id, minLength: 12, requireDigit: true }
     lockout      { maxAttempts: 5, window: 15min, duration: 15min }
     tokens       { access { ttl: 15min }, refresh { ttl: 30d, rotation: true } }
@@ -97,6 +103,42 @@ dele, que existem, valem e autorizam — só não podem ser citados por nome num
 
 Mesma coisa para `claims { }`: declara as chaves que o código lê com
 `caller.hasClaim(Claim.storeUnit, v)`.
+
+### 2.3. `root` — o bootstrap, no modelo do Keycloak e do Postgres
+
+Mutar o catálogo de papéis é criar autoridade nova. Isso não pode depender de
+o desenvolvedor lembrar de proteger um endpoint, então não é configurável:
+
+- **`Role.root` é da lib padrão**, sempre existe, não é removível e não é
+  atribuível pela API por ninguém que já não seja root.
+- **O bloco `root { }` é obrigatório** com `provider: local` ou `federated`, e
+  proibido com `oidc` (lá o admin é do provedor externo). Sem ele, **erro de
+  compilação**; com as variáveis vazias em runtime, **o serviço não sobe** —
+  fail-closed, como um Postgres sem `POSTGRES_PASSWORD`.
+- **Criado uma única vez**, na primeira subida em que o store não tem nenhum
+  root. É idempotente: reiniciar não recria, e **mudar a variável depois não
+  sobrescreve a senha** — mesma semântica de `KEYCLOAK_ADMIN` e
+  `POSTGRES_PASSWORD`, e pela mesma razão (a env é semente de bootstrap, não
+  fonte de verdade contínua).
+
+A separação de poderes que isso permite tem dois níveis, e é o que evita que
+"só root faz tudo" vire "todo mundo é root na prática":
+
+| Operação | Quem pode |
+|----------|-----------|
+| Criar, alterar ou remover **papel/claim do catálogo** | Só `root`. Não delegável, não configurável |
+| Criar usuário e atribuir **papel existente** | Delegável por `expose { users { requires … } }` (§6) |
+
+Ou seja: o gerente da pizzaria cria cozinheiros o dia inteiro sem nunca poder
+inventar um papel novo. Perfil novo é ato de root.
+
+**Rotação e superfície.** Senha em variável de ambiente é o padrão da
+indústria (Postgres, Keycloak, MySQL) e tem o custo conhecido: vaza em `ps`, em
+dump de env, em log de orquestrador. A recomendação operacional é a do
+Keycloak — root cria o primeiro administrador de verdade e é travado logo em
+seguida (`POST /identity/users/{id}/lock`) — e a variável aponta para um
+secret manager quando o ambiente tem um. Se a linguagem deve *automatizar* esse
+travamento é questão em aberto (§9, Q7).
 
 ### 2.2. O principal que não é gente
 
@@ -176,6 +218,9 @@ O que o desenvolvedor faz com isso: `ref User` em campos do domínio dele
 (`Order.customerId`), `Role.manager` em políticas, `Claim.storeUnit` em
 condições. Só.
 
+`Role.root` já vem no catálogo (§2.3) e é o único nome reservado: redeclará-lo
+em `roles { }` é erro, e ele nunca é criado nem atribuído pela API.
+
 ### 3.2. `id: T` — quem `caller.id` referencia
 
 `Identity { id: User }` é o default: o principal é o `User` da lib padrão, e
@@ -212,6 +257,8 @@ A lista importa tanto quanto a de cima, porque é ela que impede o
 | Adicionar campo a `User` | ❌ Erro — o lugar disso é `claims { }`, ou um agregado do domínio dele |
 | `View UserVW From User` | ❌ Erro — a leitura de identity é pelos endpoints gerados |
 | `caller.id` fora de `access`/`visibility`/`AccessPolicy`/UseCase | ❌ Erro (§4.1) |
+| Criar, atribuir ou remover `Role.root` pela API | ❌ Erro — root vem do bootstrap (§2.3) |
+| Mutar o catálogo de papéis sem ser root | ❌ `403` em runtime, não configurável |
 
 O terceiro item é o que preserva o isolamento de módulo: Identity é serviço,
 não módulo do desenvolvedor, então `load` cruzaria uma fronteira que a
@@ -295,17 +342,43 @@ objeto injetado:
 
 ```ds
 expose {
-    register      { public }
+    register      { public, roles: [customer] }       // §6.1
     login         { public }
     refresh       { public }
     logout        { requires caller.authenticated }
     confirmEmail  { public }
     resetPassword { public }
     manage        { requires caller.authenticated }   // perfil, senha, 2FA do próprio
-    users         { requires Manager }                // gestão de terceiros
-    roles         { requires Admin }                  // catálogo mutável
+    users         { requires Manager, roles: [cook] } // gestão de terceiros
+    roles         { }                                 // catálogo — root, implícito (§2.3)
 }
 ```
+
+### 6.1. O papel vem da request, dentro de um allowlist
+
+Não existe papel default: **a request diz qual papel está criando**, e omiti-lo
+é `400`.
+
+```http
+POST /identity/register   { "email": "ana@x.com", "password": "…", "role": "customer" }
+POST /identity/users      { "email": "joao@x.com", "role": "cook" }
+```
+
+Só que "a request escolhe" sozinho seria escalada de privilégio na primeira
+tentativa — `register` é público, e nada impediria `"role": "manager"`. Por
+isso o `roles:` do `expose` é o **conjunto que aquele endpoint pode criar**:
+
+| Situação | Resultado |
+|----------|-----------|
+| `role` ausente na request | `400` — não há default a assumir |
+| `role` fora do `roles:` do endpoint | `403` — inclusive para quem passou no `requires` |
+| `register` ou `users` sem `roles:` declarado | ❌ Erro de compilação |
+| `roles: [root]` em qualquer endpoint | ❌ Erro de compilação — root não se cria pela API (§2.3) |
+
+As duas metades são necessárias: explícito na request tira o default
+implícito, e o allowlist tira a escolha livre. Um `Manager` com
+`users { requires Manager, roles: [cook] }` cria cozinheiros e nada mais — nem
+outro gerente, nem root.
 
 | Item | Rotas | Equivalente |
 |------|-------|-------------|
@@ -316,8 +389,8 @@ expose {
 | `confirmEmail` | `POST /identity/confirm-email` | `ConfirmEmailAsync` |
 | `resetPassword` | `POST /identity/forgot-password`, `/reset-password` | `GeneratePasswordResetTokenAsync` |
 | `manage` | `GET\|POST /identity/manage/{profile,password,2fa}` | Identity UI /Manage |
-| `users` | `GET\|POST\|PATCH /identity/users…`, `PUT\|DELETE /identity/users/{id}/roles/{role}` | `UserManager` + `AddToRoleAsync` |
-| `roles` | `GET\|POST\|DELETE /identity/roles` | `RoleManager` |
+| `users` | `GET\|POST\|PATCH /identity/users…`, `PUT\|DELETE /identity/users/{id}/roles/{role}`, `POST /identity/users/{id}/lock` | `UserManager` + `AddToRoleAsync` |
+| `roles` | `GET\|POST\|DELETE /identity/roles`, `…/claims` | `RoleManager` (sempre root) |
 
 Regras de borda: rotas de identity são `{ tenancy: none }` por construção
 (precedem o tenant — [[Identity]] §7.2), herdam `basePath` e nascem com
@@ -390,4 +463,15 @@ Ainda no espírito de não codificar decisão que a spec não tomou:
    User`. Uma tela de "meus dados" além do `manage` gerado exigiria alguma
    query da lib padrão — deliberadamente fora desta proposta.
 5. **Q5 — cardinalidade principal ↔ tenant** (R1 de [[Identity]] §9.1) decide o
-   tipo de `User.tenant` em §3.1.
+   tipo de `User.tenant` em §3.1. Com root no desenho ela ganha um caso
+   concreto: root é global e atravessa tenants por definição, então a resposta
+   precisa comportar um principal sem tenant.
+6. **Q7 — ciclo de vida do root (§2.3).** A recomendação é travar o root depois
+   que ele cria o primeiro administrador. A linguagem deve automatizar isso
+   (`root { lockAfterBootstrap: true }`), apenas avisar, ou deixar como
+   procedimento operacional? Automatizar é mais seguro e mais fácil de errar em
+   ambiente de desenvolvimento.
+7. **Q8 — rotação da senha de root.** A env é semente e não sobrescreve; então
+   trocar a senha é pelo endpoint `manage`, e recuperar um root perdido não tem
+   caminho definido. Postgres resolve com `single-user mode`, Keycloak com
+   re-bootstrap do realm — aqui não há resposta ainda.
