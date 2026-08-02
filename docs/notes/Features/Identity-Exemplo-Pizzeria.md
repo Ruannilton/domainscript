@@ -79,7 +79,9 @@ Topology {
                     connection: env("IDENTITY_DB_URL")
                 }
 
-                // sem root o serviço não sobe — quem cria o primeiro gerente
+                // sem root o serviço não sobe — quem cria o primeiro gerente.
+                // lockAfterBootstrap default true: assim que o root criar a
+                // gerente Marina, ele mesmo deixa de autenticar.
                 root {
                     email:    env("IDENTITY_ROOT_EMAIL")
                     password: env("IDENTITY_ROOT_PASSWORD")
@@ -357,9 +359,11 @@ POST /api/identity/users   Authorization: Bearer <root>
 
 Root é o único que pode criar um `manager`: o `users` exposto tem
 `roles: [cook]`, então nem o gerente cria outro gerente — mas root não está
-preso a allowlist. Feito isso, a recomendação operacional é travar o root
-(`POST /identity/users/{root}/lock`), como se faz com o admin temporário do
-Keycloak.
+preso a allowlist. E essa chamada é a última dele: com `lockAfterBootstrap`
+no default, criar o primeiro usuário trava a própria conta
+([[Identity-API]] §2.3.1). Perder a Marina depois disso se resolve subindo o
+serviço uma vez com `IDENTITY_BOOTSTRAP_ROOT=true`, que cria um root
+temporário — não reseta o antigo.
 
 **Cliente se cadastra e pede** — nenhuma linha de código da pizzaria:
 
@@ -463,7 +467,7 @@ possível sem subir provedor.
 | Q2 | Caller de execução reativa | ✅ Decidido: é o módulo que disparou; falta fixar `caller.isService(M)` no contrato de `caller` |
 | Q3 | `requires` em rota convivendo com `access` do agregado | Em aberto — [[Identity-API]] §5 |
 | Q6 | Papel de quem se cadastra | ✅ Decidido: explícito na request, dentro do allowlist do endpoint ([[Identity-API]] §6.1) |
-| Q7/Q8 | Travar o root após o bootstrap; rotação e recuperação da senha | Em aberto — [[Identity-API]] §9 |
+| Q7/Q8 | Travar o root após o bootstrap; recuperação | ✅ Decidido: `lockAfterBootstrap` configurável (default `true`) e recuperação por root temporário à la Keycloak ([[Identity-API]] §2.3.1) |
 
 As bloqueantes caíram; o que resta não impede o exemplo de fechar no papel.
 

@@ -132,13 +132,48 @@ A separação de poderes que isso permite tem dois níveis, e é o que evita que
 Ou seja: o gerente da pizzaria cria cozinheiros o dia inteiro sem nunca poder
 inventar um papel novo. Perfil novo é ato de root.
 
-**Rotação e superfície.** Senha em variável de ambiente é o padrão da
+**Superfície da credencial.** Senha em variável de ambiente é o padrão da
 indústria (Postgres, Keycloak, MySQL) e tem o custo conhecido: vaza em `ps`, em
-dump de env, em log de orquestrador. A recomendação operacional é a do
-Keycloak — root cria o primeiro administrador de verdade e é travado logo em
-seguida (`POST /identity/users/{id}/lock`) — e a variável aponta para um
-secret manager quando o ambiente tem um. Se a linguagem deve *automatizar* esse
-travamento é questão em aberto (§9, Q7).
+dump de env, em log de orquestrador. A variável deve apontar para um secret
+manager onde o ambiente tiver um.
+
+### 2.3.1. Ciclo de vida do root
+
+```ds
+root {
+    email:    env("IDENTITY_ROOT_EMAIL")
+    password: env("IDENTITY_ROOT_PASSWORD")
+    lockAfterBootstrap: true          // default; false em dev
+}
+```
+
+**`lockAfterBootstrap` é configurável, e o default é `true`** — coerente com o
+fail-closed do princípio 4 de [[Identity]] §2, e seguro porque a recuperação
+abaixo existe. O gatilho precisa ser determinístico: **root é travado assim que
+cria o primeiro usuário com sucesso**. Depois disso ele não autentica mais, e o
+sistema segue nas mãos do administrador que ele acabou de criar — que é o
+ponto. Em desenvolvimento, `false` evita o ciclo de destravar a cada
+`docker compose up`.
+
+**Recuperação: re-bootstrap, no modelo do Keycloak.** Nem reset da conta
+existente, nem senha mestra — um root **temporário**, criado sob pedido
+explícito:
+
+| | Comportamento |
+|---|---|
+| Boot normal, root já existe | Env ignorada — semente não sobrescreve (§2.3) |
+| Boot com `IDENTITY_BOOTSTRAP_ROOT=true` | Cria um root **temporário** com as credenciais da env, ao lado do existente |
+| Enquanto o root temporário existir | ⚠️ WARN em todo boot, e a conta aparece marcada na listagem de usuários |
+| Depois de recuperar o acesso | O operador remove o temporário explicitamente |
+
+É o `KC_BOOTSTRAP_ADMIN_*` / `kc.sh bootstrap-admin` do Keycloak 26, com a
+mesma propriedade que o torna aceitável: recuperar exige **acesso ao ambiente
+de deploy**, não conhecimento de um segredo permanente — quem pode setar env e
+reiniciar o serviço já podia trocar o binário.
+
+Uma consequência de arquitetura: isso é lido pelo binário gerado em
+`cmd/<service>`, no boot, não pelo `dsc`. O compilador não roda em produção, e
+recuperação é operação de runtime.
 
 ### 2.2. O principal que não é gente
 
@@ -466,12 +501,7 @@ Ainda no espírito de não codificar decisão que a spec não tomou:
    tipo de `User.tenant` em §3.1. Com root no desenho ela ganha um caso
    concreto: root é global e atravessa tenants por definição, então a resposta
    precisa comportar um principal sem tenant.
-6. **Q7 — ciclo de vida do root (§2.3).** A recomendação é travar o root depois
-   que ele cria o primeiro administrador. A linguagem deve automatizar isso
-   (`root { lockAfterBootstrap: true }`), apenas avisar, ou deixar como
-   procedimento operacional? Automatizar é mais seguro e mais fácil de errar em
-   ambiente de desenvolvimento.
-7. **Q8 — rotação da senha de root.** A env é semente e não sobrescreve; então
-   trocar a senha é pelo endpoint `manage`, e recuperar um root perdido não tem
-   caminho definido. Postgres resolve com `single-user mode`, Keycloak com
-   re-bootstrap do realm — aqui não há resposta ainda.
+6. **Q7 — vida útil do root temporário (§2.3.1).** Decidido que a recuperação
+   cria um root temporário; falta decidir se ele expira sozinho (`recovery
+   { ttl: 1h }`) ou só sai por remoção explícita, como no Keycloak. TTL fecha a
+   janela de quem esqueceu de remover; remoção explícita é mais previsível.
