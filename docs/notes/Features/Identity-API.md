@@ -164,12 +164,17 @@ explícito:
 | Boot normal, root já existe | Env ignorada — semente não sobrescreve (§2.3) |
 | Boot com `IDENTITY_BOOTSTRAP_ROOT=true` | Cria um root **temporário** com as credenciais da env, ao lado do existente |
 | Enquanto o root temporário existir | ⚠️ WARN em todo boot, e a conta aparece marcada na listagem de usuários |
-| Depois de recuperar o acesso | O operador remove o temporário explicitamente |
+| Depois de recuperar o acesso | O operador remove o temporário explicitamente — **sem TTL** |
 
 É o `KC_BOOTSTRAP_ADMIN_*` / `kc.sh bootstrap-admin` do Keycloak 26, com a
 mesma propriedade que o torna aceitável: recuperar exige **acesso ao ambiente
 de deploy**, não conhecimento de um segredo permanente — quem pode setar env e
 reiniciar o serviço já podia trocar o binário.
+
+**O temporário não expira por conta própria.** Nada de TTL: uma conta de
+recuperação que some sozinha no meio de uma operação de emergência é pior que
+uma que fica. A pressão para removê-la é o WARN em todo boot mais a marcação na
+listagem — visibilidade permanente, remoção deliberada, igual ao Keycloak.
 
 Uma consequência de arquitetura: isso é lido pelo binário gerado em
 `cmd/<service>`, no boot, não pelo `dsc`. O compilador não roda em produção, e
@@ -501,7 +506,6 @@ Ainda no espírito de não codificar decisão que a spec não tomou:
    tipo de `User.tenant` em §3.1. Com root no desenho ela ganha um caso
    concreto: root é global e atravessa tenants por definição, então a resposta
    precisa comportar um principal sem tenant.
-6. **Q7 — vida útil do root temporário (§2.3.1).** Decidido que a recuperação
-   cria um root temporário; falta decidir se ele expira sozinho (`recovery
-   { ttl: 1h }`) ou só sai por remoção explícita, como no Keycloak. TTL fecha a
-   janela de quem esqueceu de remover; remoção explícita é mais previsível.
+O ciclo de vida do root não está mais nesta lista: `lockAfterBootstrap`,
+recuperação por root temporário e remoção explícita sem TTL estão decididos na
+§2.3.1.
