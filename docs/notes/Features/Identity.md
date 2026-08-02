@@ -6,6 +6,10 @@
 > cada decisão, e a §9 passou a listar o que elas fecham e o que sobra.
 > Inspiração declarada: ASP.NET Core Identity (stores, claims, policies,
 > external providers, endpoints scaffolded).
+>
+> **Continuações**: [[Identity-API]] detalha a superfície que o desenvolvedor
+> escreve (as sete camadas de API); [[Identity-Exemplo-Pizzeria]] aplica tudo
+> ao fixture `pizzeria` com cliente, gerente e cozinheiro.
 
 ## 1. O buraco, com evidência
 
@@ -107,7 +111,13 @@ soltas".
 ```ds
 Identity {
     provider: local
-    store: IdentityDb              // Database declarado pela infraestrutura
+    // o store é declarado aqui, não num mod.ds: Identity é de serviço (§3.4)
+    // e módulo nenhum é dono dele. Mesmas chaves de um Database de módulo.
+    store {
+        provider: "postgres"
+        connection: env("IDENTITY_DB_URL")
+    }
+
     id: Customer                   // <-- a integração decisiva, ver §4.3
 
     password {
@@ -174,7 +184,7 @@ Store local para conta e papéis; login social delegado — o caso
 ```ds
 Identity {
     provider: federated
-    store: IdentityDb
+    store { provider: "postgres", connection: env("IDENTITY_DB_URL") }
     id: Customer
 
     external Google {
@@ -206,11 +216,12 @@ superfície fechada, e a [[02-type-system]] §2.8 ganha a entrada correspondente
 
 | Membro | Tipo | Semântica | Onde é legível |
 |--------|------|-----------|----------------|
-| `caller.authenticated` | `boolean` | Há principal autenticado | Qualquer `access`/`visibility`/`AccessPolicy` |
+| `caller.authenticated` | `boolean` | Há principal autenticado | `access`, `visibility`, `AccessPolicy` e corpo de `UseCase` (§4.5) |
 | `caller.id` | `ref T` com `Identity { id: T }` declarado; `CallerId` opaco sem ele | O principal — nominal e comparável quando há `Identity`, opaco como hoje quando não há (§4.3) | idem |
 | `caller.hasRole(r)` | `boolean` | `r` é um `Role` (§4.4), não uma `string` nua | idem |
 | `caller.hasClaim(k, v)` | `boolean` | `k` é um `Claim` (§4.4); `v` o valor esperado | idem |
 | `caller.satisfies(P)` | `boolean` | `P` é uma `AccessPolicy` declarada (§5) | idem |
+| `caller.isService(M)` | `boolean` | O principal é o módulo `M` deste serviço, executando reativamente (§4.5) | idem |
 
 **Um só membro, com a mecânica do `subject`**[^4]. A proposta original tinha
 `caller.id : CallerId` (opaco) *e* `caller.subject : ref T` (nominal) — duas
@@ -221,9 +232,9 @@ porque `caller.id` é o que [[04-domain-core]] §4.3.1 e o resto da documentaç�
 já escrevem. Mesma renomeação no bloco de configuração: `Identity { id: T }`,
 e `claims { id: "sub" }` no mapeamento OIDC.
 
-Fora de `access`, `visibility` e `AccessPolicy` → erro de compilação, mesma
-regra que a §4.3.1 já fixa para `caller.id`. Caller anônimo → todo membro é
-`false` / não-vinculado, **fail-closed**, nunca erro de execução.
+Fora das posições da tabela → erro de compilação, na mesma linha do que a
+§4.3.1 já fixa para `caller.id`. Caller anônimo → todo membro é `false` /
+não-vinculado, **fail-closed**, nunca erro de execução.
 
 ### 4.3. `Identity { id: T }` — o principal como referência tipada
 
@@ -281,6 +292,24 @@ Ou seja: o desenvolvedor cadastra os tipos padrão de papel e claim de forma
 declarada, e ainda assim permite que os clientes cadastrem os seus. Com
 `provider: oidc` as sementes declaram os valores esperados no claim mapeado em
 `claims { roles: ... }`; a fonte da verdade continua sendo o provedor externo.
+
+### 4.5. Onde `caller` é legível — e quem é ele em execução reativa
+
+Duas decisões que a superfície de API cobrou ([[Identity-API]]) e que fecham o
+contrato da tabela da §4:
+
+- **`caller` é legível dentro do corpo de `UseCase`**, não só em posição de
+  autorização. Sem isso não há como gravar o principal no estado — o dono de um
+  pedido teria que vir do payload do Command, que é precisamente o furo que
+  este design existe para fechar. Continua **proibido dentro de `Handle`**: o
+  agregado recebe o principal como parâmetro e permanece testável sem contexto
+  ambiente.
+- **Em execução reativa o caller é o próprio módulo/serviço que disparou.**
+  Uma `Policy` que reage a um `PublicEvent` e dispara um `Handle` protegido por
+  `access` roda sob o principal daquele módulo — não sob caller anônimo, nem
+  sob o usuário que originou a cadeia. É o que dá semântica ao `access` de
+  `Handle`s que rota HTTP nenhuma alcança, hoje sustentado só por convenção de
+  nome ([[Identity-API]] §2.2).
 
 ## 5. Camada 3 — `AccessPolicy`: autorização nomeada
 
@@ -534,12 +563,17 @@ de virar spec:
 - **R2 — escopo da chave de idempotência.** Já estava marcado "decisão em
   aberto" na tabela da §7 e não foi tocado: a chave passa a incluir o
   principal, ou não?
-- **R3 — `given caller ...` em [[24-testing]].** A sintaxe de teste é a única
-  peça do princípio 6 (§2) ainda sem forma proposta.
-- **R4 — superfície da lib padrão de identity.** A §3.0 fixa que `User`, `Role`
-  e `Claim` vêm prontos; falta enumerar o que exatamente a lib expõe, e como
-  esses tipos aparecem no catálogo fechado da [[02-type-system]] §2.8 ao lado
-  de `caller`.
+- **R3 — `given caller ...` em [[24-testing]].** Proposta em
+  [[Identity-API]] §8; falta a decisão.
+- **R4 — superfície da lib padrão de identity.** Enumerada em
+  [[Identity-API]] §3 (tipos, eventos e a lista do que é proibido); falta
+  encaixá-la no catálogo fechado da [[02-type-system]] §2.8 ao lado de
+  `caller`.
+
+Mais as questões que a superfície de API abriu, todas em [[Identity-API]] §9:
+`caller.id` legível em UseCase (Q1, bloqueante — sem ela não há como gravar o
+dono de um recurso), `serviceAccounts` (Q2, bloqueante — `Policy` que dispara
+`Handle` com `access` não tem caller definido hoje) e `requires` em rota (Q3).
 
 ## 10. Recomendação de sequenciamento
 
