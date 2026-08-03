@@ -79,6 +79,14 @@ Topology {
                     connection: env("IDENTITY_DB_URL")
                 }
 
+                // sem root o serviço não sobe — quem cria o primeiro gerente.
+                // lockAfterBootstrap default true: assim que o root criar a
+                // gerente Marina, ele mesmo deixa de autenticar.
+                root {
+                    email:    env("IDENTITY_ROOT_EMAIL")
+                    password: env("IDENTITY_ROOT_PASSWORD")
+                }
+
                 password     { hasher: argon2id, minLength: 12, requireDigit: true }
                 lockout      { maxAttempts: 5, window: 15min, duration: 15min }
                 tokens       { access { ttl: 15min }, refresh { ttl: 30d, rotation: true } }
@@ -96,14 +104,21 @@ Topology {
                 }
 
                 expose {
-                    register      { public }                        // cliente se cadastra
+                    // público, mas só cria customer: "role":"manager" na
+                    // request de cadastro é 403, não escalada de privilégio
+                    register      { public, roles: [customer] }
                     login         { public }
                     refresh       { public }
                     logout        { requires caller.authenticated }
                     confirmEmail  { public }
                     resetPassword { public }
                     manage        { requires caller.authenticated }
-                    users         { requires Manager }              // gerente cadastra cozinheiro
+
+                    // gerente cadastra cozinheiro — e só cozinheiro
+                    users         { requires Manager, roles: [cook] }
+
+                    // catálogo de papéis: root, implícito, não configurável
+                    roles         { }
                 }
             }
         }
@@ -332,29 +347,50 @@ Interface da cozinha:
 
 ## 7. Os quatro fluxos, ponta a ponta
 
+**Dia zero: o root cria o gerente.** Na primeira subida o runtime cria o root a
+partir das variáveis de ambiente ([[Identity-API]] §2.3) — sem elas o serviço
+não sobe:
+
+```http
+POST /api/identity/login   { "email": "root@pizzaria.com", "password": "…" }
+POST /api/identity/users   Authorization: Bearer <root>
+     { "email": "marina@pizzaria.com", "role": "manager" }
+```
+
+Root é o único que pode criar um `manager`: o `users` exposto tem
+`roles: [cook]`, então nem o gerente cria outro gerente — mas root não está
+preso a allowlist. E essa chamada é a última dele: com `lockAfterBootstrap`
+no default, criar o primeiro usuário trava a própria conta
+([[Identity-API]] §2.3.1). Perder a Marina depois disso se resolve subindo o
+serviço uma vez com `IDENTITY_BOOTSTRAP_ROOT=true`, que cria um root
+temporário — não reseta o antigo.
+
 **Cliente se cadastra e pede** — nenhuma linha de código da pizzaria:
 
 ```http
-POST /api/identity/register   { "email": "ana@x.com", "password": "…" }
+POST /api/identity/register       { "email": "ana@x.com", "password": "…", "role": "customer" }
 POST /api/identity/confirm-email  { "token": "…" }
-POST /api/identity/login      { "email": "ana@x.com", "password": "…" }
+POST /api/identity/login          { "email": "ana@x.com", "password": "…" }
    → { "accessToken": "…", "refreshToken": "…" }
-POST /api/v1/orders           Authorization: Bearer …
+POST /api/v1/orders               Authorization: Bearer …
 ```
 
-O papel `customer` sai de onde? Do `register`, que atribui o papel default do
-provedor — e é a última decisão em aberto deste exemplo (§9, Q6).
+O papel vem explícito na request — não há default a assumir — e `"role":
+"manager"` ali é `403`, porque `register` só pode criar `customer`
+([[Identity-API]] §6.1).
 
-**Gerente cadastra cozinheiro** — API de gestão, protegida por `Manager`:
+**Gerente cadastra cozinheiro** — API de gestão, protegida por `Manager` e
+limitada a `cook`:
 
 ```http
 POST /api/identity/users            Authorization: Bearer <gerente>
-     { "email": "joao@pizzaria.com", "roles": ["cook"] }
-PUT  /api/identity/users/{id}/roles/cook
+     { "email": "joao@pizzaria.com", "role": "cook" }
 ```
 
 Equivale a `UserManager.CreateAsync` + `AddToRoleAsync`, sem uma linha de
-código da aplicação — é o "framework de identity dentro da linguagem".
+código da aplicação — é o "framework de identity dentro da linguagem". E se a
+rede de pizzarias quiser um papel `supervisor` que ninguém previu, é ato de
+root: mutar o catálogo não é delegável.
 
 **Gateway de pagamento confirma** — client credentials da conta `Payments`,
 papel `system_payment`, e a rota `/admin/orders/{id}/pay` o aceita sem que ele
@@ -429,7 +465,21 @@ possível sem subir provedor.
 |---|---|---|
 | Q1 | `caller` legível em UseCase | ✅ Decidido ([[Identity]] §4.5); resta o tratamento de autorização inline ([[Identity-API]] §9) |
 | Q2 | Caller de execução reativa | ✅ Decidido: é o módulo que disparou; falta fixar `caller.isService(M)` no contrato de `caller` |
-| Q3 | `requires` em rota convivendo com `access` do agregado | Em aberto — [[Identity-API]] §5 |
-| Q6 | Papel default do `register` — quem nasce `customer`? `register { public, defaultRoles: [customer] }` é a proposta natural, e não está escrita em lugar nenhum | Em aberto — este documento |
+| Q3 | `requires` em rota convivendo com `access` do agregado | ✅ Decidido: rodam os dois, sem supressão ([[Identity-API]] §5.1) |
+| Q6 | Papel de quem se cadastra | ✅ Decidido: explícito na request, dentro do allowlist do endpoint ([[Identity-API]] §6.1) |
+| Q7/Q8 | Travar o root após o bootstrap; recuperação | ✅ Decidido: `lockAfterBootstrap` configurável (default `true`) e recuperação por root temporário à la Keycloak ([[Identity-API]] §2.3.1) |
 
-As duas bloqueantes caíram; Q3 e Q6 não impedem o exemplo de fechar no papel.
+Nenhuma questão de design do exemplo segue aberta.
+
+### 9.1. A matriz de autoridade que o exemplo produz
+
+| | Criar `customer` | Criar `cook` | Criar `manager` | Criar papel novo |
+|---|---|---|---|---|
+| Anônimo | ✅ via `register` | ❌ | ❌ | ❌ |
+| Cliente | — | ❌ | ❌ | ❌ |
+| Cozinheiro | — | ❌ | ❌ | ❌ |
+| Gerente | — | ✅ | ❌ | ❌ |
+| Root | ✅ | ✅ | ✅ | ✅ |
+
+Nenhuma linha dessa tabela foi escrita à mão: ela é consequência do `expose` e
+da regra de que catálogo é ato de root.

@@ -67,6 +67,12 @@ Identity {
 
     id: User                             // ref T de caller.id — §3.2
 
+    // obrigatório em local/federated: o serviço não sobe sem root (§2.3)
+    root {
+        email:    env("IDENTITY_ROOT_EMAIL")
+        password: env("IDENTITY_ROOT_PASSWORD")
+    }
+
     password     { hasher: argon2id, minLength: 12, requireDigit: true }
     lockout      { maxAttempts: 5, window: 15min, duration: 15min }
     tokens       { access { ttl: 15min }, refresh { ttl: 30d, rotation: true } }
@@ -98,6 +104,82 @@ dele, que existem, valem e autorizam — só não podem ser citados por nome num
 Mesma coisa para `claims { }`: declara as chaves que o código lê com
 `caller.hasClaim(Claim.storeUnit, v)`.
 
+### 2.3. `root` — o bootstrap, no modelo do Keycloak e do Postgres
+
+Mutar o catálogo de papéis é criar autoridade nova. Isso não pode depender de
+o desenvolvedor lembrar de proteger um endpoint, então não é configurável:
+
+- **`Role.root` é da lib padrão**, sempre existe, não é removível e não é
+  atribuível pela API por ninguém que já não seja root.
+- **O bloco `root { }` é obrigatório** com `provider: local` ou `federated`, e
+  proibido com `oidc` (lá o admin é do provedor externo). Sem ele, **erro de
+  compilação**; com as variáveis vazias em runtime, **o serviço não sobe** —
+  fail-closed, como um Postgres sem `POSTGRES_PASSWORD`.
+- **Criado uma única vez**, na primeira subida em que o store não tem nenhum
+  root. É idempotente: reiniciar não recria, e **mudar a variável depois não
+  sobrescreve a senha** — mesma semântica de `KEYCLOAK_ADMIN` e
+  `POSTGRES_PASSWORD`, e pela mesma razão (a env é semente de bootstrap, não
+  fonte de verdade contínua).
+
+A separação de poderes que isso permite tem dois níveis, e é o que evita que
+"só root faz tudo" vire "todo mundo é root na prática":
+
+| Operação | Quem pode |
+|----------|-----------|
+| Criar, alterar ou remover **papel/claim do catálogo** | Só `root`. Não delegável, não configurável |
+| Criar usuário e atribuir **papel existente** | Delegável por `expose { users { requires … } }` (§6) |
+
+Ou seja: o gerente da pizzaria cria cozinheiros o dia inteiro sem nunca poder
+inventar um papel novo. Perfil novo é ato de root.
+
+**Superfície da credencial.** Senha em variável de ambiente é o padrão da
+indústria (Postgres, Keycloak, MySQL) e tem o custo conhecido: vaza em `ps`, em
+dump de env, em log de orquestrador. A variável deve apontar para um secret
+manager onde o ambiente tiver um.
+
+### 2.3.1. Ciclo de vida do root
+
+```ds
+root {
+    email:    env("IDENTITY_ROOT_EMAIL")
+    password: env("IDENTITY_ROOT_PASSWORD")
+    lockAfterBootstrap: true          // default; false em dev
+}
+```
+
+**`lockAfterBootstrap` é configurável, e o default é `true`** — coerente com o
+fail-closed do princípio 4 de [[Identity]] §2, e seguro porque a recuperação
+abaixo existe. O gatilho precisa ser determinístico: **root é travado assim que
+cria o primeiro usuário com sucesso**. Depois disso ele não autentica mais, e o
+sistema segue nas mãos do administrador que ele acabou de criar — que é o
+ponto. Em desenvolvimento, `false` evita o ciclo de destravar a cada
+`docker compose up`.
+
+**Recuperação: re-bootstrap, no modelo do Keycloak.** Nem reset da conta
+existente, nem senha mestra — um root **temporário**, criado sob pedido
+explícito:
+
+| | Comportamento |
+|---|---|
+| Boot normal, root já existe | Env ignorada — semente não sobrescreve (§2.3) |
+| Boot com `IDENTITY_BOOTSTRAP_ROOT=true` | Cria um root **temporário** com as credenciais da env, ao lado do existente |
+| Enquanto o root temporário existir | ⚠️ WARN em todo boot, e a conta aparece marcada na listagem de usuários |
+| Depois de recuperar o acesso | O operador remove o temporário explicitamente — **sem TTL** |
+
+É o `KC_BOOTSTRAP_ADMIN_*` / `kc.sh bootstrap-admin` do Keycloak 26, com a
+mesma propriedade que o torna aceitável: recuperar exige **acesso ao ambiente
+de deploy**, não conhecimento de um segredo permanente — quem pode setar env e
+reiniciar o serviço já podia trocar o binário.
+
+**O temporário não expira por conta própria.** Nada de TTL: uma conta de
+recuperação que some sozinha no meio de uma operação de emergência é pior que
+uma que fica. A pressão para removê-la é o WARN em todo boot mais a marcação na
+listagem — visibilidade permanente, remoção deliberada, igual ao Keycloak.
+
+Uma consequência de arquitetura: isso é lido pelo binário gerado em
+`cmd/<service>`, no boot, não pelo `dsc`. O compilador não roda em produção, e
+recuperação é operação de runtime.
+
 ### 2.2. O principal que não é gente
 
 Uma `Policy` que reage a um `PublicEvent` dispara `Handle`s protegidos por
@@ -119,6 +201,17 @@ Isso apaga metade da necessidade de `system_*`: `system_sales`,
 `system_kitchen` e afins eram nome de convenção para algo que o compilador
 sabe sozinho — qual módulo está executando. Papel para isso é indireção sem
 ganho, e uma `string` a mais para digitar errado.
+
+Duas regras que fazem `isService` valer a pena em vez de virar outra `string`
+disfarçada:
+
+- **`M` é nome de módulo, verificado em compilação.** `caller.isService(Vendas)`
+  num serviço que não tem esse módulo é erro, não negação silenciosa em
+  produção.
+- **Requisição HTTP nunca satisfaz `isService`.** O principal de módulo só
+  existe em execução reativa; nenhum token, de ninguém, se apresenta como
+  módulo. É o que impede que a política mais poderosa do sistema seja
+  alcançável pela borda.
 
 Sobra o caso que **não** é módulo deste sistema: a máquina externa. O gateway
 de pagamento batendo em `/admin/orders/{id}/pay` não tem principal implícito,
@@ -167,14 +260,25 @@ Aggregate User {
         status UserStatus
         roles  List<Role>
         claims List<ClaimAssignment>
-        tenant ref Tenant            // presente sob multi-tenancy — R1
+        tenant ref Tenant?           // 0..1 — ver abaixo
     }
 }
 ```
 
+**Um principal pertence a no máximo um tenant.** Quem atende três empresas
+contratantes tem três contas, que é como o SaaS B2B costuma emitir de qualquer
+forma. O ganho é grande e barato: papel não precisa de qualificador de tenant, e
+`hasRole` continua sendo uma pergunta só, sem "em qual tenant?". O `0` do
+`0..1` não é conveniência — root atravessa tenants por definição (§2.3) e
+precisa existir sem nenhum. Se um dia a forma N virar requisito, `0..1 → N` é
+evolução aditiva; o caminho contrário não é.
+
 O que o desenvolvedor faz com isso: `ref User` em campos do domínio dele
 (`Order.customerId`), `Role.manager` em políticas, `Claim.storeUnit` em
 condições. Só.
+
+`Role.root` já vem no catálogo (§2.3) e é o único nome reservado: redeclará-lo
+em `roles { }` é erro, e ele nunca é criado nem atribuído pela API.
 
 ### 3.2. `id: T` — quem `caller.id` referencia
 
@@ -212,12 +316,36 @@ A lista importa tanto quanto a de cima, porque é ela que impede o
 | Adicionar campo a `User` | ❌ Erro — o lugar disso é `claims { }`, ou um agregado do domínio dele |
 | `View UserVW From User` | ❌ Erro — a leitura de identity é pelos endpoints gerados |
 | `caller.id` fora de `access`/`visibility`/`AccessPolicy`/UseCase | ❌ Erro (§4.1) |
+| Criar, atribuir ou remover `Role.root` pela API | ❌ Erro — root vem do bootstrap (§2.3) |
+| Mutar o catálogo de papéis sem ser root | ❌ `403` em runtime, não configurável |
 
 O terceiro item é o que preserva o isolamento de módulo: Identity é serviço,
 não módulo do desenvolvedor, então `load` cruzaria uma fronteira que a
 linguagem não permite cruzar. A porta para escrever em identity é a API de
 gestão (§6), como o Admin REST API do Keycloak — não uma chamada de dentro do
 domínio.
+
+### 3.5. Precisa do dado de identity na sua tela? Projete localmente
+
+A proibição acima não deixa ninguém sem saída, e o padrão é o que o
+repositório já usa para dado de outro módulo: **reagir ao evento e manter
+projeção local**. Sales não lê o banco da Kitchen — reage a `TicketFinished`.
+Aqui é igual:
+
+```ds
+Policy TrackCustomerProfile on UserRegistered {
+    delivery AtLeastOnce
+    execute {
+        Customer.Create(userId: event.id, email: event.email)
+    }
+}
+```
+
+A partir daí a tela é uma `View` sobre `Customer`, agregado do desenvolvedor,
+com as regras de `visibility` dele. É a mesma resposta da §7.3 de [[Identity]]:
+usuário do domínio é do domínio, e é lá que os dados dele moram. O que a lib
+padrão guarda — credencial, sessão, papel — nunca é projetado, e é justamente
+o que ninguém quer duplicar.
 
 ## 4. Superfície 3 — ler o principal no domínio
 
@@ -252,12 +380,20 @@ princípio 1 de [[Identity]] §2 fica de pé: o valor vem do contexto ambiente,
 `cmd.customerId` continua sendo o erro que sempre foi.
 
 **Ler não é autorizar.** Com `caller` disponível no UseCase, nada impede
-escrever `ensure caller.hasRole(Role.manager) else Forbidden` no corpo — e aí
-a autorização vira invisível para o compilador, contra a Forma Canônica de
-[[Identity]] §2. A decisão de acesso pertence a `access`, `requires` e
-`AccessPolicy`, que são declarativos e inspecionáveis; o UseCase lê `caller`
-para *alimentar o domínio*, não para decidir permissão. Proponho aviso
-(⚠️ warning), não erro — ver §9, Q1.
+escrever `ensure caller.hasRole(Role.manager) else Forbidden` no corpo — e aí a
+autorização fica invisível para o compilador, contra a Forma Canônica de
+[[Identity]] §2. A regra que separa um caso do outro é decidível, porque os
+membros de `caller` se dividem em duas naturezas:
+
+| No corpo de `UseCase` | Natureza | Resultado |
+|---|---|---|
+| `caller.id` | Valor — alimenta o domínio | ✅ Silencioso; é para isto que a leitura foi liberada |
+| `caller.authenticated`, `hasRole`, `hasClaim`, `satisfies`, `isService` | Predicado — pergunta de permissão | ⚠️ Aviso: autorização fora de posição declarativa |
+
+Aviso e não erro: a spec pode apertar para erro depois, com o uso real na mão;
+afrouxar depois é que não dá. E o aviso é acionável — a correção é mover a
+condição para `access`, `requires` ou uma `AccessPolicy`, que é onde o
+compilador enxerga.
 
 ## 5. Superfície 4 — `AccessPolicy`
 
@@ -287,6 +423,25 @@ A terceira é a que faltava: `requires` na rota é a autorização de borda do
 caso "acessar o recurso no path X com o token Y", que não toca domínio e
 rejeita antes do UseCase.
 
+### 5.1. Rota e agregado checam os dois — sem supressão
+
+Quando a rota tem `requires` e o `Handle` alvo tem `access`, **as duas
+checagens rodam**, nessa ordem, e qualquer uma que negue encerra a requisição.
+Uma não substitui a outra porque não são a mesma coisa:
+
+| | `access` do agregado | `requires` da rota |
+|---|---|---|
+| Vale para | Toda porta: HTTP, `Policy`, worker, teste | Só aquela rota |
+| Papel | Invariante do domínio | Filtro de borda, evita carregar estado |
+
+Se o `requires` da rota suprimisse o `access`, mexer numa rota enfraqueceria em
+silêncio uma regra de domínio — e o mesmo `Handle` disparado por uma `Policy`
+ficaria protegido por uma regra que a rota não aplica. O custo de rodar as duas
+é um predicado booleano sobre um caller já resolvido.
+
+Como consequência de [[Identity]] §5.1, `requires` de rota só aceita policy sem
+`self`: na borda não há instância projetada.
+
 ## 6. Superfície 5 — endpoints gerados
 
 `expose` é opt-in por item, e **cada item carrega a sua própria política** — é
@@ -295,17 +450,43 @@ objeto injetado:
 
 ```ds
 expose {
-    register      { public }
+    register      { public, roles: [customer] }       // §6.1
     login         { public }
     refresh       { public }
     logout        { requires caller.authenticated }
     confirmEmail  { public }
     resetPassword { public }
     manage        { requires caller.authenticated }   // perfil, senha, 2FA do próprio
-    users         { requires Manager }                // gestão de terceiros
-    roles         { requires Admin }                  // catálogo mutável
+    users         { requires Manager, roles: [cook] } // gestão de terceiros
+    roles         { }                                 // catálogo — root, implícito (§2.3)
 }
 ```
+
+### 6.1. O papel vem da request, dentro de um allowlist
+
+Não existe papel default: **a request diz qual papel está criando**, e omiti-lo
+é `400`.
+
+```http
+POST /identity/register   { "email": "ana@x.com", "password": "…", "role": "customer" }
+POST /identity/users      { "email": "joao@x.com", "role": "cook" }
+```
+
+Só que "a request escolhe" sozinho seria escalada de privilégio na primeira
+tentativa — `register` é público, e nada impediria `"role": "manager"`. Por
+isso o `roles:` do `expose` é o **conjunto que aquele endpoint pode criar**:
+
+| Situação | Resultado |
+|----------|-----------|
+| `role` ausente na request | `400` — não há default a assumir |
+| `role` fora do `roles:` do endpoint | `403` — inclusive para quem passou no `requires` |
+| `register` ou `users` sem `roles:` declarado | ❌ Erro de compilação |
+| `roles: [root]` em qualquer endpoint | ❌ Erro de compilação — root não se cria pela API (§2.3) |
+
+As duas metades são necessárias: explícito na request tira o default
+implícito, e o allowlist tira a escolha livre. Um `Manager` com
+`users { requires Manager, roles: [cook] }` cria cozinheiros e nada mais — nem
+outro gerente, nem root.
 
 | Item | Rotas | Equivalente |
 |------|-------|-------------|
@@ -316,8 +497,8 @@ expose {
 | `confirmEmail` | `POST /identity/confirm-email` | `ConfirmEmailAsync` |
 | `resetPassword` | `POST /identity/forgot-password`, `/reset-password` | `GeneratePasswordResetTokenAsync` |
 | `manage` | `GET\|POST /identity/manage/{profile,password,2fa}` | Identity UI /Manage |
-| `users` | `GET\|POST\|PATCH /identity/users…`, `PUT\|DELETE /identity/users/{id}/roles/{role}` | `UserManager` + `AddToRoleAsync` |
-| `roles` | `GET\|POST\|DELETE /identity/roles` | `RoleManager` |
+| `users` | `GET\|POST\|PATCH /identity/users…`, `PUT\|DELETE /identity/users/{id}/roles/{role}`, `POST /identity/users/{id}/lock` | `UserManager` + `AddToRoleAsync` |
+| `roles` | `GET\|POST\|DELETE /identity/roles`, `…/claims` | `RoleManager` (sempre root) |
 
 Regras de borda: rotas de identity são `{ tenancy: none }` por construção
 (precedem o tenant — [[Identity]] §7.2), herdam `basePath` e nascem com
@@ -370,24 +551,39 @@ fixa o principal sem subir provedor, que é o princípio 6 de [[Identity]] §2.
 `then forbidden` / `then unauthorized` é a asserção que hoje não existe —
 [[23-error-classification]] só tem `ErrForbidden`.
 
-## 9. Questões que esta proposta abre
+Duas regras completam a forma:
 
-Ainda no espírito de não codificar decisão que a spec não tomou:
+- **Omitir `given caller` significa anônimo**, não "autenticado o bastante".
+  É o mesmo fail-closed do runtime, e evita a pior categoria de teste: o que
+  passa porque a autorização não foi exercida.
+- **`given caller service Sales`** fixa o principal de módulo (§2.2), que é o
+  único jeito de testar `Handle` protegido por `caller.isService(M)` — o
+  caminho por onde `KitchenTicket.Create` é de fato criado em produção.
 
-1. **Q1 — autorização inline no UseCase (§4.1).** Decidido que `caller` é
-   legível ali; falta decidir o que fazer quando alguém usa isso para
-   *autorizar* em vez de alimentar o domínio. Proponho ⚠️ warning — erro seria
-   difícil de definir sem falso positivo, e silêncio deixa autorização fora do
-   alcance do compilador.
-2. **Q2 — `caller.isService(M)` (§2.2).** A decisão de que o caller reativo é
-   o módulo pede um membro novo no contrato de `caller`, que [[Identity]] §4
-   ainda não lista. Alternativa seria papel implícito por módulo, que traz de
-   volta a `string`.
-3. **Q3 — `requires` em rota (§5).** Estende [[11-interface]]; precisa decidir
-   se convive com o `access` do agregado (as duas checagens rodam) ou se uma
-   suprime a outra. A proposta é que rodem as duas, fail-closed.
-4. **Q4 — leitura de identity pelo desenvolvedor.** §3.4 proíbe `View … From
-   User`. Uma tela de "meus dados" além do `manage` gerado exigiria alguma
-   query da lib padrão — deliberadamente fora desta proposta.
-5. **Q5 — cardinalidade principal ↔ tenant** (R1 de [[Identity]] §9.1) decide o
-   tipo de `User.tenant` em §3.1.
+```ds
+scenario "ticket nasce da reação de Sales, não de gente" {
+    given caller service Sales
+    when Create(orderRef: "O1")
+    then [ TicketCreated(id: "T1", orderRef: "O1") ]
+}
+```
+
+## 9. Onde cada questão foi parar
+
+O documento nasceu com sete questões abertas; todas foram decididas ao longo
+das rodadas de revisão. O índice:
+
+| | Questão | Decisão | Seção |
+|---|---|---|---|
+| Q1 | Autorização inline no UseCase | `caller.id` silencioso, membros-predicado geram ⚠️ aviso | §4.1 |
+| Q2 | `caller.isService(M)` | Adotado no contrato; `M` verificado em compilação, inalcançável por HTTP | §2.2 |
+| Q3 | `requires` de rota × `access` do agregado | Rodam os dois, sem supressão | §5.1 |
+| Q4 | Ler identity no domínio | Continua proibido; o padrão é projeção local por reação a evento | §3.5 |
+| Q5 | Principal ↔ tenant | `0..1`; N tenants = N principals | §3.1 |
+| Q6 | Papel de quem se cadastra | Explícito na request, dentro do allowlist do endpoint | §6.1 |
+| Q7/Q8 | Ciclo de vida do root | `lockAfterBootstrap` configurável, recuperação por root temporário, remoção explícita sem TTL | §2.3.1 |
+
+O que resta não é decisão de design, é trabalho de spec: encaixar `caller`, os
+tipos da lib padrão e `AccessPolicy` no catálogo fechado da
+[[02-type-system]] §2.8, e escrever as regras de compilação correspondentes em
+[[25-compilation-rules]].
