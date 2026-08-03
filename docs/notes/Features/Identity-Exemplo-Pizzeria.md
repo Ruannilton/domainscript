@@ -465,11 +465,11 @@ possível sem subir provedor.
 |---|---|---|
 | Q1 | `caller` legível em UseCase | ✅ Decidido ([[Identity]] §4.5); resta o tratamento de autorização inline ([[Identity-API]] §9) |
 | Q2 | Caller de execução reativa | ✅ Decidido: é o módulo que disparou; falta fixar `caller.isService(M)` no contrato de `caller` |
-| Q3 | `requires` em rota convivendo com `access` do agregado | Em aberto — [[Identity-API]] §5 |
+| Q3 | `requires` em rota convivendo com `access` do agregado | ✅ Decidido: rodam os dois, sem supressão ([[Identity-API]] §5.1) |
 | Q6 | Papel de quem se cadastra | ✅ Decidido: explícito na request, dentro do allowlist do endpoint ([[Identity-API]] §6.1) |
 | Q7/Q8 | Travar o root após o bootstrap; recuperação | ✅ Decidido: `lockAfterBootstrap` configurável (default `true`) e recuperação por root temporário à la Keycloak ([[Identity-API]] §2.3.1) |
 
-As bloqueantes caíram; o que resta não impede o exemplo de fechar no papel.
+Nenhuma questão de design do exemplo segue aberta.
 
 ### 9.1. A matriz de autoridade que o exemplo produz
 

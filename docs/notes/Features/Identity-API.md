@@ -202,6 +202,17 @@ Isso apaga metade da necessidade de `system_*`: `system_sales`,
 sabe sozinho — qual módulo está executando. Papel para isso é indireção sem
 ganho, e uma `string` a mais para digitar errado.
 
+Duas regras que fazem `isService` valer a pena em vez de virar outra `string`
+disfarçada:
+
+- **`M` é nome de módulo, verificado em compilação.** `caller.isService(Vendas)`
+  num serviço que não tem esse módulo é erro, não negação silenciosa em
+  produção.
+- **Requisição HTTP nunca satisfaz `isService`.** O principal de módulo só
+  existe em execução reativa; nenhum token, de ninguém, se apresenta como
+  módulo. É o que impede que a política mais poderosa do sistema seja
+  alcançável pela borda.
+
 Sobra o caso que **não** é módulo deste sistema: a máquina externa. O gateway
 de pagamento batendo em `/admin/orders/{id}/pay` não tem principal implícito,
 precisa de credencial e de papéis:
@@ -249,10 +260,18 @@ Aggregate User {
         status UserStatus
         roles  List<Role>
         claims List<ClaimAssignment>
-        tenant ref Tenant            // presente sob multi-tenancy — R1
+        tenant ref Tenant?           // 0..1 — ver abaixo
     }
 }
 ```
+
+**Um principal pertence a no máximo um tenant.** Quem atende três empresas
+contratantes tem três contas, que é como o SaaS B2B costuma emitir de qualquer
+forma. O ganho é grande e barato: papel não precisa de qualificador de tenant, e
+`hasRole` continua sendo uma pergunta só, sem "em qual tenant?". O `0` do
+`0..1` não é conveniência — root atravessa tenants por definição (§2.3) e
+precisa existir sem nenhum. Se um dia a forma N virar requisito, `0..1 → N` é
+evolução aditiva; o caminho contrário não é.
 
 O que o desenvolvedor faz com isso: `ref User` em campos do domínio dele
 (`Order.customerId`), `Role.manager` em políticas, `Claim.storeUnit` em
@@ -306,6 +325,28 @@ linguagem não permite cruzar. A porta para escrever em identity é a API de
 gestão (§6), como o Admin REST API do Keycloak — não uma chamada de dentro do
 domínio.
 
+### 3.5. Precisa do dado de identity na sua tela? Projete localmente
+
+A proibição acima não deixa ninguém sem saída, e o padrão é o que o
+repositório já usa para dado de outro módulo: **reagir ao evento e manter
+projeção local**. Sales não lê o banco da Kitchen — reage a `TicketFinished`.
+Aqui é igual:
+
+```ds
+Policy TrackCustomerProfile on UserRegistered {
+    delivery AtLeastOnce
+    execute {
+        Customer.Create(userId: event.id, email: event.email)
+    }
+}
+```
+
+A partir daí a tela é uma `View` sobre `Customer`, agregado do desenvolvedor,
+com as regras de `visibility` dele. É a mesma resposta da §7.3 de [[Identity]]:
+usuário do domínio é do domínio, e é lá que os dados dele moram. O que a lib
+padrão guarda — credencial, sessão, papel — nunca é projetado, e é justamente
+o que ninguém quer duplicar.
+
 ## 4. Superfície 3 — ler o principal no domínio
 
 Contrato completo em [[Identity]] §4. O que o desenvolvedor escreve:
@@ -339,12 +380,20 @@ princípio 1 de [[Identity]] §2 fica de pé: o valor vem do contexto ambiente,
 `cmd.customerId` continua sendo o erro que sempre foi.
 
 **Ler não é autorizar.** Com `caller` disponível no UseCase, nada impede
-escrever `ensure caller.hasRole(Role.manager) else Forbidden` no corpo — e aí
-a autorização vira invisível para o compilador, contra a Forma Canônica de
-[[Identity]] §2. A decisão de acesso pertence a `access`, `requires` e
-`AccessPolicy`, que são declarativos e inspecionáveis; o UseCase lê `caller`
-para *alimentar o domínio*, não para decidir permissão. Proponho aviso
-(⚠️ warning), não erro — ver §9, Q1.
+escrever `ensure caller.hasRole(Role.manager) else Forbidden` no corpo — e aí a
+autorização fica invisível para o compilador, contra a Forma Canônica de
+[[Identity]] §2. A regra que separa um caso do outro é decidível, porque os
+membros de `caller` se dividem em duas naturezas:
+
+| No corpo de `UseCase` | Natureza | Resultado |
+|---|---|---|
+| `caller.id` | Valor — alimenta o domínio | ✅ Silencioso; é para isto que a leitura foi liberada |
+| `caller.authenticated`, `hasRole`, `hasClaim`, `satisfies`, `isService` | Predicado — pergunta de permissão | ⚠️ Aviso: autorização fora de posição declarativa |
+
+Aviso e não erro: a spec pode apertar para erro depois, com o uso real na mão;
+afrouxar depois é que não dá. E o aviso é acionável — a correção é mover a
+condição para `access`, `requires` ou uma `AccessPolicy`, que é onde o
+compilador enxerga.
 
 ## 5. Superfície 4 — `AccessPolicy`
 
@@ -373,6 +422,25 @@ Interface HTTP     { POST "/admin/menu" -> CreateMenuItem { requires Manager } }
 A terceira é a que faltava: `requires` na rota é a autorização de borda do
 caso "acessar o recurso no path X com o token Y", que não toca domínio e
 rejeita antes do UseCase.
+
+### 5.1. Rota e agregado checam os dois — sem supressão
+
+Quando a rota tem `requires` e o `Handle` alvo tem `access`, **as duas
+checagens rodam**, nessa ordem, e qualquer uma que negue encerra a requisição.
+Uma não substitui a outra porque não são a mesma coisa:
+
+| | `access` do agregado | `requires` da rota |
+|---|---|---|
+| Vale para | Toda porta: HTTP, `Policy`, worker, teste | Só aquela rota |
+| Papel | Invariante do domínio | Filtro de borda, evita carregar estado |
+
+Se o `requires` da rota suprimisse o `access`, mexer numa rota enfraqueceria em
+silêncio uma regra de domínio — e o mesmo `Handle` disparado por uma `Policy`
+ficaria protegido por uma regra que a rota não aplica. O custo de rodar as duas
+é um predicado booleano sobre um caller já resolvido.
+
+Como consequência de [[Identity]] §5.1, `requires` de rota só aceita policy sem
+`self`: na borda não há instância projetada.
 
 ## 6. Superfície 5 — endpoints gerados
 
@@ -483,29 +551,39 @@ fixa o principal sem subir provedor, que é o princípio 6 de [[Identity]] §2.
 `then forbidden` / `then unauthorized` é a asserção que hoje não existe —
 [[23-error-classification]] só tem `ErrForbidden`.
 
-## 9. Questões que esta proposta abre
+Duas regras completam a forma:
 
-Ainda no espírito de não codificar decisão que a spec não tomou:
+- **Omitir `given caller` significa anônimo**, não "autenticado o bastante".
+  É o mesmo fail-closed do runtime, e evita a pior categoria de teste: o que
+  passa porque a autorização não foi exercida.
+- **`given caller service Sales`** fixa o principal de módulo (§2.2), que é o
+  único jeito de testar `Handle` protegido por `caller.isService(M)` — o
+  caminho por onde `KitchenTicket.Create` é de fato criado em produção.
 
-1. **Q1 — autorização inline no UseCase (§4.1).** Decidido que `caller` é
-   legível ali; falta decidir o que fazer quando alguém usa isso para
-   *autorizar* em vez de alimentar o domínio. Proponho ⚠️ warning — erro seria
-   difícil de definir sem falso positivo, e silêncio deixa autorização fora do
-   alcance do compilador.
-2. **Q2 — `caller.isService(M)` (§2.2).** A decisão de que o caller reativo é
-   o módulo pede um membro novo no contrato de `caller`, que [[Identity]] §4
-   ainda não lista. Alternativa seria papel implícito por módulo, que traz de
-   volta a `string`.
-3. **Q3 — `requires` em rota (§5).** Estende [[11-interface]]; precisa decidir
-   se convive com o `access` do agregado (as duas checagens rodam) ou se uma
-   suprime a outra. A proposta é que rodem as duas, fail-closed.
-4. **Q4 — leitura de identity pelo desenvolvedor.** §3.4 proíbe `View … From
-   User`. Uma tela de "meus dados" além do `manage` gerado exigiria alguma
-   query da lib padrão — deliberadamente fora desta proposta.
-5. **Q5 — cardinalidade principal ↔ tenant** (R1 de [[Identity]] §9.1) decide o
-   tipo de `User.tenant` em §3.1. Com root no desenho ela ganha um caso
-   concreto: root é global e atravessa tenants por definição, então a resposta
-   precisa comportar um principal sem tenant.
-O ciclo de vida do root não está mais nesta lista: `lockAfterBootstrap`,
-recuperação por root temporário e remoção explícita sem TTL estão decididos na
-§2.3.1.
+```ds
+scenario "ticket nasce da reação de Sales, não de gente" {
+    given caller service Sales
+    when Create(orderRef: "O1")
+    then [ TicketCreated(id: "T1", orderRef: "O1") ]
+}
+```
+
+## 9. Onde cada questão foi parar
+
+O documento nasceu com sete questões abertas; todas foram decididas ao longo
+das rodadas de revisão. O índice:
+
+| | Questão | Decisão | Seção |
+|---|---|---|---|
+| Q1 | Autorização inline no UseCase | `caller.id` silencioso, membros-predicado geram ⚠️ aviso | §4.1 |
+| Q2 | `caller.isService(M)` | Adotado no contrato; `M` verificado em compilação, inalcançável por HTTP | §2.2 |
+| Q3 | `requires` de rota × `access` do agregado | Rodam os dois, sem supressão | §5.1 |
+| Q4 | Ler identity no domínio | Continua proibido; o padrão é projeção local por reação a evento | §3.5 |
+| Q5 | Principal ↔ tenant | `0..1`; N tenants = N principals | §3.1 |
+| Q6 | Papel de quem se cadastra | Explícito na request, dentro do allowlist do endpoint | §6.1 |
+| Q7/Q8 | Ciclo de vida do root | `lockAfterBootstrap` configurável, recuperação por root temporário, remoção explícita sem TTL | §2.3.1 |
+
+O que resta não é decisão de design, é trabalho de spec: encaixar `caller`, os
+tipos da lib padrão e `AccessPolicy` no catálogo fechado da
+[[02-type-system]] §2.8, e escrever as regras de compilação correspondentes em
+[[25-compilation-rules]].

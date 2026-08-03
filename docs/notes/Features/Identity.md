@@ -303,7 +303,10 @@ contrato da tabela da §4:
   pedido teria que vir do payload do Command, que é precisamente o furo que
   este design existe para fechar. Continua **proibido dentro de `Handle`**: o
   agregado recebe o principal como parâmetro e permanece testável sem contexto
-  ambiente.
+  ambiente. Ler `caller.id` ali é silencioso; usar um membro-predicado
+  (`hasRole`, `hasClaim`, `satisfies`, `authenticated`, `isService`) gera
+  ⚠️ aviso, porque autorização escrita em corpo de UseCase é autorização que o
+  compilador não enxerga ([[Identity-API]] §4.1).
 - **Em execução reativa o caller é o próprio módulo/serviço que disparou.**
   Uma `Policy` que reage a um `PublicEvent` e dispara um `Handle` protegido por
   `access` roda sob o principal daquele módulo — não sob caller anônimo, nem
@@ -443,7 +446,7 @@ domínio só lê `caller`.
 | `rateLimit { perUser }` ([[17-rate-limiting]]) | `perUser` passa a ter definição: chaveado por `caller.id` | Hoje é indefinido |
 | Testing ([[24-testing]]) | `given caller ...` fixa principal/papéis do cenário, como alias de teste faz com `ref T` | Precisa de sintaxe nova |
 | Erros ([[23-error-classification]]) | 401 (não autenticado) vs 403 (autenticado, sem permissão) — distinção que hoje não existe | Hoje só há `ErrForbidden` |
-| Idempotência ([[15-idempotency]]) | Escopo da chave passa a poder incluir o principal | Em aberto — R3 (§9.1) |
+| Idempotência ([[15-idempotency]]) | Chave sempre escopada por `(tenant, principal, comando)` | Fecha um furo real, ver §7.4 |
 | `Identity` como serviço ([[12-topology]]) | `provider: oidc` apontando para outro serviço do próprio topology | Coerente com o modelo |
 | Catálogo §2.8 ([[02-type-system]]) | Ganha a entrada `caller`, fechando a contradição da §1 | Correção necessária de qualquer forma |
 
@@ -518,6 +521,28 @@ As duas populações se cruzam só onde o desenvolvedor quiser: `Identity { id: 
 (§4.3) é exatamente o ponto onde ele diz "o principal autenticado *é* este
 agregado do meu domínio". Quem não declara mantém as duas separadas.
 
+**Cardinalidade: um principal pertence a no máximo um tenant** — quem atende
+várias empresas contratantes tem uma conta por empresa. É o que mantém
+`hasRole` sendo uma pergunta só, sem qualificador de tenant, e o `0` do `0..1`
+é obrigatório de qualquer forma porque root atravessa tenants
+([[Identity-API]] §3.1).
+
+### 7.4. Idempotência escopada pelo principal
+
+A chave de idempotência é fornecida pelo cliente. Se o escopo dela não inclui
+**quem** chamou, um cliente que adivinhe ou intercepte a chave de outro recebe a
+resposta cacheada dele — vazamento de dados por colisão de namespace, não por
+falha de autenticação.
+
+**O escopo passa a ser `(tenant, principal, comando)`, fixo e não
+configurável.** Não é preferência de design: é o único escopo em que a chave de
+um caller não alcança o resultado de outro.
+
+O caso incômodo é o chamador anônimo, que não tem principal para escopar. Em vez
+de escopar por algo frágil como IP, **`Idempotency { required: true }` numa rota
+pública é erro de compilação** — o conflito aparece no build, onde dá para
+resolver, em vez de virar dedupe silenciosamente inseguro em produção.
+
 ## 8. Gaps que isto fecha
 
 | Gap | Como fecha |
@@ -551,31 +576,22 @@ revisão decidiu sobre cada uma:
 | — | Leitura de `caller` e caller reativo | Legível em corpo de `UseCase`, proibido em `Handle`; em reação o caller é o módulo que disparou | §4.5 |
 | — | Autoridade sobre o catálogo | `Role.root` da lib padrão, bootstrap obrigatório por env; mutar catálogo de papéis é só de root, papel de cadastro vem explícito na request dentro de allowlist | [[Identity-API]] §2.3, §6.1 |
 
-### 9.1. Questões residuais
+### 9.1. As quatro residuais, e como fecharam
 
-O que as decisões acima **não** fecham, e continua precisando de resposta antes
-de virar spec:
+| | Questão | Decisão |
+|---|---|---|
+| R1 | Cardinalidade principal ↔ tenant | `0..1`; quem atende N contratantes tem N contas. Mantém `hasRole` sem qualificador de tenant, e o `0` é exigido por root (§7.3) |
+| R2 | Escopo da chave de idempotência | `(tenant, principal, comando)`, fixo. `required: true` em rota pública é erro de compilação (§7.4) |
+| R3 | `given caller` em [[24-testing]] | Adotado, com anônimo como default e `given caller service M` para execução reativa ([[Identity-API]] §8) |
+| R4 | Superfície da lib padrão | Enumerada em [[Identity-API]] §3; a leitura de identity pelo domínio continua proibida, e o padrão para telas é projeção local por reação a evento (§3.5 de lá) |
 
-- **R1 — cardinalidade principal ↔ tenant.** A §7.3 fixa que o modelo de
-  tenancy é da aplicação e que o e-commerce separa principal (operador do
-  cliente contratante) de usuário do domínio (comprador). Falta o schema do
-  store local: um principal carrega um tenant, ou vários? Os dois exemplos
-  citados se resolvem com `0..1`, o que é a proposta — mas isso decide se
-  `hasRole` é por tenant, e é decisão de produto.
-- **R2 — escopo da chave de idempotência.** Já estava marcado "decisão em
-  aberto" na tabela da §7 e não foi tocado: a chave passa a incluir o
-  principal, ou não?
-- **R3 — `given caller ...` em [[24-testing]].** Proposta em
-  [[Identity-API]] §8; falta a decisão.
-- **R4 — superfície da lib padrão de identity.** Enumerada em
-  [[Identity-API]] §3 (tipos, eventos e a lista do que é proibido); falta
-  encaixá-la no catálogo fechado da [[02-type-system]] §2.8 ao lado de
-  `caller`.
+As questões que a superfície de API abriu também estão todas decididas —
+índice em [[Identity-API]] §9.
 
-Mais as questões que a superfície de API abriu, todas em [[Identity-API]] §9:
-`caller.id` legível em UseCase (Q1, bloqueante — sem ela não há como gravar o
-dono de um recurso), `serviceAccounts` (Q2, bloqueante — `Policy` que dispara
-`Handle` com `access` não tem caller definido hoje) e `requires` em rota (Q3).
+**Não sobra decisão de design em aberto.** O que falta é trabalho de spec:
+encaixar `caller`, `AccessPolicy` e os tipos da lib padrão no catálogo fechado
+da [[02-type-system]] §2.8, e escrever as regras correspondentes em
+[[25-compilation-rules]].
 
 ## 10. Recomendação de sequenciamento
 
@@ -596,9 +612,11 @@ Se isto virar spec, a ordem que minimiza retrabalho:
    store e a superfície dos tipos.
 
 Os passos 1 e 2 são os de melhor relação valor/risco: consertam o que já está
-quebrado hoje e não pressupõem nenhuma das questões residuais da §9.1 — o passo
-2 inclusive já pode incorporar a regra de execução da §5.1, que é decidível sem
-o bloco `Identity` existir.
+quebrado hoje e não pressupõem nada do bloco `Identity` — o passo 2 inclusive
+já incorpora a regra de execução da §5.1, decidível sem `Identity` existir.
+Com a §9.1 fechada, os dois estão prontos para virar spec: as decisões que eles
+precisam (contrato de `caller`, posições de leitura, `isService`, `requires` de
+rota, `given caller`) estão todas tomadas.
 
 ## 11. Registro da segunda rodada de revisão
 
