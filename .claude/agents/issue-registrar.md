@@ -52,7 +52,12 @@ issue do `pizzeria`). O repositório versionado fica intocado.
    nasceram.
 2. **Localize.** Leia o código até achar o ponto responsável: arquivo, função,
    linha. "Falha em algum lugar do codegen" não é um achado; 
-   `tryEmitListVO` rejeitando `*types.ShapeType` em `decl_query.go:461` é.
+   `tryEmitListVO` rejeitando `*types.ShapeType` em `decl_query.go:461` é —
+   e na issue isso vira link Markdown relativo com o intervalo de linha
+   (`[decl_query.go:461](../../../codegen/decl_query.go#L461)`), não texto solto
+   (`CLAUDE.md`, "Cite a reference as a link, always"). Vale para toda
+   referência que a `DESCRIPTION` fizer: outra issue, o `design.md`, a seção
+   do spec da linguagem, a task de origem.
 3. **Minimize.** Reduza ao menor caso que ainda falha, e confirme que o caso
    vizinho que *deveria* funcionar funciona. Essa diferença é o achado.
 4. **Classifique** antes de escrever:

@@ -129,7 +129,11 @@ Ao encontrar um:
 
 1. Registre a issue com a skill **`issue-generator`** (pré-carregada): um
    arquivo em `docs/sdd/issues/`, indexado em `open-issues.md`, com o que
-   você observou, onde (arquivo e função), e por que bloqueia a task.
+   você observou, onde (arquivo e função), e por que bloqueia a task. Toda
+   referência a outro arquivo — a task, o `design.md`, a seção do spec, o
+   código onde você achou o problema — entra como link Markdown relativo, não
+   só o nome (`CLAUDE.md`, "Cite a reference as a link, always"); é o que
+   mantém a issue navegável quando o que ela cita se mover.
 2. Marque a task `status: blocked` no frontmatter dela.
 3. Mova a task para `BLOCKED TASKS` no `state.md` da spec, **com o motivo** e
    um ponteiro para a issue que você acabou de criar.

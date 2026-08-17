@@ -44,9 +44,14 @@ spec sua não pode requisitar nada que ele não descreva**, nem descrever numa
 grafia diferente da dele. Você está a montante de quem implementa: um REQ fora
 do spec vira código fora do spec, e aí o desvio já está commitado.
 
-Ao escrever cada REQ e cada task, abra a seção correspondente do spec e cite-a.
-Se você não consegue apontar onde o spec descreve o que a task manda fazer, a
-task não pode ser escrita. Isso vale igualmente para:
+Ao escrever cada REQ e cada task, abra a seção correspondente do spec e cite-a
+— como link Markdown relativo para o arquivo da seção
+(`docs/sdd/steerings/domainscript-spec-v7/0N-nome.md`), não só o número "§N"
+solto (`CLAUDE.md`, "Cite a reference as a link, always"). O mesmo vale para
+toda referência a outra spec, task, `design.md` ou issue que você escrever em
+`requirements.md`/`design.md`/`tasks/*.md`/`state.md`. Se você não consegue
+apontar onde o spec descreve o que a task manda fazer, a task não pode ser
+escrita. Isso vale igualmente para:
 
 - **Requisitar o que o spec não descreve** — um diagnóstico que a §25 não
   lista, um construto que nenhuma seção define, uma extensão "óbvia" da

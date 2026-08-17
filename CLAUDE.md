@@ -120,6 +120,26 @@ greenfield: a task cites the REQ it satisfies (`(REQ-n)`) and the design section
 (`(§design x)`). Do not invent architecture that contradicts `design.md` — if a
 change is needed, update the spec.
 
+**Cite a reference as a link, always.** Any time prose under `docs/sdd/` names
+something outside the document it's written in — another spec's
+`requirements.md`/`design.md`, a task file, an issue, a language-spec section
+(`§N`), a source file, a line or range in one — write it as a relative Markdown
+link, not bare text. Count the `../` from the citing file's own location, not
+from a fixed depth: from `docs/sdd/issues/*.md` that's
+`[§13](../steerings/domainscript-spec-v7/13-module-infra.md)` for a sibling
+under `docs/sdd/` and `[decl_query.go:461](../../../codegen/decl_query.go#L461)`
+for repo-root source; a file one level deeper (e.g.
+`docs/sdd/specs/<spec>/tasks/*.md`) needs one more `../` on each. This repo
+has paid for the alternative twice already: `.claude` moved to
+`docs/sdd` and a whole pass was needed to fix references that had gone dark
+silently, and a spec (`correcoes-issues-6-7-8`) was closed and its files
+deleted while other issues still named it as a live path. A link breaks
+visibly when its target moves; bare text just goes stale, unnoticed, until
+someone follows it. Link the first mention per paragraph — a reference
+repeated right after doesn't need re-linking. This binds every document this
+repo's agents and skills write (issues, `requirements.md`, `design.md`,
+tasks, `state.md`), not only issues.
+
 ## Execution rules
 
 - **One task at a time.** Never start a second before the current one is
@@ -289,6 +309,9 @@ dsc gen <dir> -o <out>                # validate <dir> and generate a Go project
 
 ## Conventions
 
+- **Link, don't just name, a cross-reference** — see "Where things live"
+  above. Applies to `docs/sdd/` prose you write, not to code or commit
+  messages.
 - **Slice vertically.** Implement one construct end-to-end (lexer → parser →
   semantics → test) before widening to the next. Follow the task order; it
   respects dependencies.

@@ -90,7 +90,11 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
 6b. **Check every requirement against the language spec.** Before a REQ
    reaches `requirements.md`, point at the section of
    `docs/sdd/steerings/domainscript-spec-v7/` that describes it, and cite that
-   section in the REQ. The language spec is the source of truth (root
+   section in the REQ **as a relative Markdown link to the section's file**
+   (e.g. `[§13](../../steerings/domainscript-spec-v7/13-module-infra.md)` from
+   `docs/sdd/specs/<spec>/requirements.md`), not a bare `§N` — same for every
+   other cross-reference this spec's docs make (root `CLAUDE.md`, "Cite a
+   reference as a link, always"). The language spec is the source of truth (root
    `CLAUDE.md`): a requirement it does not describe — or describes in a
    different shape — must not be written. Where the spec is ambiguous,
    contradictory or silent on exactly the point the requirement needs, file a
@@ -116,11 +120,14 @@ itself (see below) plus prose in `requirements.md` §1.3/§5 and `design.md`.
      `id: TASK-<CODE>`, `status: pending`, `depends_on` listing the
      `TASK-<CODE>` of any prerequisite task in this spec,
      `references.requirements`/`references.design` pointing at the REQ(s)
-     and design section(s) this task satisfies, `target_files` listing the
-     files it's expected to touch, implementation steps, the paired
-     positive/negative tests it must add (NFR-4 in this repo — every rule
-     needs a test that violates it and one that doesn't), and a commit
-     message following the repo's Conventional Commits/Portuguese-imperative
+     and design section(s) this task satisfies (frontmatter values stay
+     plain, e.g. `["REQ-XX"]` — it's the prose in "Contexto & Objetivo" and
+     the implementation steps that must link when it names `design.md`, a
+     spec section, or another task), `target_files` listing the files it's
+     expected to touch, implementation steps, the paired positive/negative
+     tests it must add (NFR-4 in this repo — every rule needs a test that
+     violates it and one that doesn't), and a commit message following the
+     repo's Conventional Commits/Portuguese-imperative
      convention (see `CLAUDE.md`).
 
 8. **Write `state.md`** from `assets/spec-state-template.md`: list every

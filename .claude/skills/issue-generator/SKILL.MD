@@ -54,9 +54,15 @@ are the reference format.
 4. **Fill the template.** Read `assets/issue-template.md` and replace its
    placeholders, keeping the exact structure:
    - `[ISSUE-NAME]` → the title
-   - `[SPEC-NAME]` → SPEC
-   - `[TASK-CODE]` → TASK
-   - `[DESCRIÇÃO DA ISSUE]` → DESCRIPTION
+   - `[SPEC-NAME]` → SPEC, as a relative Markdown link to that spec's
+     `requirements.md` (e.g. `[correcoes-issues-6-8-12](../specs/correcoes-issues-6-8-12/requirements.md)`),
+     not the bare slug — unless SPEC is `N/A`
+   - `[TASK-CODE]` → TASK, linked to `tasks/<CODE>.md` in the same way when a
+     real task code applies
+   - `[DESCRIÇÃO DA ISSUE]` → DESCRIPTION — link every file, spec section
+     (`§N`), other issue, or task this prose names, not just SPEC/TASK (see
+     root `CLAUDE.md`, "Cite a reference as a link, always"); count the `../`
+     from `docs/sdd/issues/`, where the file lands
    - `SOLVED: []` → leave empty; this only gets filled in later, when the
      issue is actually resolved (e.g. `SOLVED: [commit <hash>]`)
 
